@@ -61,6 +61,20 @@
 | 읽기 확장 | 읽기 전용 복제본 (Read Replica) | 읽기 전용 복제본 | 읽기 전용 복제본 |
 | 글로벌/멀티리전 | Aurora Global Database | Cross-Region Replica | Azure SQL Auto-failover Group |
 | 서버리스 | Aurora Serverless v2 | Cloud SQL(자동 확장 일부 지원) | Azure SQL Database Serverless |
+| 네트워크 접근 제어 | 보안 그룹(Security Group, 상태 저장) + 서브넷 그룹 | 방화벽 규칙(Firewall Rule) + 승인된 네트워크 | 서버 방화벽 규칙 |
+| 프라이빗 연결 도구 | SSM 포트 포워딩, PrivateLink | Cloud SQL Auth Proxy | Private Link |
+| IAM 데이터베이스 인증 | RDS IAM Authentication (단기 토큰) | Cloud SQL IAM 인증 | Azure AD 인증 |
+
+## 7. Kubernetes 기반 셀프 매니지드 Operator
+
+관리형 서비스가 아니라 Kubernetes 위에서 직접 운영하는 경우의 대응표. 03-advanced/08-kubernetes-db-operators.md에서 자세히 다룬다.
+
+| 개념 | PostgreSQL | MySQL | Oracle |
+|---|---|---|---|
+| 대표 Operator | CloudNativePG | Percona XtraDB Cluster Operator, Oracle MySQL Operator | (커뮤니티 Operator 생태계 사실상 없음) |
+| CRD 종류 | `Cluster` (`postgresql.cnpg.io/v1`) | `PerconaXtraDBCluster`, `InnoDBCluster` (`mysql.oracle.com/v2`) | — |
+| 복제 방식 | 스트리밍 복제 | Galera(멀티 프라이머리) / Group Replication(단일 프라이머리) | — |
+| 접속 경유 | 서비스(Service) | HAProxy(Percona) / MySQL Router(Oracle) | — |
 
 ## 이 표 사용법
 

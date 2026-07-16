@@ -11,13 +11,13 @@
         ▼
 02-intermediate (실무 독립 수행 DBA)
    └─ 트랜잭션/락 → 인덱싱/쿼리튜닝 → 성능 모니터링 → 백업·복구 전략
-      → 복제 → 스키마 변경 관리 → 클라우드 매니지드 DB 기초
+      → 복제 → 스키마 변경 관리 → 클라우드 DB 인프라 구축/접속 → 클라우드 매니지드 DB 기초
         │
         ▼
 03-advanced (시니어 DBA / DB 아키텍트)
    └─ 고급 성능 튜닝 → 고가용성/페일오버 → 재해복구(DR) → 확장/샤딩
       → 보안/컴플라이언스 → 자동화(IaC) → 클라우드 매니지드 DB 심화
-      → 장애 대응/포스트모템
+      → Kubernetes 기반 DB Operator → 장애 대응/포스트모템
 ```
 
 각 단계는 순서대로 학습하는 것을 권장하지만, 이미 실무 경험이 있다면 `00-overview.md`의 체크리스트로 자신의 현재 위치를 먼저 진단하고 필요한 챕터부터 골라 보는 것도 좋다.
@@ -48,8 +48,9 @@
 | [04. 백업·복구 전략](02-intermediate/04-backup-recovery-strategies.md) | 물리 백업, PITR, 보관 정책 |
 | [05. 복제 기초](02-intermediate/05-replication-basics.md) | 동기/비동기 복제, 주요 구현체 |
 | [06. 스키마 변경 관리](02-intermediate/06-schema-change-management.md) | 마이그레이션 도구, 온라인 DDL |
-| [07. 클라우드 매니지드 DB 기초](02-intermediate/07-cloud-managed-db-basics.md) | RDS/Cloud SQL 기본 운영 |
-| [08. 명령어 대조표](02-intermediate/08-commands-cheatsheet.md) | 중급 단계 명령어 요약 |
+| [07. 클라우드 DB 인프라 구축과 접속](02-intermediate/07-cloud-db-infra-and-connection.md) | VPC/서브넷 그룹/보안 그룹, 인스턴스 생성, SSL/IAM 인증, 프라이빗 접속 |
+| [08. 클라우드 매니지드 DB 기초](02-intermediate/08-cloud-managed-db-basics.md) | RDS/Cloud SQL 기본 운영 |
+| [09. 명령어 대조표](02-intermediate/09-commands-cheatsheet.md) | 중급 단계 명령어 요약 |
 
 ### [03. 고급 (시니어 DBA / DB 아키텍트)](03-advanced/00-overview.md)
 
@@ -63,8 +64,9 @@
 | [05. 보안과 컴플라이언스](03-advanced/05-security-and-compliance.md) | 암호화, 감사 로그, 컴플라이언스 |
 | [06. 자동화와 IaC](03-advanced/06-automation-and-iac.md) | Terraform/Ansible, GitOps |
 | [07. 클라우드 매니지드 DB 심화](03-advanced/07-cloud-managed-db-advanced.md) | Aurora/AlloyDB, 멀티리전, 비용 최적화 |
-| [08. 장애 대응과 포스트모템](03-advanced/08-incident-response-and-postmortem.md) | 인시던트 대응 프로세스, 사후분석 |
-| [09. 명령어 대조표](03-advanced/09-commands-cheatsheet.md) | 고급 단계 명령어 요약 |
+| [08. Kubernetes 기반 DB Operator](03-advanced/08-kubernetes-db-operators.md) | Percona XtraDB Cluster Operator, Oracle MySQL Operator, CloudNativePG |
+| [09. 장애 대응과 포스트모템](03-advanced/09-incident-response-and-postmortem.md) | 인시던트 대응 프로세스, 사후분석 |
+| [10. 명령어 대조표](03-advanced/10-commands-cheatsheet.md) | 고급 단계 명령어 요약 |
 
 ### 부록
 

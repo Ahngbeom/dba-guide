@@ -88,7 +88,7 @@ gcloud sql instances create proddb-dr --master-instance-name=proddb \
 3. **별도 인스턴스로 복구**(운영에 바로 덮어쓰지 않는다):
    최근 풀백업을 새 인스턴스에 복원 → WAL/binlog를 사고 **직전 시점까지만** 재적용.
 4. **데이터 추출·병합**: 복구본에서 삭제된 `orders`만 추출해 운영에 다시 삽입. 사고 이후 정상 트랜잭션과 충돌하지 않게 병합.
-5. **회고**: 왜 WHERE 없는 DELETE가 가능했나 → 프로덕션 접근 통제·`sql_safe_updates`·리뷰 게이트 도입(08장 연계).
+5. **회고**: 왜 WHERE 없는 DELETE가 가능했나 → 프로덕션 접근 통제·`sql_safe_updates`·리뷰 게이트 도입(09장 연계).
 
 **시나리오 B: "서울 리전(ap-northeast-2) 전체 장애 — 멀티리전 페일오버(DR Drill)"**
 

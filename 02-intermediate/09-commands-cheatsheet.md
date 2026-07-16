@@ -85,6 +85,17 @@
 | 무중단 변경 도구 | (논리 복제/CONCURRENTLY) | `pt-online-schema-change`, `gh-ost` | `DBMS_REDEFINITION` |
 | 마이그레이션 도구 | Flyway / Liquibase (공통) | Flyway / Liquibase (공통) | Flyway / Liquibase (공통) |
 
+## 클라우드 DB 인프라/접속
+
+| 작업 | AWS RDS | GCP Cloud SQL |
+|---|---|---|
+| 서브넷 그룹/네트워크 준비 | `aws rds create-db-subnet-group` | (기본 VPC 또는 프라이빗 서비스 액세스) |
+| 보안 그룹/방화벽 규칙 | `aws ec2 create-security-group` + `authorize-security-group-ingress` | `gcloud compute firewall-rules create` |
+| 프라이빗 인스턴스 생성 | `create-db-instance --no-publicly-accessible` | `gcloud sql instances create --no-assign-ip` |
+| SSL 검증 접속 | `psql "... sslmode=verify-full sslrootcert=..."` | `psql "... sslmode=verify-full"` |
+| IAM 인증 접속 | `aws rds generate-db-auth-token` → 토큰을 비밀번호로 사용 | `gcloud sql users create --type=cloud_iam_user` |
+| 배스천 없는 프라이빗 접속 | `aws ssm start-session --document-name AWS-StartPortForwardingSessionToRemoteHost` | Cloud SQL Auth Proxy (`--auto-iam-authn`) |
+
 ## 클라우드 관리형 DB
 
 | 개념 | AWS RDS | GCP Cloud SQL |

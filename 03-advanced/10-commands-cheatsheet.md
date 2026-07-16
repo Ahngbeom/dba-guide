@@ -1,6 +1,6 @@
-# 09. 고급 단계 명령어 치트시트
+# 10. 고급 단계 명령어 치트시트
 
-고급 단계(01~08)에서 다룬 개념과 명령을 DBMS·클라우드별로 한눈에 대조한다. 상세 맥락은 각 챕터를 참조.
+고급 단계(01~09)에서 다룬 개념과 명령을 DBMS·클라우드별로 한눈에 대조한다. 상세 맥락은 각 챕터를 참조.
 
 > 표기: `—` 는 해당 엔진에 직접 대응이 없거나 방식이 크게 다름을 뜻한다.
 
@@ -110,7 +110,22 @@
 
 ---
 
-## 8. 장애 대응 진단 (08장, 모두 읽기 전용)
+## 8. Kubernetes DB Operator (08장)
+
+| 작업 | Percona XtraDB Cluster Operator (MySQL/Galera) | Oracle MySQL Operator (InnoDB Cluster) | CloudNativePG (PostgreSQL) |
+|------|------------------------------------------------|------------------------------------------|------------------------------|
+| CR 종류 | `PerconaXtraDBCluster` | `InnoDBCluster` | `Cluster` |
+| 클러스터 생성 | `kubectl apply -f pxc-cluster.yaml` | `kubectl apply -f innodbcluster.yaml` | `kubectl apply -f pg-cluster.yaml` |
+| 상태 조회 | `kubectl get pxc` | `kubectl get innodbcluster` | `kubectl get cluster` |
+| 페일오버 유발(테스트) | `kubectl delete pod <primary-pod>` | `kubectl delete pod <primary-pod>` | `kubectl delete pod <primary-pod>` |
+| 백업 | `PerconaXtraDBClusterBackup` CR | MEB 기반 백업 CR | `Backup` CR (`postgresql.cnpg.io/v1`) |
+| 복제 방식 | Galera(멀티 프라이머리) | Group Replication(단일 프라이머리) | Streaming Replication |
+
+**개념**: CRD + reconcile loop로 "상시 감시·자동 복구"(Terraform/Ansible의 one-shot과 대비) · StatefulSet만으로 부족한 부분(클러스터 부트스트랩·자동 페일오버·백업)을 Operator가 코드화 · 클라우드 매니지드 대비 운영 부담(스토리지 클래스·리소스 요청/제한) 큼.
+
+---
+
+## 9. 장애 대응 진단 (09장, 모두 읽기 전용)
 
 | 작업 | PostgreSQL | MySQL | Oracle |
 |------|-----------|-------|--------|

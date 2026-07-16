@@ -1,4 +1,4 @@
-# 08. 장애 대응과 포스트모템 (Incident Response & Postmortem)
+# 09. 장애 대응과 포스트모템 (Incident Response & Postmortem)
 
 ## 1. 핵심 개념 설명
 
