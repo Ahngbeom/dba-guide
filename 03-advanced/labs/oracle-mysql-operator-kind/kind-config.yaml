@@ -1,0 +1,10 @@
+# control-plane 1개 + worker 3개 — InnoDB Cluster 3개 mysqld 파드를
+# 서로 다른 노드에 분산시켜 실제 멀티노드 페일오버에 가깝게 관찰하기 위한 구성.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: mysql-operator-lab
+nodes:
+  - role: control-plane
+  - role: worker
+  - role: worker
+  - role: worker
