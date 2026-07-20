@@ -1,0 +1,18 @@
+# 03-advanced/08-kubernetes-db-operators.md 의 innodbcluster.yaml 예제를
+# 로컬 kind 랩용으로 축소(storage 20Gi -> 2Gi)한 버전.
+apiVersion: mysql.oracle.com/v2
+kind: InnoDBCluster
+metadata:
+  name: my-cluster
+  namespace: mysql-lab
+spec:
+  secretName: my-cluster-secret
+  tlsUseSelfSigned: true
+  instances: 3
+  router:
+    instances: 1
+  datadirVolumeClaimTemplate:
+    accessModes: ["ReadWriteOnce"]
+    resources:
+      requests:
+        storage: 2Gi

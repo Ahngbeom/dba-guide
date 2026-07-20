@@ -1,1 +1,4 @@
 .DS_Store
+
+# 로컬 실습 랩 전용 실제 자격 증명 (예제는 secret.yaml.example 참고)
+03-advanced/labs/**/secret.yaml
