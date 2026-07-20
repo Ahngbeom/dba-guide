@@ -10,7 +10,9 @@
 
 - **B-Tree 인덱스**: 가장 보편적인 기본 인덱스. 등호(`=`)와 범위(`<, >, BETWEEN`), 정렬(`ORDER BY`), 접두 매칭(`LIKE 'abc%'`)에 효과적이다.
 - **Hash 인덱스**: 등호 검색에만 특화. 범위 검색·정렬 불가. PostgreSQL/MySQL이 지원하나 용도가 제한적이다.
+<!-- dbms:postgresql -->
 - **GIN / GiST (PostgreSQL)**: 전문 검색(full-text), JSONB, 배열, 공간 데이터 등 하나의 컬럼이 여러 값을 갖는 경우에 사용한다.
+<!-- /dbms:postgresql -->
 - **복합 인덱스(Composite Index)**: 여러 컬럼을 묶은 인덱스. **선두 컬럼(leftmost) 규칙**이 중요하다. `(a, b, c)` 인덱스는 `a`, `(a,b)`, `(a,b,c)` 조건에는 쓰이지만 `b`나 `c` 단독 조건에는 쓰이지 않는다.
 - **커버링 인덱스(Covering Index)**: 쿼리가 필요로 하는 모든 컬럼이 인덱스에 포함되어, 테이블 본체를 읽지 않고 인덱스만으로 결과를 반환하는 경우. "Index Only Scan"으로 나타난다.
 - **유니크 인덱스**: 값의 유일성을 보장하면서 조회도 빠르게 한다.
@@ -20,6 +22,7 @@
 
 ### 인덱스 생성/삭제
 
+<!-- dbms:postgresql -->
 **PostgreSQL**
 ```sql
 CREATE INDEX idx_orders_customer ON orders (customer_id);
@@ -30,7 +33,9 @@ CREATE INDEX idx_docs_body ON docs USING GIN (to_tsvector('english', body)); -- 
 CREATE INDEX CONCURRENTLY idx_big ON big_table (col);  -- 잠금 최소화(무중단)
 DROP INDEX idx_orders_customer;
 ```
+<!-- /dbms:postgresql -->
 
+<!-- dbms:mysql -->
 **MySQL**
 ```sql
 CREATE INDEX idx_orders_customer ON orders (customer_id);
@@ -40,7 +45,9 @@ ALTER TABLE orders ADD INDEX idx_cust_date (customer_id, created_at);
 ALTER TABLE orders ADD INDEX idx_cover (customer_id, status, amount);
 DROP INDEX idx_orders_customer ON orders;
 ```
+<!-- /dbms:mysql -->
 
+<!-- dbms:oracle -->
 **Oracle**
 ```sql
 CREATE INDEX idx_orders_customer ON orders (customer_id);
@@ -49,33 +56,47 @@ CREATE INDEX idx_cust_date ON orders (customer_id, created_at);
 CREATE INDEX idx_orders_online ON orders (created_at) ONLINE; -- 무중단 생성
 DROP INDEX idx_orders_customer;
 ```
+<!-- /dbms:oracle -->
 
 ### 실행계획 확인
 
+<!-- dbms:postgresql -->
 ```sql
 -- PostgreSQL: 계획만 / 실제 실행 후 측정치까지
 EXPLAIN SELECT * FROM orders WHERE customer_id = 42;
 EXPLAIN (ANALYZE, BUFFERS) SELECT * FROM orders WHERE customer_id = 42;
+```
+<!-- /dbms:postgresql -->
 
+<!-- dbms:mysql -->
+```sql
 -- MySQL
 EXPLAIN SELECT * FROM orders WHERE customer_id = 42;
 EXPLAIN ANALYZE SELECT * FROM orders WHERE customer_id = 42;  -- MySQL 8.0.18+
 EXPLAIN FORMAT=JSON SELECT ...;   -- 상세 비용
+```
+<!-- /dbms:mysql -->
 
+<!-- dbms:oracle -->
+```sql
 -- Oracle
 EXPLAIN PLAN FOR SELECT * FROM orders WHERE customer_id = 42;
 SELECT * FROM TABLE(DBMS_XPLAN.DISPLAY);
 -- 실제 실행 통계
 SELECT * FROM TABLE(DBMS_XPLAN.DISPLAY_CURSOR(NULL, NULL, 'ALLSTATS LAST'));
 ```
+<!-- /dbms:oracle -->
 
 ## 실행계획 읽는 법
 
 `EXPLAIN ANALYZE`의 핵심 관찰 포인트:
 
 - **접근 방식**: `Seq Scan`(PostgreSQL) / `type: ALL`(MySQL) / `TABLE ACCESS FULL`(Oracle)은 전체 스캔이라는 신호다. 큰 테이블에서 나타나면 인덱스 적용을 의심한다. 반대로 `Index Scan` / `type: ref/range` / `INDEX RANGE SCAN`은 인덱스를 탄 것이다.
+<!-- dbms:postgresql -->
 - **추정 행 수 vs 실제 행 수**: PostgreSQL의 `rows=1000` (추정) 대비 `actual rows=100000` 처럼 차이가 크면 통계가 오래된 것이므로 `ANALYZE`로 통계를 갱신한다.
+<!-- /dbms:postgresql -->
 - **조인 방식**: `Nested Loop`(소량+인덱스에 유리), `Hash Join`(대량 조인에 유리), `Merge Join`(정렬된 대량에 유리). 대량 데이터에 Nested Loop가 잡히면 비효율일 수 있다.
+<!-- dbms:postgresql -->
 - **비용/시간**: PostgreSQL의 `cost=`, `actual time=`을 상위 노드부터 아래로 읽으며 어느 단계가 오래 걸리는지 찾는다.
 
 ```text
@@ -86,6 +107,7 @@ Index Scan using idx_orders_customer on orders  (cost=0.42..8.44 rows=1 width=64
 Planning Time: 0.10 ms
 Execution Time: 0.08 ms
 ```
+<!-- /dbms:postgresql -->
 
 ## 쿼리 튜닝 기본 원칙
 
@@ -99,7 +121,8 @@ Execution Time: 0.08 ms
 
 ## 실습 예제
 
-시나리오: 100만 건 주문 테이블에서 특정 고객의 최근 주문 조회가 느리다.
+<!-- dbms:postgresql -->
+시나리오: 100만 건 주문 테이블에서 특정 고객의 최근 주문 조회가 느리다. (PostgreSQL 기준)
 
 ```sql
 -- 1) 현재 계획 확인 — Seq Scan이면 인덱스가 없거나 안 타는 것
@@ -120,6 +143,63 @@ WHERE customer_id = 42 ORDER BY created_at DESC LIMIT 10;
 ```
 
 기대 결과: `Seq Scan` → `Index Scan`으로 바뀌고, 정렬 단계(`Sort`)가 사라지며 실행 시간이 수백 ms에서 수 ms로 단축된다.
+<!-- /dbms:postgresql -->
+
+<!-- dbms:mysql -->
+시나리오: 100만 건 주문 테이블에서 특정 고객의 최근 주문 조회가 느리다. (MySQL 기준)
+
+```sql
+-- 1) 현재 계획 확인 — type: ALL이면 인덱스가 없거나 안 타는 것(풀 테이블 스캔)
+EXPLAIN
+SELECT order_id, amount FROM orders
+WHERE customer_id = 42 ORDER BY created_at DESC LIMIT 10;
+
+-- 2) 조건+정렬을 커버하는 복합 인덱스 생성 (등호 컬럼 먼저, 정렬 컬럼 다음)
+ALTER TABLE orders ADD INDEX idx_orders_cust_created (customer_id, created_at DESC);
+
+-- 3) 통계 갱신
+ANALYZE TABLE orders;
+
+-- 4) 다시 계획 확인 — type: ref/range로 바뀌고 Extra에서 정렬 단계가 사라졌는지 확인
+EXPLAIN ANALYZE
+SELECT order_id, amount FROM orders
+WHERE customer_id = 42 ORDER BY created_at DESC LIMIT 10;
+```
+
+기대 결과: `type: ALL`(풀 테이블 스캔) → `type: ref`(인덱스 스캔)로 바뀌고, `Extra`의 `Using filesort`가 사라지며 `EXPLAIN ANALYZE`가 보여주는 실제 실행 시간(actual time)이 크게 줄어든다.
+<!-- /dbms:mysql -->
+
+<!-- dbms:oracle -->
+시나리오: 100만 건 주문 테이블에서 특정 고객의 최근 주문 조회가 느리다. (Oracle 기준)
+
+```sql
+-- 1) 현재 계획 확인 — TABLE ACCESS FULL이면 인덱스가 없거나 안 타는 것(전체 스캔)
+EXPLAIN PLAN FOR
+SELECT order_id, amount FROM orders
+WHERE customer_id = 42
+ORDER BY created_at DESC
+FETCH FIRST 10 ROWS ONLY;
+
+SELECT * FROM TABLE(DBMS_XPLAN.DISPLAY);
+
+-- 2) 조건+정렬을 커버하는 복합 인덱스 생성 (등호 컬럼 먼저, 정렬 컬럼 다음)
+CREATE INDEX idx_orders_cust_created ON orders (customer_id, created_at DESC);
+
+-- 3) 통계 갱신
+EXEC DBMS_STATS.GATHER_TABLE_STATS(ownname => USER, tabname => 'ORDERS');
+
+-- 4) 다시 계획 확인 — INDEX RANGE SCAN + TABLE ACCESS BY INDEX ROWID로 바뀌고 SORT 단계가 사라졌는지 확인
+EXPLAIN PLAN FOR
+SELECT order_id, amount FROM orders
+WHERE customer_id = 42
+ORDER BY created_at DESC
+FETCH FIRST 10 ROWS ONLY;
+
+SELECT * FROM TABLE(DBMS_XPLAN.DISPLAY);
+```
+
+기대 결과: `TABLE ACCESS FULL` → `INDEX RANGE SCAN` + `TABLE ACCESS BY INDEX ROWID`로 바뀌고, `SORT ORDER BY` 단계가 사라지며 실행계획의 Cost가 크게 낮아진다.
+<!-- /dbms:oracle -->
 
 ## 체크리스트
 

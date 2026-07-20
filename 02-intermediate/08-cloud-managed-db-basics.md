@@ -22,6 +22,7 @@ DBA의 역할이 없어지는 것이 아니라 **바뀐다.** 물리 서버 관�
 
 ### 파라미터/플래그 변경
 
+<!-- dbms:postgresql -->
 **AWS RDS**
 ```bash
 # 파라미터 그룹 생성 및 값 변경
@@ -39,6 +40,7 @@ aws rds modify-db-instance --db-instance-identifier mydb \
 ```bash
 gcloud sql instances patch mydb --database-flags max_connections=500,log_min_duration_statement=500
 ```
+<!-- /dbms:postgresql -->
 
 ### 스냅샷
 
@@ -64,6 +66,7 @@ gcloud sql instances clone mydb mydb-pitr --point-in-time '2026-07-15T14:29:00Z'
 
 ### 마이너 버전 업그레이드
 
+<!-- dbms:postgresql -->
 **AWS RDS**
 ```bash
 aws rds describe-db-engine-versions --engine postgres --engine-version 15.4  # 대상 확인
@@ -75,7 +78,9 @@ aws rds modify-db-instance --db-instance-identifier mydb \
 ```bash
 gcloud sql instances patch mydb --maintenance-version=POSTGRES_15_5.R20260101.00
 ```
+<!-- /dbms:postgresql -->
 
+<!-- dbms:postgresql -->
 ## 실습 예제 — 슬로우 쿼리 로깅 켜고 모니터링하기 (RDS PostgreSQL)
 
 시나리오: 관리형 PostgreSQL에서 느린 쿼리를 수집하고 CloudWatch 알람을 건다.
@@ -101,6 +106,66 @@ aws cloudwatch put-metric-alarm --alarm-name mydb-high-connections \
 ```
 
 **운영 팁**: 파라미터 중 static 항목(예: `shared_buffers`)은 변경 후 재부팅이 필요하므로 유지보수 창을 활용한다. 비용은 인스턴스 클래스 + 스토리지 + IOPS + 백업 보관 + 데이터 전송으로 구성되므로, 불필요한 스냅샷·과대 프로비저닝을 주기적으로 점검한다.
+<!-- /dbms:postgresql -->
+
+<!-- dbms:mysql -->
+## 실습 예제 — 슬로우 쿼리 로깅 켜고 모니터링하기 (RDS MySQL)
+
+시나리오: 관리형 MySQL에서 느린 쿼리를 수집하고 CloudWatch 알람을 건다.
+
+```bash
+# 1) 파라미터 그룹에서 슬로우 쿼리 로깅 활성화 (설정 파일 직접 수정 불가하므로)
+aws rds modify-db-parameter-group --db-parameter-group-name my-mysql80 --parameters \
+  "ParameterName=slow_query_log,ParameterValue=1,ApplyMethod=immediate" \
+  "ParameterName=long_query_time,ParameterValue=0.5,ApplyMethod=immediate"
+
+# 2) 로그를 CloudWatch Logs로 내보내도록 인스턴스 설정 (slowquery 로그 타입)
+aws rds modify-db-instance --db-instance-identifier mydb \
+  --cloudwatch-logs-export-configuration '{"EnableLogTypes":["slowquery"]}' \
+  --apply-immediately
+
+# 3) 커넥션 수 급증에 대한 CloudWatch 알람 생성
+aws cloudwatch put-metric-alarm --alarm-name mydb-high-connections \
+  --namespace AWS/RDS --metric-name DatabaseConnections \
+  --dimensions Name=DBInstanceIdentifier,Value=mydb \
+  --statistic Average --period 60 --threshold 400 \
+  --comparison-operator GreaterThanThreshold --evaluation-periods 3
+
+# 4) Performance Insights를 켜면 콘솔에서 상위 대기/쿼리를 시각적으로 확인 가능
+```
+
+**운영 팁**: MySQL의 슬로우 쿼리 로그는 파일이 아니라 `mysql.slow_log` 테이블(`log_output=TABLE`)로도 남길 수 있지만, RDS에서 CloudWatch로 내보내려면 `log_output=FILE`이어야 한다. `long_query_time`은 초 단위(소수점 가능)이며 너무 낮게 잡으면 로그량과 I/O 부담이 커지므로 운영 환경에서는 0.5~1초 수준에서 시작해 점진적으로 조정한다. `slow_query_log`, `long_query_time` 모두 dynamic 파라미터라 재부팅 없이 즉시 적용된다.
+<!-- /dbms:mysql -->
+
+<!-- dbms:oracle -->
+## 실습 예제 — 진단 로깅 켜고 모니터링하기 (RDS Oracle)
+
+시나리오: 관리형 Oracle에는 PostgreSQL/MySQL처럼 "슬로우 쿼리 로그"에 해당하는 파라미터가 없다. RDS for Oracle은 OS/파일 시스템 접근이 막혀 있고, `alter system set sql_trace`나 AWR/ASH 기반 진단은 대부분 **Enterprise Edition + Diagnostics Pack/Tuning Pack** 라이선스를 전제로 한다. 여기서는 라이선스 없이도 쓸 수 있는 현실적인 대안인 **alert log / listener log의 CloudWatch 내보내기**로 느린 쿼리의 간접 신호(에러, 타임아웃, 리스너 지연)를 관찰하는 절차를 다룬다.
+
+```bash
+# 1) alert log, listener log를 CloudWatch Logs로 내보내도록 인스턴스 설정
+aws rds modify-db-instance --db-instance-identifier mydb \
+  --cloudwatch-logs-export-configuration '{"EnableLogTypes":["alert","listener"]}' \
+  --apply-immediately
+
+# 2) (라이선스가 있는 경우) Diagnostics Pack 기반 세션 통계 수집 파라미터 확인
+#    RDS 콘솔/파라미터 그룹에서 통제되며, Standard Edition에서는 사용할 수 없다.
+aws rds describe-db-parameters --db-parameter-group-name my-oracle19 \
+  --query "Parameters[?ParameterName=='control_management_pack_access']"
+
+# 3) 커넥션 수 급증에 대한 CloudWatch 알람 생성 (다른 엔진과 동일한 방식)
+aws cloudwatch put-metric-alarm --alarm-name mydb-high-connections \
+  --namespace AWS/RDS --metric-name DatabaseConnections \
+  --dimensions Name=DBInstanceIdentifier,Value=mydb \
+  --statistic Average --period 60 --threshold 400 \
+  --comparison-operator GreaterThanThreshold --evaluation-periods 3
+
+# 4) Performance Insights는 엔진에 상관없이 켤 수 있어, 라이선스 없이도
+#    상위 대기 이벤트/SQL을 근사적으로 관찰하는 창구가 된다.
+```
+
+**운영 팁**: RDS for Oracle에서 세션 단위 SQL 트레이스(`10046 이벤트`)나 AWR 리포트는 SYS/SYSDBA 권한이 필요한 경우가 많아 관리형 환경에서 제약이 크다. 라이선스가 없다면 Performance Insights(엔진 무관 제공 기능)와 alert/listener 로그가 사실상의 1차 진단 수단이며, Diagnostics Pack이 있는 조직만 AWR/ASH 기반 정밀 분석으로 넘어간다. "Oracle에도 slow_query_log 파라미터가 있겠지"라고 가정하고 파라미터 그룹을 뒤지는 실수를 하지 않도록 주의한다 — 존재하지 않는다.
+<!-- /dbms:oracle -->
 
 ## 체크리스트
 
