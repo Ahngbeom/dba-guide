@@ -177,6 +177,8 @@ kubectl delete pod my-cluster-pxc-0
 6. **백업 실행**: 위 `PerconaXtraDBClusterBackup` CR을 `kubectl apply`해 온디맨드 백업을 수행하고, `kubectl get pxc-backup`으로 완료 여부를 확인한다.
 
 **Oracle MySQL Operator 대응 요약**: 동일한 목표를 `InnoDBCluster` CR로 구성할 수 있다. 다만 Group Replication은 단일 프라이머리 구조라, 프라이머리 파드를 강제 종료하면 남은 세컨더리 중 하나가 새 프라이머리로 **선출**되는 과정(수 초의 쓰기 불가 구간 발생)을 거친다. Galera의 멀티 프라이머리 구조와 달리 "어느 노드로 쓰기가 가능한가"가 페일오버 전후로 바뀐다는 점을 애플리케이션(또는 MySQL Router)이 인지해야 한다.
+
+> **직접 해보기**: 로컬 kind 클러스터에 Oracle MySQL Operator(InnoDB Cluster)를 실제로 배포하고 페일오버까지 손으로 겪어보는 단계별 실습 가이드가 [`03-advanced/labs/oracle-mysql-operator-kind/`](labs/oracle-mysql-operator-kind/README.md)에 있다.
 <!-- /dbms:mysql -->
 
 <!-- dbms:postgresql -->

@@ -80,7 +80,7 @@
 | [05. 보안과 컴플라이언스](03-advanced/05-security-and-compliance.md) | 암호화, 감사 로그, 컴플라이언스 |
 | [06. 자동화와 IaC](03-advanced/06-automation-and-iac.md) | Terraform/Ansible, GitOps |
 | [07. 클라우드 매니지드 DB 심화](03-advanced/07-cloud-managed-db-advanced.md) | Aurora/AlloyDB, 멀티리전, 비용 최적화 |
-| [08. Kubernetes 기반 DB Operator](03-advanced/08-kubernetes-db-operators.md) | Percona XtraDB Cluster Operator, Oracle MySQL Operator, CloudNativePG |
+| [08. Kubernetes 기반 DB Operator](03-advanced/08-kubernetes-db-operators.md) | Percona XtraDB Cluster Operator, Oracle MySQL Operator, CloudNativePG · [로컬 kind 실습](03-advanced/labs/oracle-mysql-operator-kind/README.md) |
 | [09. 장애 대응과 포스트모템](03-advanced/09-incident-response-and-postmortem.md) | 인시던트 대응 프로세스, 사후분석 |
 | [10. 명령어 대조표](03-advanced/10-commands-cheatsheet.md) | 고급 단계 명령어 요약 |
 
