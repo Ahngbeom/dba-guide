@@ -82,9 +82,10 @@ REVOKE INSERT ON employees FROM app_user;
 
 ### TCL — 트랜잭션 제어
 
+<!-- dbms:postgresql -->
 ```sql
--- PostgreSQL / MySQL: 명시적으로 트랜잭션 시작
-BEGIN;                                    -- (Oracle은 DML 실행 시 자동 시작)
+-- PostgreSQL: 명시적으로 트랜잭션 시작
+BEGIN;
 UPDATE employees SET salary = 7000 WHERE id = 2;
 COMMIT;    -- 변경을 확정 (영구 저장)
 
@@ -93,6 +94,33 @@ BEGIN;
 DELETE FROM employees WHERE id = 2;
 ROLLBACK;  -- 방금 DELETE를 취소 (삭제 안 됨)
 ```
+<!-- /dbms:postgresql -->
+
+<!-- dbms:mysql -->
+```sql
+-- MySQL: 명시적으로 트랜잭션 시작
+BEGIN;
+UPDATE employees SET salary = 7000 WHERE id = 2;
+COMMIT;    -- 변경을 확정 (영구 저장)
+
+-- 되돌리기 예시
+BEGIN;
+DELETE FROM employees WHERE id = 2;
+ROLLBACK;  -- 방금 DELETE를 취소 (삭제 안 됨)
+```
+<!-- /dbms:mysql -->
+
+<!-- dbms:oracle -->
+```sql
+-- Oracle: DML 실행 시 트랜잭션이 자동으로 시작됨 (BEGIN 불필요)
+UPDATE employees SET salary = 7000 WHERE id = 2;
+COMMIT;    -- 변경을 확정 (영구 저장)
+
+-- 되돌리기 예시
+DELETE FROM employees WHERE id = 2;
+ROLLBACK;  -- 방금 DELETE를 취소 (삭제 안 됨)
+```
+<!-- /dbms:oracle -->
 
 > **자동 커밋(autocommit) 차이**: MySQL과 PostgreSQL의 기본 클라이언트는 대개 각 문장을 자동으로 커밋합니다. `BEGIN`으로 트랜잭션을 열면 `COMMIT` 전까지 확정되지 않습니다. Oracle의 SQL*Plus는 DML이 자동 커밋되지 않으므로 반드시 `COMMIT`을 실행해야 저장됩니다. **DDL(CREATE/ALTER/DROP)은 Oracle·MySQL에서 자동 커밋되어 ROLLBACK으로 되돌릴 수 없다**는 점도 기억하세요.
 
@@ -149,5 +177,7 @@ ALTER TABLE employees ADD COLUMN hire_date DATE;
 - [ ] SELECT에 WHERE, ORDER BY, LIKE를 붙여 원하는 데이터를 걸러 낼 수 있다.
 - [ ] UPDATE와 DELETE에서 WHERE를 빠뜨리면 안 되는 이유를 안다.
 - [ ] BEGIN / COMMIT / ROLLBACK으로 트랜잭션을 제어할 수 있다.
+<!-- dbms:oracle -->
 - [ ] Oracle SQL*Plus에서 DML 후 COMMIT을 해야 저장된다는 점을 안다.
+<!-- /dbms:oracle -->
 - [ ] DDL은 대부분 자동 커밋되어 되돌릴 수 없다는 점을 안다.

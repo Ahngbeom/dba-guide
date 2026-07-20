@@ -34,6 +34,7 @@
 이 장은 명령어보다 **프로세스·템플릿**이 핵심이다. 다만 대응 중 자주 쓰는 진단 명령을 정리한다(모두 읽기 전용, 안전).
 
 ### 실시간 장애 진단 (읽기 전용)
+<!-- dbms:postgresql -->
 ```sql
 -- PostgreSQL: 현재 활성 쿼리·블로킹 확인
 SELECT pid, state, wait_event_type, now()-query_start AS runtime, query
@@ -44,31 +45,55 @@ FROM pg_locks bl JOIN pg_locks blg ON bl.transactionid = blg.transactionid ...;
 -- 복제 지연
 SELECT pg_wal_lsn_diff(pg_current_wal_lsn(), replay_lsn) FROM pg_stat_replication;
 ```
+<!-- /dbms:postgresql -->
+
+<!-- dbms:mysql -->
 ```sql
 -- MySQL: 실행 중/블로킹
 SELECT * FROM performance_schema.processlist WHERE command <> 'Sleep';
 SELECT * FROM sys.innodb_lock_waits;      -- 락 대기 관계
 SHOW REPLICA STATUS\G                     -- Seconds_Behind_Source
 ```
+<!-- /dbms:mysql -->
+
+<!-- dbms:oracle -->
 ```sql
 -- Oracle: 활성 세션·대기 이벤트
 SELECT sid, event, seconds_in_wait, sql_id FROM v$session WHERE status='ACTIVE';
 SELECT * FROM v$session_blockers;         -- 블로킹 세션
 ```
+<!-- /dbms:oracle -->
 
 ### 긴급 완화 조치 (신중히, 승인하에)
+폭주하는 특정 세션만 종료한다(전체 재시작보다 피해가 작다).
+
+<!-- dbms:postgresql -->
 ```sql
--- 폭주하는 특정 세션만 종료 (전체 재시작보다 피해 작음)
-SELECT pg_terminate_backend(<pid>);        -- PostgreSQL
-KILL <processlist_id>;                      -- MySQL
-ALTER SYSTEM KILL SESSION '<sid>,<serial#>';-- Oracle
+-- PostgreSQL: 특정 세션 종료
+SELECT pg_terminate_backend(<pid>);
 ```
+<!-- /dbms:postgresql -->
+
+<!-- dbms:mysql -->
+```sql
+-- MySQL: 특정 세션 종료
+KILL <processlist_id>;
+```
+<!-- /dbms:mysql -->
+
+<!-- dbms:oracle -->
+```sql
+-- Oracle: 특정 세션 종료
+ALTER SYSTEM KILL SESSION '<sid>,<serial#>';
+```
+<!-- /dbms:oracle -->
 
 ---
 
 ## 3. 실습 예제
 
-### 시나리오: "프로덕션 DB CPU 100%, 애플리케이션 전면 5xx"
+<!-- dbms:postgresql -->
+### 시나리오: "프로덕션 DB CPU 100%, 애플리케이션 전면 5xx" (PostgreSQL 기준)
 
 **탐지(0~2분)**: 증상 알림(에러율 급증 + p99 지연 폭증)이 온콜을 페이징. 온콜은 즉시 인시던트를 선언하고 대응 채널을 연다.
 
@@ -125,6 +150,7 @@ ALTER SYSTEM KILL SESSION '<sid>,<serial#>';-- Oracle
 ## 비난 없음(Blameless) 노트
 개인의 실수가 아니라, 대량 적재 시 통계 갱신을 강제하지 못한 파이프라인 설계의 문제로 본다.
 ```
+<!-- /dbms:postgresql -->
 
 > **트레이드오프 메모**: 완벽한 근본 원인 규명과 빠른 완화는 종종 충돌한다. 원칙은 **"먼저 피 흘림을 멈추고(mitigate), 원인은 나중에 파헤친다(investigate)"**. 단, 완화가 데이터 손상 위험을 키운다면(예: 무분별한 재시작) 신중해야 한다. 또한 포스트모템 액션아이템은 **담당자·기한이 없으면 실행되지 않는다** — "개선하겠다"가 아니라 추적 가능한 티켓으로 만들어야 회고가 의미를 갖는다.
 

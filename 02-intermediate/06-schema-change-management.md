@@ -18,14 +18,21 @@
 
 전통적으로 `ALTER TABLE`은 테이블에 강한 락을 걸어, 큰 테이블에서는 변경 동안 읽기/쓰기가 막히는 서비스 중단을 유발했다. **온라인 DDL**은 변경 중에도 테이블에 대한 DML을 허용해 무중단으로 스키마를 바꾼다.
 
+<!-- dbms:mysql -->
 - **MySQL 8.0**: `ALGORITHM=INSTANT`(메타데이터만 수정, 컬럼 추가 등 즉시), `INPLACE`(테이블 복사 없이 변경), `COPY`(전체 복사, 락). 대안으로 `pt-online-schema-change`, `gh-ost`(트리거/binlog 기반 무중단 변경).
+<!-- /dbms:mysql -->
+<!-- dbms:postgresql -->
 - **PostgreSQL**: `CREATE INDEX CONCURRENTLY`, `ADD COLUMN`(기본값 있는 컬럼도 11+부터 메타데이터만 수정), `ALTER TABLE ... VALIDATE CONSTRAINT`를 분리해 락 시간 최소화.
+<!-- /dbms:postgresql -->
+<!-- dbms:oracle -->
 - **Oracle**: `ALTER TABLE ... ADD ... ONLINE`, `CREATE INDEX ... ONLINE`, `DBMS_REDEFINITION`(온라인 테이블 재정의).
+<!-- /dbms:oracle -->
 
 ## 주요 명령어/문법
 
 ### 무중단 인덱스/컬럼 추가
 
+<!-- dbms:postgresql -->
 **PostgreSQL**
 ```sql
 -- 락을 거의 걸지 않고 인덱스 생성(빌드 중 쓰기 허용)
@@ -38,7 +45,9 @@ ALTER TABLE orders ADD COLUMN priority int NOT NULL DEFAULT 0;
 ALTER TABLE orders ADD CONSTRAINT chk_amount CHECK (amount >= 0) NOT VALID;
 ALTER TABLE orders VALIDATE CONSTRAINT chk_amount;
 ```
+<!-- /dbms:postgresql -->
 
+<!-- dbms:mysql -->
 **MySQL**
 ```sql
 -- 즉시 컬럼 추가(메타데이터만)
@@ -50,12 +59,15 @@ ALTER TABLE orders ADD INDEX idx_status (status), ALGORITHM=INPLACE, LOCK=NONE;
 -- 트리거 기반 무중단 도구
 -- pt-online-schema-change --alter "ADD COLUMN priority INT" D=db,t=orders --execute
 ```
+<!-- /dbms:mysql -->
 
+<!-- dbms:oracle -->
 **Oracle**
 ```sql
 ALTER TABLE orders ADD (priority NUMBER DEFAULT 0 NOT NULL);
 CREATE INDEX idx_status ON orders (status) ONLINE;
 ```
+<!-- /dbms:oracle -->
 
 ### Flyway 사용 흐름
 
@@ -109,6 +121,8 @@ ALTER TABLE users ALTER COLUMN signup_source SET NOT NULL;   -- 값이 다 차 �
 - [ ] 이미 적용된 마이그레이션 파일을 수정하면 안 되는 이유(체크섬)를 안다.
 - [ ] 전통적 `ALTER TABLE`이 왜 서비스 중단을 유발하는지, 온라인 DDL이 이를 어떻게 해결하는지 설명할 수 있다.
 - [ ] 각 DBMS의 온라인 DDL 옵션(`CONCURRENTLY`, `ALGORITHM=INSTANT/INPLACE`, `ONLINE`)을 안다.
+<!-- dbms:mysql -->
 - [ ] `pt-online-schema-change`/`gh-ost` 같은 무중단 변경 도구의 존재와 용도를 안다.
+<!-- /dbms:mysql -->
 - [ ] 확장 → 백필 → 정리 패턴으로 무중단 컬럼/제약 변경을 설계할 수 있다.
 - [ ] 스키마 변경의 리뷰·하위 호환·롤백·순차 적용 프로세스를 설명할 수 있다.

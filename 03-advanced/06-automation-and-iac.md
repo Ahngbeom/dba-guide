@@ -26,6 +26,7 @@ DB 인프라를 사람이 콘솔에서 클릭으로 만드는 방식은 세 가�
 
 ## 2. 주요 명령어/문법
 
+<!-- dbms:postgresql -->
 ### Terraform — RDS PostgreSQL 예시
 ```hcl
 resource "aws_db_parameter_group" "pg16" {
@@ -96,6 +97,153 @@ resource "google_sql_database_instance" "prod" {
   }
 }
 ```
+<!-- /dbms:postgresql -->
+
+<!-- dbms:mysql -->
+### Terraform — RDS MySQL 예시
+```hcl
+resource "aws_db_parameter_group" "mysql80" {
+  family = "mysql8.0"
+  parameter { name = "slow_query_log"     value = "1" }    # 느린 쿼리 로깅
+  parameter { name = "long_query_time"    value = "0.5" }
+  parameter { name = "max_connections"    value = "500" }
+}
+
+resource "aws_db_instance" "prod" {
+  identifier              = "proddb"
+  engine                  = "mysql"
+  engine_version          = "8.0.36"
+  instance_class          = "db.r6g.2xlarge"
+  allocated_storage       = 500
+  multi_az                = true                 # 02장 HA
+  storage_encrypted       = true                 # 05장 저장 암호화
+  kms_key_id              = aws_kms_key.rds.arn
+  backup_retention_period = 14                    # 03장 DR 기반
+  parameter_group_name    = aws_db_parameter_group.mysql80.name
+  deletion_protection     = true                  # 파괴적 작업 가드
+  lifecycle { prevent_destroy = true }
+}
+```
+```bash
+terraform plan     # 드라이런: 무엇이 바뀌는지 먼저 확인 (필수 습관)
+terraform apply    # 승인 후 적용
+```
+
+### Ansible — 셀프 매니지드 MySQL 구성 (멱등적)
+```yaml
+- hosts: db_servers
+  become: true
+  tasks:
+    - name: MySQL 설치
+      ansible.builtin.package:
+        name: mysql-server
+        state: present            # 이미 있으면 변경 없음 (멱등)
+
+    - name: my.cnf 배포
+      ansible.builtin.template:
+        src: my.cnf.j2
+        dest: /etc/mysql/my.cnf
+      notify: restart mysql        # 변경 시에만 재시작
+
+    - name: 복제 계정 생성
+      community.mysql.mysql_user:
+        name: replicator
+        priv: "*.*:REPLICATION SLAVE"
+        password: "{{ vault_replicator_pw }}"   # 비밀은 Vault에서 주입
+  handlers:
+    - name: restart mysql
+      ansible.builtin.service: { name: mysql, state: restarted }
+```
+```bash
+ansible-playbook site.yml --check --diff   # 드라이런
+ansible-playbook site.yml                  # 적용
+```
+
+### GCP (gcloud + Terraform 동등)
+```hcl
+resource "google_sql_database_instance" "prod" {
+  name             = "proddb"
+  database_version = "MYSQL_8_0"
+  settings {
+    tier = "db-custom-8-32768"
+    availability_type = "REGIONAL"     # HA
+    backup_configuration { enabled = true  binary_log_enabled = true }
+  }
+}
+```
+<!-- /dbms:mysql -->
+
+<!-- dbms:oracle -->
+### Terraform — RDS Oracle 예시
+```hcl
+resource "aws_db_parameter_group" "oracle19" {
+  family = "oracle-ee-19"
+  parameter { name = "audit_trail"   value = "DB,EXTENDED" }   # 감사 로깅 (05장)
+  parameter { name = "open_cursors"  value = "1000" }
+  parameter { name = "processes"     value = "1000" }
+}
+
+resource "aws_db_instance" "prod" {
+  identifier              = "proddb"
+  engine                  = "oracle-ee"
+  engine_version          = "19.0.0.0.ru-2024-01.rur-2024-01.r1"
+  license_model           = "bring-your-own-license"   # 또는 license-included
+  instance_class          = "db.r6i.2xlarge"
+  allocated_storage       = 500
+  multi_az                = true                 # 02장 HA (Data Guard 대신 RDS Multi-AZ)
+  storage_encrypted       = true                 # 05장 저장 암호화
+  kms_key_id              = aws_kms_key.rds.arn
+  backup_retention_period = 14                    # 03장 DR 기반
+  parameter_group_name    = aws_db_parameter_group.oracle19.name
+  deletion_protection     = true                  # 파괴적 작업 가드
+  lifecycle { prevent_destroy = true }
+}
+```
+```bash
+terraform plan     # 드라이런: 무엇이 바뀌는지 먼저 확인 (필수 습관)
+terraform apply    # 승인 후 적용
+```
+
+> **RDS Oracle과 Ansible**: RDS는 매니지드 서비스라 OS 접근이 막혀 있어(SSH 불가) Ansible로 구성할 대상 자체가 없다 — 파라미터·옵션 그룹까지가 Terraform의 몫이고 그 이상은 RDS API/콘솔로만 다룬다. 아래는 **EC2에 셀프 매니지드로 설치하는 경우**(면허를 직접 들고 온 온프레미스 이관·RAC 구성 등)의 예시다.
+
+### Ansible — 셀프 매니지드 Oracle 구성 (EC2, 멱등적)
+```yaml
+- hosts: db_servers
+  become: true
+  tasks:
+    - name: 사일런트 설치 응답 파일 배포
+      ansible.builtin.template:
+        src: db_install.rsp.j2
+        dest: /tmp/db_install.rsp
+
+    - name: Oracle Database 사일런트 설치 (이미 설치돼 있으면 스킵)
+      ansible.builtin.command:
+        cmd: /u01/stage/database/runInstaller -silent -responseFile /tmp/db_install.rsp
+      args:
+        creates: /u01/app/oracle/product/19.0.0/dbhome_1/bin/sqlplus   # 멱등성 보장
+
+    - name: listener.ora 배포
+      ansible.builtin.template:
+        src: listener.ora.j2
+        dest: /u01/app/oracle/product/19.0.0/dbhome_1/network/admin/listener.ora
+      notify: restart listener
+
+    - name: 복제(스탠바이) 계정 생성
+      community.general.oracle_user:
+        username: replicator
+        password: "{{ vault_replicator_pw }}"   # 비밀은 Vault에서 주입
+        state: present
+  handlers:
+    - name: restart listener
+      ansible.builtin.command: lsnrctl reload
+```
+```bash
+ansible-playbook site.yml --check --diff   # 드라이런
+ansible-playbook site.yml                  # 적용
+```
+
+> GCP Cloud SQL은 PostgreSQL/MySQL만 지원하며 매니지드 Oracle 상품은 제공하지 않는다 — Oracle을 GCP에서 쓰려면 Bare Metal Solution 등 별도 트랙이 필요하므로 여기서는 다루지 않는다.
+<!-- /dbms:oracle -->
 
 ---
 

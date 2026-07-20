@@ -18,16 +18,26 @@ Kubernetes의 `StatefulSet`은 안정적인 네트워크 식별자(파드 이름
 
 Operator는 이 도메인 지식을 컨트롤러 코드에 담아, `StatefulSet` 위에 클러스터 부트스트랩·페일오버·백업까지 자동화한다.
 
+<!-- dbms:mysql -->
 ### 대표 MySQL Operator 비교
 
 - **Percona XtraDB Cluster Operator**: Percona XtraDB Cluster(Galera 기반 **멀티 프라이머리** 동기 복제)를 운영한다. 오픈소스이며 커뮤니티/실무 채택 사례가 많고, 백업·스케일링·TLS까지 CR로 선언한다.
 - **Oracle MySQL Operator**: MySQL InnoDB Cluster(**Group Replication** 기반, 보통 단일 프라이머리 + 세컨더리 구성)를 운영한다. Oracle이 공식 배포하며 MySQL Shell/Router와 통합이 자연스럽다.
 
 두 Operator는 같은 "MySQL을 Kubernetes에서 운영한다"는 목표를 갖지만, **복제 방식(멀티 프라이머리 동기 복제 vs 단일 프라이머리 Group Replication)**이 근본적으로 달라 장애 시 동작과 데이터 일관성 보장 수준이 다르다.
+<!-- /dbms:mysql -->
 
+<!-- dbms:postgresql -->
 ### PostgreSQL 진영도 같은 패턴을 따른다
 
-PostgreSQL 생태계에서는 **CloudNativePG**가 가장 활발한 Operator다. `Cluster` CRD로 프라이머리/스탠바이 구성, 자동 페일오버, 백업(WAL 아카이빙 포함)을 선언적으로 관리한다는 점에서 MySQL Operator들과 동일한 철학을 공유한다. Oracle은 라이선스 구조상 커뮤니티 Operator 생태계가 사실상 없다 — 컨테이너/K8s 운영이 필요하면 Oracle은 보통 매니지드 서비스(RDS for Oracle 등)나 전통적인 VM 기반 운영을 택한다.
+PostgreSQL 생태계에서는 **CloudNativePG**가 가장 활발한 Operator다. `Cluster` CRD로 프라이머리/스탠바이 구성, 자동 페일오버, 백업(WAL 아카이빙 포함)을 선언적으로 관리한다는 점에서 MySQL Operator들과 동일한 철학을 공유한다.
+<!-- /dbms:postgresql -->
+
+<!-- dbms:oracle -->
+### Oracle 진영은 다르다
+
+Oracle은 라이선스 구조상 커뮤니티 Operator 생태계가 사실상 없다 — 컨테이너/K8s 운영이 필요하면 Oracle은 보통 매니지드 서비스(RDS for Oracle 등)나 전통적인 VM 기반 운영을 택한다. 그래서 이 챕터의 실습 예제는 Oracle DBMS 자체에는 적용되지 않는다.
+<!-- /dbms:oracle -->
 
 ### 트레이드오프
 
@@ -35,6 +45,7 @@ PostgreSQL 생태계에서는 **CloudNativePG**가 가장 활발한 Operator다.
 
 ## 2. 주요 명령어/문법
 
+<!-- dbms:mysql -->
 ### Percona XtraDB Cluster Operator (MySQL, Galera)
 
 ```bash
@@ -109,7 +120,9 @@ kubectl apply -f innodbcluster.yaml
 kubectl get innodbcluster
 kubectl get pods -l component=mysqld
 ```
+<!-- /dbms:mysql -->
 
+<!-- dbms:postgresql -->
 ### PostgreSQL — CloudNativePG (병기)
 
 ```yaml
@@ -128,8 +141,10 @@ spec:
 kubectl apply -f pg-cluster.yaml
 kubectl get cluster
 ```
+<!-- /dbms:postgresql -->
 
-### 공통: 접속과 페일오버 관찰
+<!-- dbms:mysql -->
+### 접속과 페일오버 관찰 (MySQL Operator 기준)
 
 ```bash
 # 서비스 경유 접속 (클러스터 내부 DNS)
@@ -142,9 +157,11 @@ kubectl port-forward svc/my-cluster-haproxy 3306:3306
 # 프라이머리 파드를 강제 종료해 자동 페일오버 유발 (테스트/드릴)
 kubectl delete pod my-cluster-pxc-0
 ```
+<!-- /dbms:mysql -->
 
 ## 3. 실습 예제
 
+<!-- dbms:mysql -->
 **시나리오: "Kubernetes 클러스터 위에 3노드 MySQL(Galera) 클러스터를 Percona Operator로 구축하고, 파드 장애 시 자동 페일오버를 확인한 뒤 접속과 백업까지 수행한다."**
 
 1. **Operator 설치**: `helm install pxc-operator percona/pxc-operator -n pxc --create-namespace`로 클러스터 전체를 관리할 Operator를 배포한다.
@@ -160,8 +177,11 @@ kubectl delete pod my-cluster-pxc-0
 6. **백업 실행**: 위 `PerconaXtraDBClusterBackup` CR을 `kubectl apply`해 온디맨드 백업을 수행하고, `kubectl get pxc-backup`으로 완료 여부를 확인한다.
 
 **Oracle MySQL Operator 대응 요약**: 동일한 목표를 `InnoDBCluster` CR로 구성할 수 있다. 다만 Group Replication은 단일 프라이머리 구조라, 프라이머리 파드를 강제 종료하면 남은 세컨더리 중 하나가 새 프라이머리로 **선출**되는 과정(수 초의 쓰기 불가 구간 발생)을 거친다. Galera의 멀티 프라이머리 구조와 달리 "어느 노드로 쓰기가 가능한가"가 페일오버 전후로 바뀐다는 점을 애플리케이션(또는 MySQL Router)이 인지해야 한다.
+<!-- /dbms:mysql -->
 
+<!-- dbms:postgresql -->
 **PostgreSQL(CloudNativePG) 대응**: 위 `pg-cluster.yaml`(instances: 3)로 동일한 패턴을 적용하면, CloudNativePG가 스트리밍 복제 기반 프라이머리/스탠바이를 구성하고 프라이머리 파드 장애 시 자동으로 스탠바이를 승격시킨다. 백업은 별도 `Backup` CR 또는 지속적 WAL 아카이빙 설정으로 구성한다.
+<!-- /dbms:postgresql -->
 
 > **트레이드오프 메모**: 클라우드 매니지드 DB(02-intermediate/08장)는 이 모든 것을 클라우드가 대신 해주지만 특정 벤더에 묶인다. Kubernetes Operator는 어떤 클라우드/온프레미스에서도 동일한 방식으로 동작하지만, 스토리지 성능·리소스 튜닝·업그레이드 절차를 팀이 직접 책임져야 한다. "이미 K8s 위에서 애플리케이션을 운영 중이고, 멀티/하이브리드 클라우드 이식성이 중요한 조직"에 특히 유리하다.
 
@@ -169,9 +189,13 @@ kubectl delete pod my-cluster-pxc-0
 
 - [ ] CRD + reconcile loop 기반 Operator 패턴이 Terraform/Ansible의 one-shot 실행과 어떻게 다른지 설명할 수 있다.
 - [ ] `StatefulSet`만으로 DB 클러스터 운영이 부족한 이유(부트스트랩·자동 페일오버·백업)를 설명할 수 있다.
+<!-- dbms:mysql -->
 - [ ] Percona XtraDB Cluster Operator로 멀티 노드 MySQL(Galera) 클러스터를 배포할 수 있다.
 - [ ] Percona(Galera, 멀티 프라이머리)와 Oracle MySQL Operator(Group Replication, 단일 프라이머리)의 복제 방식 차이와 페일오버 시 영향을 설명할 수 있다.
+<!-- /dbms:mysql -->
 - [ ] 파드 장애를 주입해 Operator가 자동으로 재생성·재합류시키는 과정을 관찰할 수 있다.
 - [ ] CR 기반으로 온디맨드/스케줄 백업을 구성할 수 있다.
+<!-- dbms:postgresql -->
 - [ ] PostgreSQL 진영의 대응 Operator(CloudNativePG)를 알고, MySQL Operator들과 철학이 같음을 설명할 수 있다.
+<!-- /dbms:postgresql -->
 - [ ] 클라우드 매니지드 DB 대비 Kubernetes Operator 운영의 트레이드오프(운영 부담 vs 이식성)를 설명할 수 있다.
