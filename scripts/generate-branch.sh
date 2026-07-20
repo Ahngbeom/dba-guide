@@ -66,8 +66,11 @@ Done. Review the result:
   cd "${worktree_dir}"
   git log -1 --stat
 
-Push when you're happy with it:
-  git -C "${worktree_dir}" push origin ${target}
+Push when you're happy with it (force-with-lease is expected here: this
+branch is a derived view that gets reset to a fresh commit rooted at
+main's current tip on every regeneration, so it's almost never a
+fast-forward of what's already on origin after the first push):
+  git -C "${worktree_dir}" push --force-with-lease origin ${target}
 
 Clean up the worktree when done:
   git worktree remove "${worktree_dir}"

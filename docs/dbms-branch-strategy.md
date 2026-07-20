@@ -53,7 +53,7 @@ CREATE ROLE app_user WITH LOGIN PASSWORD 'secret123';
 2. `git worktree add ../<repo>-<dbms> -B <dbms> main` — 별도 워크트리에 `main` 기준으로 브랜치를 새로 만들거나 재설정한다. 현재 체크아웃 중인 브랜치는 건드리지 않는다.
 3. 워크트리의 모든 `*.md` 파일에 `scripts/filter_dbms.py`를 적용해 대상 DBMS가 아닌 마커 블록을 제거한다. 마커가 없는 파일은 바이트 단위로 그대로 남는다.
 4. 변경 사항을 그 워크트리에 커밋한다.
-5. **push는 스크립트가 하지 않는다.** 결과를 검토한 뒤 안내된 명령으로 직접 push한다.
+5. **push는 스크립트가 하지 않는다.** 결과를 검토한 뒤 안내된 명령으로 직접 push한다. 매번 main의 현재 시점에서 새로 재생성되는 브랜치라 첫 push 이후로는 fast-forward가 아닌 경우가 대부분이다 — `git push --force-with-lease origin <dbms>`를 쓴다.
 
 ## 챕터별 마킹 진행 상황
 
