@@ -1,0 +1,87 @@
+{
+  "chapter": "01-beginner/04-user-and-privilege-management.md",
+  "title": "04. 사용자와 권한 관리",
+  "questions": [
+    {
+      "id": "priv-role-concept",
+      "type": "mcq",
+      "dbms": "neutral",
+      "q": "여러 권한을 하나로 묶어 여러 사용자에게 한 번에 부여할 수 있게 해 주는 것은?",
+      "choices": ["역할(Role)", "사용자(User)", "권한(Privilege)", "스키마(Schema)"],
+      "answer": 0,
+      "hint": "권한들의 '꾸러미'에 해당하는 개념입니다.",
+      "explain": "역할(Role)은 권한의 묶음이다. '읽기전용 역할'을 만들어 여러 사용자에게 부여하면 관리가 편하다."
+    },
+    {
+      "id": "priv-least-privilege",
+      "type": "mcq",
+      "dbms": "neutral",
+      "q": "'최소 권한 원칙(Principle of Least Privilege)'을 가장 잘 설명한 것은?",
+      "choices": [
+        "각 사용자에게 꼭 필요한 만큼의 권한만 부여한다",
+        "모든 사용자에게 관리자 권한을 부여한다",
+        "권한은 역할로만 부여해야 한다",
+        "사용자 수를 최소로 유지한다"
+      ],
+      "answer": 0,
+      "hint": "'최소'가 가리키는 대상이 사용자 수인지 권한 범위인지 생각해 보세요.",
+      "explain": "최소 권한 원칙은 필요한 만큼만 권한을 주어 실수·해킹으로 인한 피해를 최소화하는 것이다. 예: 조회만 하는 계정에는 SELECT만."
+    },
+    {
+      "id": "priv-grant-select-insert",
+      "type": "short",
+      "dbms": "neutral",
+      "q": "사용자 app_user에게 employees 테이블의 SELECT, INSERT 권한을 부여하는 SQL을 작성하시오.",
+      "accept": ["grant select, insert on employees to app_user", "grant select,insert on employees to app_user"],
+      "hint": "권한 부여는 GRANT ... ON ... TO ... 형식입니다.",
+      "explain": "GRANT SELECT, INSERT ON employees TO app_user;"
+    },
+    {
+      "id": "priv-revoke-insert",
+      "type": "short",
+      "dbms": "neutral",
+      "q": "app_user에게서 employees 테이블의 INSERT 권한을 회수하는 SQL을 작성하시오.",
+      "accept": ["revoke insert on employees from app_user"],
+      "hint": "권한 회수는 부여(GRANT)의 반대 명령이며 ... FROM ... 형식입니다.",
+      "explain": "REVOKE INSERT ON employees FROM app_user;"
+    },
+    {
+      "id": "priv-oracle-create-session",
+      "type": "mcq",
+      "dbms": "oracle",
+      "q": "Oracle에서 CREATE USER로 계정을 만든 뒤, 그 계정이 '접속'하려면 추가로 필요한 권한은?",
+      "choices": ["CREATE SESSION", "CREATE TABLE", "CONNECT DATABASE", "LOGIN"],
+      "answer": 0,
+      "hint": "'세션을 여는' 권한이 따로 있어야 로그인이 됩니다.",
+      "explain": "Oracle은 계정을 만들어도 CREATE SESSION 권한이 없으면 접속조차 되지 않는다. 다른 DBMS와 크게 다른 점이다."
+    },
+    {
+      "id": "priv-mysql-account-form",
+      "type": "mcq",
+      "dbms": "mysql",
+      "q": "MySQL에서 계정을 식별하는 형태로 옳은 것은?",
+      "choices": ["'사용자'@'접속허용호스트'", "사용자.호스트", "사용자@도메인", "사용자:포트"],
+      "answer": 0,
+      "hint": "MySQL 계정은 사용자 이름 + 접속을 허용하는 호스트의 조합입니다.",
+      "explain": "MySQL 계정은 `'app_user'@'localhost'`처럼 사용자와 접속 허용 호스트의 조합으로 식별된다. 호스트가 다르면 같은 이름도 별개 계정이다."
+    },
+    {
+      "id": "priv-concepts-essay",
+      "type": "essay",
+      "dbms": "neutral",
+      "q": "사용자(User), 권한(Privilege), 역할(Role)의 개념을 각각 한 문장으로 설명하시오.",
+      "reference": "사용자는 데이터베이스에 접속하는 주체(사람 또는 애플리케이션)이고, 권한은 특정 작업(예: SELECT)을 할 수 있는 자격이며, 역할은 여러 권한을 하나로 묶은 꾸러미로 여러 사용자에게 한 번에 부여할 수 있다.",
+      "hint": "누가(주체), 무엇을 할 자격, 그 자격들의 묶음 — 세 가지로 나눠 보세요.",
+      "keywords": ["사용자", "권한", "역할", "묶음"]
+    },
+    {
+      "id": "priv-least-why-essay",
+      "type": "essay",
+      "dbms": "neutral",
+      "q": "통계 조회만 하는 프로그램 계정에 DELETE 권한을 주지 않는 것이 왜 바람직한지 최소 권한 원칙 관점에서 설명하시오.",
+      "reference": "필요하지 않은 DELETE 권한을 주면, 프로그램 버그나 계정 탈취 시 데이터가 삭제되는 피해로 이어질 수 있다. 조회만 필요한 계정에 SELECT만 부여하면 실수·해킹으로 인한 피해 범위를 최소화할 수 있다.",
+      "hint": "필요 없는 권한이 있으면 버그나 해킹 때 무슨 일이 벌어질지 생각해 보세요.",
+      "keywords": ["필요한 만큼", "피해", "최소화", "삭제"]
+    }
+  ]
+}
