@@ -1,0 +1,132 @@
+{
+  "chapter": "02-intermediate/08-cloud-managed-db-basics.md",
+  "title": "08. 클라우드 관리형 DB 기초",
+  "questions": [
+    {
+      "id": "cloud-multiaz-vs-replica",
+      "type": "mcq",
+      "dbms": "neutral",
+      "q": "Multi-AZ 구성과 읽기 전용 복제본(Read Replica)의 차이로 옳은 것은?",
+      "choices": [
+        "Multi-AZ는 장애 시 자동 failover를 위한 대기 인스턴스이고, Read Replica는 조회 트래픽 확장을 위한 것이다",
+        "Multi-AZ는 읽기 확장용, Read Replica는 고가용성용이다",
+        "둘 다 조회 트래픽을 분산하는 같은 기능의 다른 이름이다",
+        "Multi-AZ 대기 인스턴스로는 항상 조회를 보낼 수 있다"
+      ],
+      "answer": 0,
+      "hint": "하나는 '죽었을 때 대신 일어서는 것', 다른 하나는 '평소에 조회를 나눠 받는 것'입니다.",
+      "explain": "Multi-AZ는 다른 AZ의 대기 인스턴스로 자동 failover하는 HA 수단이고, Read Replica는 읽기 확장을 위한 별개 기능이다. 목적이 다르므로 필요하면 함께 구성한다."
+    },
+    {
+      "id": "cloud-parameter-group",
+      "type": "mcq",
+      "dbms": "neutral",
+      "q": "관리형 DB에서 `postgresql.conf` 같은 설정 파일을 직접 수정하지 못할 때 설정을 바꾸는 방법과 주의점은?",
+      "choices": [
+        "파라미터 그룹(RDS)/데이터베이스 플래그(Cloud SQL)로 변경하며, static 파라미터는 재부팅이 필요하다",
+        "SSH로 접속해 설정 파일을 직접 고친다",
+        "모든 파라미터는 항상 즉시 반영되므로 재부팅이 필요 없다",
+        "설정 변경은 불가능하므로 인스턴스를 다시 만들어야 한다"
+      ],
+      "answer": 0,
+      "hint": "설정 묶음을 콘솔·CLI로 관리합니다. 그중 일부는 즉시 반영되지 않는다는 점이 함정입니다.",
+      "explain": "RDS는 파라미터 그룹, Cloud SQL은 데이터베이스 플래그로 설정을 관리한다. shared_buffers 같은 static 파라미터는 변경 후 재부팅이 필요하므로 유지보수 창을 활용한다."
+    },
+    {
+      "id": "cloud-shared-responsibility",
+      "type": "mcq",
+      "dbms": "neutral",
+      "q": "관리형 DB를 써도 여전히 DBA의 책임으로 남는 영역은?",
+      "choices": [
+        "인덱스·쿼리 최적화, 파라미터 튜닝, 용량 계획, 비용 관리, 보안 설정",
+        "하드웨어 프로비저닝",
+        "OS 보안 패치",
+        "물리 서버의 전원·냉각 관리"
+      ],
+      "answer": 0,
+      "hint": "클라우드가 대신해 주는 것은 '인프라 반복 작업'입니다. 데이터와 워크로드에 대한 판단은 누구 몫일까요?",
+      "explain": "공유 책임 모델에서 하드웨어·OS 패치·백업 자동화·failover는 제공자가 맡지만, 스키마·쿼리·파라미터·용량·비용·보안 설정은 여전히 DBA 몫이다."
+    },
+    {
+      "id": "cloud-minor-vs-major",
+      "type": "mcq",
+      "dbms": "neutral",
+      "q": "마이너 버전 업그레이드(예: 15.4 → 15.5)에 대한 설명으로 옳은 것은?",
+      "choices": [
+        "보안·버그 수정 위주라 자동 적용이나 유지보수 창 수행이 가능하지만, 메이저 업그레이드는 별도 절차와 테스트가 필요하다",
+        "마이너와 메이저 업그레이드는 같은 절차로 처리하면 된다",
+        "마이너 업그레이드는 데이터가 모두 삭제되므로 백업이 필수다",
+        "마이너 업그레이드는 반드시 인스턴스를 새로 만들어 이관해야 한다"
+      ],
+      "answer": 0,
+      "hint": "패치 수준 변경과 세대 변경(15 → 16)은 위험도가 다릅니다.",
+      "explain": "마이너 업그레이드는 보안·버그 수정 패치로 유지보수 창이나 즉시 적용으로 처리한다. 메이저 업그레이드(15 → 16)는 호환성 검증과 별도 절차·테스트가 필요하다."
+    },
+    {
+      "id": "cloud-oracle-no-slowlog",
+      "type": "mcq",
+      "dbms": "oracle",
+      "q": "RDS for Oracle에서 느린 쿼리를 관찰하려 할 때 알아 두어야 할 사실은?",
+      "choices": [
+        "PostgreSQL/MySQL 같은 슬로우 쿼리 로그 파라미터가 없으며, AWR/ASH는 별도 라이선스가 필요해 alert·listener 로그와 Performance Insights가 현실적인 1차 수단이다",
+        "slow_query_log 파라미터를 파라미터 그룹에서 켜면 된다",
+        "OS에 SSH로 접속해 trace 파일을 직접 수집하면 된다",
+        "Standard Edition에서도 AWR 리포트를 제한 없이 쓸 수 있다"
+      ],
+      "answer": 0,
+      "hint": "\"Oracle에도 그 파라미터가 있겠지\"라고 가정하고 파라미터 그룹을 뒤지면 헛수고가 됩니다. 라이선스 제약도 함께 생각해 보세요.",
+      "explain": "RDS for Oracle에는 슬로우 쿼리 로그 파라미터 자체가 존재하지 않는다. AWR/ASH 기반 정밀 분석은 Diagnostics Pack 라이선스를 전제로 하므로, 라이선스가 없으면 alert/listener 로그의 CloudWatch 내보내기와 엔진 무관 기능인 Performance Insights가 1차 진단 창구가 된다."
+    },
+    {
+      "id": "cloud-create-snapshot",
+      "type": "short",
+      "dbms": "neutral",
+      "q": "AWS CLI로 RDS 인스턴스의 수동 스냅샷을 만드는 하위 명령은? (옵션 제외, `aws rds ...` 형태로)",
+      "accept": ["aws rds create-db-snapshot", "create-db-snapshot"],
+      "hint": "'DB 스냅샷을 생성한다'는 뜻이 그대로 하위 명령 이름입니다.",
+      "explain": "aws rds create-db-snapshot --db-instance-identifier mydb --db-snapshot-identifier mydb-20260715 — GCP는 gcloud sql backups create --instance=mydb 를 쓴다."
+    },
+    {
+      "id": "cloud-pitr-restore",
+      "type": "short",
+      "dbms": "neutral",
+      "q": "AWS CLI로 RDS 인스턴스를 특정 시점 상태로 복원하는 하위 명령은? (옵션 제외, `aws rds ...` 형태로)",
+      "accept": [
+        "aws rds restore-db-instance-to-point-in-time",
+        "restore-db-instance-to-point-in-time"
+      ],
+      "hint": "'DB 인스턴스를 특정 시점으로 복원한다'는 문장을 하이픈으로 이은 이름입니다.",
+      "explain": "aws rds restore-db-instance-to-point-in-time --source-db-instance-identifier mydb --target-db-instance-identifier mydb-pitr --restore-time ... — 관리형 PITR도 스냅샷 + 트랜잭션 로그로 동작한다. GCP는 gcloud sql instances clone ... --point-in-time 이다."
+    },
+    {
+      "id": "cloud-gcloud-flags",
+      "type": "short",
+      "dbms": "neutral",
+      "q": "gcloud로 Cloud SQL 인스턴스의 데이터베이스 플래그를 변경할 때 쓰는 명령은? (플래그 값은 제외하고 명령 부분만)",
+      "accept": [
+        "gcloud sql instances patch",
+        "sql instances patch"
+      ],
+      "hint": "기존 인스턴스의 설정을 '부분 수정'한다는 뜻의 동사가 하위 명령입니다.",
+      "explain": "gcloud sql instances patch mydb --database-flags max_connections=500,... — AWS라면 파라미터 그룹을 수정하고 인스턴스에 적용한다."
+    },
+    {
+      "id": "cloud-monitoring-essay",
+      "type": "essay",
+      "dbms": "neutral",
+      "q": "관리형 DB를 운영하며 어떤 지표를 수집하고 어떻게 알람을 설계할지 서술하시오.",
+      "reference": "CloudWatch(AWS)나 Cloud Monitoring(GCP)으로 CPU, 커넥션 수, IOPS, 여유 스토리지, 복제 지연 같은 핵심 지표를 수집한다. 각 지표에 임계값과 평가 기간을 정해 알람을 걸되, 순간적인 스파이크로 오탐이 나지 않도록 여러 주기 연속 초과 시에만 울리도록 설정한다(예: 커넥션 수가 3주기 연속 임계 초과). 쿼리 수준까지 보려면 Enhanced Monitoring이나 Performance Insights를 켜 상위 대기 이벤트와 SQL을 관찰한다. 로그는 CloudWatch Logs로 내보내 슬로우 쿼리를 함께 추적한다.",
+      "hint": "무엇을(지표), 어떤 기준으로(임계값과 지속 시간), 어디까지 깊게(쿼리 수준) 보는지 나눠 서술해 보세요.",
+      "keywords": ["CPU", "커넥션", "스토리지", "알람", "임계"]
+    },
+    {
+      "id": "cloud-cost-essay",
+      "type": "essay",
+      "dbms": "neutral",
+      "q": "관리형 DB의 비용은 무엇으로 구성되며, 낭비를 줄이기 위해 무엇을 점검해야 하는지 서술하시오.",
+      "reference": "비용은 인스턴스 클래스(컴퓨트), 스토리지 용량, 프로비저닝된 IOPS, 백업·스냅샷 보관, 데이터 전송으로 구성된다. 낭비를 줄이려면 실제 사용률 대비 과대 프로비저닝된 인스턴스 크기를 주기적으로 재검토하고, 필요 없는 수동 스냅샷과 오래된 백업을 정리하며, 보존 기간을 요구사항에 맞게 조정한다. 사용하지 않는 개발·테스트 인스턴스를 중지하거나 삭제하고, 리전 간 데이터 전송처럼 놓치기 쉬운 항목도 확인한다.",
+      "hint": "청구서를 항목별로 쪼개 보세요. 그리고 각 항목에서 '쓰지도 않는데 돈이 나가는' 지점을 찾아보세요.",
+      "keywords": ["인스턴스", "스토리지", "백업", "전송", "과대 프로비저닝"]
+    }
+  ]
+}

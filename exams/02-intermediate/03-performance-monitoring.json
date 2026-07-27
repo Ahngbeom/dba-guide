@@ -1,0 +1,138 @@
+{
+  "chapter": "02-intermediate/03-performance-monitoring.md",
+  "title": "03. 성능 모니터링",
+  "questions": [
+    {
+      "id": "perf-total-load",
+      "type": "mcq",
+      "dbms": "neutral",
+      "q": "튜닝 우선순위를 정할 때 '총 부하'를 판단하는 올바른 기준은?",
+      "choices": [
+        "호출 횟수 × 평균 실행 시간",
+        "가장 오래 걸린 단 한 번의 실행 시간",
+        "쿼리 텍스트의 길이",
+        "테이블 크기"
+      ],
+      "answer": 0,
+      "hint": "한 번에 아주 느린 쿼리보다, 빠르지만 수만 번 도는 쿼리가 더 큰 문제일 수 있습니다.",
+      "explain": "총 부하 = 호출 횟수 × 평균 시간. 그래서 pg_stat_statements의 total_exec_time, sys.statement_analysis의 total_latency처럼 '합계' 지표로 정렬해 튜닝 대상을 고른다."
+    },
+    {
+      "id": "perf-cache-hit-meaning",
+      "type": "mcq",
+      "dbms": "neutral",
+      "q": "캐시(버퍼) 히트율이 평소보다 크게 낮아졌다면 가장 먼저 의심할 것은?",
+      "choices": [
+        "메모리 부족 또는 비효율 쿼리로 인한 과도한 디스크 읽기",
+        "커넥션 풀 설정이 과하게 큰 것",
+        "인덱스가 너무 많은 것",
+        "트랜잭션 격리 수준이 낮은 것"
+      ],
+      "answer": 0,
+      "hint": "히트율이 낮다는 것은 요청한 데이터를 메모리에서 못 찾고 어디에서 읽어 왔다는 뜻일까요?",
+      "explain": "캐시 히트율은 요청 데이터가 디스크가 아닌 메모리에서 처리된 비율로 보통 99% 이상을 목표로 한다. 낮아지면 메모리 부족이나 인덱스 부재로 인한 대량 물리 읽기를 의심한다."
+    },
+    {
+      "id": "perf-max-connections",
+      "type": "mcq",
+      "dbms": "neutral",
+      "q": "현재 연결 수가 `max_connections`에 근접할 때 벌어지는 일과 권장 대응은?",
+      "choices": [
+        "신규 연결이 거부되므로 커넥션 풀을 도입해 연결 수를 통제한다",
+        "쿼리가 자동으로 느려질 뿐 연결은 계속 받아들인다",
+        "DBMS가 max_connections를 자동으로 늘린다",
+        "복제 지연이 발생하지만 연결에는 문제가 없다"
+      ],
+      "answer": 0,
+      "hint": "상한에 도달하면 더 이상 무엇을 할 수 없게 될지 생각해 보세요. 애플리케이션 쪽에서 연결을 재사용하는 방법이 표준 대응입니다.",
+      "explain": "상한에 도달하면 연결 거부가 발생한다. 애플리케이션마다 연결을 새로 맺지 않도록 커넥션 풀을 두고 재사용하는 것이 권장된다."
+    },
+    {
+      "id": "perf-pg-stat-statements",
+      "type": "mcq",
+      "dbms": "postgresql",
+      "q": "PostgreSQL `pg_stat_statements`가 제공하는 것은?",
+      "choices": [
+        "정규화된 쿼리별 총 실행 시간·호출 횟수·평균 시간의 누적 통계",
+        "현재 실행 중인 쿼리의 실시간 목록만",
+        "테이블별 디스크 사용량",
+        "복제 지연 시간"
+      ],
+      "answer": 0,
+      "hint": "'지금 무엇이 도는가'가 아니라 '그동안 무엇이 얼마나 돌았는가'를 쌓아 두는 도구입니다.",
+      "explain": "pg_stat_statements는 파라미터를 정규화한 쿼리 단위로 호출 횟수·총/평균 실행 시간을 누적해 튜닝 대상 발굴의 1순위 도구다. 실시간 세션 목록은 pg_stat_activity가 담당한다."
+    },
+    {
+      "id": "perf-oracle-awr-ash",
+      "type": "mcq",
+      "dbms": "oracle",
+      "q": "Oracle의 AWR와 ASH를 올바르게 설명한 것은?",
+      "choices": [
+        "AWR는 스냅샷 구간의 성능 리포트를, ASH는 활성 세션 활동 샘플을 제공한다",
+        "AWR는 실시간 세션 샘플, ASH는 일간 백업 리포트다",
+        "둘 다 슬로우 쿼리 로그 파일의 다른 이름이다",
+        "AWR는 무료이고 ASH만 진단 팩 라이선스가 필요하다"
+      ],
+      "answer": 0,
+      "hint": "하나는 '두 시점 사이의 리포트', 다른 하나는 '활성 세션을 계속 표본 추출'하는 것입니다.",
+      "explain": "AWR(Automatic Workload Repository)는 스냅샷 간 성능 리포트를, ASH(Active Session History)는 세션 활동 샘플을 제공한다. 둘 다 진단 팩 라이선스가 필요하며 무료 대안은 Statspack이다."
+    },
+    {
+      "id": "perf-pg-slow-log",
+      "type": "short",
+      "dbms": "postgresql",
+      "q": "PostgreSQL에서 실행 시간이 500ms를 넘는 쿼리를 로그에 남기도록 설정하는 `ALTER SYSTEM` 문을 작성하시오.",
+      "accept": [
+        "alter system set log_min_duration_statement = '500ms'",
+        "alter system set log_min_duration_statement='500ms'",
+        "alter system set log_min_duration_statement = 500",
+        "alter system set log_min_duration_statement to '500ms'"
+      ],
+      "hint": "로그로 남길 최소(min) 실행 시간(duration)을 정하는 파라미터입니다. 설정 후에는 pg_reload_conf()로 반영합니다.",
+      "explain": "ALTER SYSTEM SET log_min_duration_statement = '500ms'; 이후 SELECT pg_reload_conf(); 로 재시작 없이 적용한다."
+    },
+    {
+      "id": "perf-mysql-long-query-time",
+      "type": "short",
+      "dbms": "mysql",
+      "q": "MySQL에서 0.5초를 초과하는 쿼리를 슬로우 로그에 기록하도록 임계값을 바꾸는 명령을 작성하시오.",
+      "accept": [
+        "set global long_query_time = 0.5",
+        "set global long_query_time=0.5"
+      ],
+      "hint": "'긴 쿼리로 간주할 시간'을 뜻하는 전역 변수를 SET GLOBAL로 바꿉니다.",
+      "explain": "SET GLOBAL long_query_time = 0.5; — 슬로우 로그 자체는 SET GLOBAL slow_query_log = 'ON'으로 켠다. 분석은 mysqldumpslow나 pt-query-digest로 한다."
+    },
+    {
+      "id": "perf-mysql-threads-connected",
+      "type": "short",
+      "dbms": "mysql",
+      "q": "MySQL에서 현재 연결된 클라이언트 수를 확인하는 상태 변수 조회 명령을 작성하시오.",
+      "accept": [
+        "show status like 'threads_connected'",
+        "show global status like 'threads_connected'",
+        "show status like \"threads_connected\""
+      ],
+      "hint": "SHOW STATUS로 상태 변수를 보되, '연결된 스레드 수'를 뜻하는 변수명을 LIKE로 걸러냅니다.",
+      "explain": "SHOW STATUS LIKE 'Threads_connected'; — 최댓값 이력은 Max_used_connections로 확인해 max_connections 여유를 판단한다."
+    },
+    {
+      "id": "perf-lock-wait-essay",
+      "type": "essay",
+      "dbms": "neutral",
+      "q": "\"특정 화면만 간헐적으로 멈춘다\"는 제보를 받았을 때, 락 경합 여부를 어떻게 진단할지 서술하시오.",
+      "reference": "대기 중인 세션과 그 세션을 막고 있는 세션을 조회해 블로킹 관계를 확인한다. PostgreSQL은 pg_stat_activity의 wait_event_type='Lock'과 pg_locks의 granted 여부를 조인해 blocked/blocking pid를 찾고, MySQL은 sys.innodb_lock_waits나 SHOW ENGINE INNODB STATUS를, Oracle은 v$lock(block=1)과 v$session의 blocking_session을 본다. 대기 세션이 많다면 경합이 있는 것이므로, 원인이 되는 장기 트랜잭션을 찾아 종료하거나 트랜잭션 길이·자원 접근 순서를 고치는 것이 근본 대책이다.",
+      "hint": "'무엇을 기다리는 세션'과 '그것을 쥐고 있는 세션'을 짝지어 보는 것이 출발점입니다.",
+      "keywords": ["대기", "블로킹", "세션", "장기 트랜잭션"]
+    },
+    {
+      "id": "perf-triage-essay",
+      "type": "essay",
+      "dbms": "neutral",
+      "q": "\"오후 2시경 응답이 느려진다\"는 제보를 받았다. 원인 쿼리를 찾기 위한 접근 방법을 순서대로 서술하시오.",
+      "reference": "관측 구간을 문제 시간대로 좁히는 것이 먼저다. 쿼리 통계를 초기화하거나(pg_stat_statements_reset, performance_schema 다이제스트 TRUNCATE) 해당 구간의 AWR 스냅샷을 잡아 둔다. 그다음 총 소요 시간(호출 횟수 × 평균 시간) 기준 상위 쿼리를 뽑고, 의심 쿼리를 EXPLAIN ANALYZE로 분석해 인덱스·쿼리를 튜닝한다. 동시에 커넥션 수와 락 대기·블로킹 세션도 함께 점검해 쿼리 자체가 아니라 경합이나 연결 포화가 원인인 경우를 배제한다.",
+      "hint": "관측 범위를 좁히는 일부터 시작하세요. 그리고 원인이 '쿼리'가 아닐 가능성도 함께 점검해야 합니다.",
+      "keywords": ["구간", "상위 쿼리", "총 부하", "락", "커넥션"]
+    }
+  ]
+}
