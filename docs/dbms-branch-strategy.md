@@ -41,6 +41,8 @@ CREATE ROLE app_user WITH LOGIN PASSWORD 'secret123';
 
 `*-commands-cheatsheet.md`와 `appendix/dbms-comparison-matrix.md`는 DBMS를 열(column)로 둔 비교표다. 애초에 "비교"가 목적인 문서이므로 마커를 넣지 않고 **모든 브랜치에서 원본 그대로 유지**한다. `appendix/glossary.md`도 마찬가지로 필터링 대상이 아니다.
 
+`exams/**/*.json`(학습 점검 문제은행)도 필터링 대상이 아니다. 생성 스크립트는 `*.md`만 필터하므로 JSON은 모든 브랜치에 벤더 중립 슈퍼셋으로 그대로 통과하며, 각 문항의 `dbms` 필드로 벤더를 표기하고 실행 시 `scripts/exam.py --dbms <name>`이 런타임에 걸러 낸다(자세한 내용은 `docs/exam-authoring.md` 참고).
+
 ## 생성 스크립트
 
 ```bash
