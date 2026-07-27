@@ -4,7 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository purpose
 
-This is a Korean-language learning guide (not a software project) for becoming a Database Administrator (DBA). It contains no source code, build system, tests, or dependencies — the entire repository is Markdown content organized into a three-tier curriculum: `01-beginner` → `02-intermediate` → `03-advanced`, plus an `appendix/`. There is nothing to build, lint, or test; "development" here means writing and editing Markdown chapters.
+This is a Korean-language learning guide for becoming a Database Administrator (DBA). It is overwhelmingly Markdown content organized into a three-tier curriculum: `01-beginner` → `02-intermediate` → `03-advanced`, plus an `appendix/`. "Development" here mostly means writing and editing Markdown chapters.
+
+The only executable code is a small set of **standard-library-only Python3 / Bash tools in `scripts/`** — no `pip`/`npm`/build system, no CI. Keep it that way: any new tooling must use only the Python standard library (no external packages). Current tools:
+- `scripts/generate-branch.sh` + `scripts/filter_dbms.py` — single-vendor branch generation (see below).
+- `exam` (repo-root launcher) + `scripts/exam.py` — TUI learning-check quiz/exam runner (curses, line-mode fallback). Run `./exam` with no args to pick DBMS → tier → chapter interactively in the TUI; CLI args (a bank path/tier, `--dbms`, `--shuffle`) still work and skip the matching selection screen. `scripts/seed_exam.py` — generates draft question banks from a chapter. Question banks live in `exams/<tier>/<chapter>.json`. Tests: `python3 -m unittest discover -s tests`. Full convention: `docs/exam-authoring.md`. When adding or substantially changing a chapter, update (or regenerate + refine) the matching `exams/**/*.json` so the quiz stays in sync; keep chapter-specific commands as `short` questions tagged with the right `dbms`.
 
 ## Content architecture
 
