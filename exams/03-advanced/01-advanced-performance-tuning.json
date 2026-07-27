@@ -1,0 +1,114 @@
+{
+  "chapter": "03-advanced/01-advanced-performance-tuning.md",
+  "title": "01. 고급 성능 튜닝",
+  "questions": [
+    {
+      "id": "advperf-estimate-gap",
+      "type": "mcq",
+      "dbms": "neutral",
+      "q": "실행계획에서 추정 행 수는 1인데 실제 행 수가 18만으로 나왔다. 가장 먼저 의심할 원인은?",
+      "choices": [
+        "통계가 낡아 옵티마이저가 카디널리티를 오판한 것",
+        "인덱스 파일이 손상된 것",
+        "버퍼 풀이 너무 큰 것",
+        "커넥션 풀 크기가 작은 것"
+      ],
+      "answer": 0,
+      "hint": "옵티마이저는 무엇을 근거로 계획을 세우는지, 그 근거가 최신이 아니면 어떤 일이 생길지 생각해 보세요.",
+      "explain": "\"인덱스가 있는데 왜 안 타지?\"의 대부분은 통계가 오래되어 옵티마이저가 풀 스캔이 더 싸다고 오판한 경우다. 그래서 실행계획을 읽을 때 추정 행 수와 실제 행 수의 괴리를 가장 먼저 본다."
+    },
+    {
+      "id": "advperf-partition-type",
+      "type": "mcq",
+      "dbms": "neutral",
+      "q": "데이터 특성별 파티셔닝 방식 선택으로 가장 적절한 것은?",
+      "choices": [
+        "시계열 로그는 Range, 지역·카테고리는 List, 균등 분산이 목적이면 Hash",
+        "시계열 로그는 Hash, 지역은 Range, 균등 분산은 List",
+        "어떤 경우든 Hash가 가장 좋다",
+        "파티셔닝 방식은 성능에 영향을 주지 않는다"
+      ],
+      "answer": 0,
+      "hint": "날짜처럼 '구간'으로 나뉘는 것, 값의 '목록'이 정해진 것, 특정 규칙 없이 '고르게' 흩어야 하는 것을 각각 떠올려 보세요.",
+      "explain": "날짜 기반 시계열은 Range(구간), 지역·카테고리처럼 값이 열거되는 것은 List, 특정 편향 없이 고르게 나눠야 하면 Hash가 전형적이다."
+    },
+    {
+      "id": "advperf-result-cache",
+      "type": "mcq",
+      "dbms": "neutral",
+      "q": "DBMS 내장 쿼리 결과 캐시 대신 애플리케이션 레벨 캐시(Redis 등)를 쓰는 추세인 이유는?",
+      "choices": [
+        "동시성 환경에서 결과 캐시의 무효화 비용이 너무 크기 때문",
+        "애플리케이션 캐시가 항상 더 최신 데이터를 보장하기 때문",
+        "DBMS가 결과 캐시를 더 이상 지원하지 않기 때문",
+        "결과 캐시는 디스크에만 저장되기 때문"
+      ],
+      "answer": 0,
+      "hint": "테이블이 자주 바뀌면 그 테이블을 참조한 캐시 항목들은 어떻게 되어야 할까요?",
+      "explain": "쓰기가 잦은 환경에서는 관련 캐시 항목을 무효화하는 비용과 경합이 이득을 넘어선다. 반면 버퍼 풀(데이터·인덱스 페이지 캐시)은 여전히 성능의 핵심이다."
+    },
+    {
+      "id": "advperf-pgbouncer-mode",
+      "type": "short",
+      "dbms": "postgresql",
+      "q": "PgBouncer에서 연결을 트랜잭션 단위로 재사용하는 pool_mode 값은? (가장 흔히 쓰이는 설정)",
+      "accept": ["transaction", "pool_mode = transaction", "pool_mode=transaction"],
+      "hint": "session / ___ / statement 세 가지 중, 트랜잭션이 끝날 때마다 연결을 반납하는 중간 단계입니다.",
+      "explain": "pool_mode = transaction — 트랜잭션이 끝나면 연결을 풀에 반납해 재사용률이 높다. session은 연결 종료까지 점유, statement는 문장 단위(가장 공격적이지만 제약이 크다)."
+    },
+    {
+      "id": "advperf-innodb-buffer-pool",
+      "type": "short",
+      "dbms": "mysql",
+      "q": "MySQL InnoDB에서 데이터·인덱스 페이지를 캐싱하는 버퍼 풀의 크기를 지정하는 파라미터 이름은?",
+      "accept": ["innodb_buffer_pool_size"],
+      "hint": "innodb_ 로 시작하며, 버퍼 풀의 크기(size)를 그대로 이름에 담고 있습니다.",
+      "explain": "innodb_buffer_pool_size — 전용 서버라면 RAM의 60~75%가 통상 출발점이다. PostgreSQL은 shared_buffers(대개 RAM의 25%)가 대응된다."
+    },
+    {
+      "id": "advperf-oracle-interval",
+      "type": "short",
+      "dbms": "oracle",
+      "q": "Oracle에서 새 구간의 데이터가 들어오면 파티션이 자동으로 생성되도록 하는 Range 파티셔닝 확장 방식의 이름은?",
+      "accept": ["interval", "인터벌", "인터벌 파티셔닝", "interval partitioning", "interval 파티셔닝"],
+      "hint": "PARTITION BY RANGE 뒤에 붙이는 절의 키워드이며, '간격'을 뜻하는 영어 단어입니다.",
+      "explain": "INTERVAL 파티셔닝(예: INTERVAL (NUMTOYMINTERVAL(1,'MONTH')))은 신규 월 파티션을 자동 생성한다. 다만 데이터가 불규칙하면 파티션이 과도하게 잘게 생길 수 있다."
+    },
+    {
+      "id": "advperf-stats-essay",
+      "type": "essay",
+      "dbms": "neutral",
+      "q": "대량 적재 직후 조회가 갑자기 느려졌다. 옵티마이저 관점에서 원인을 진단하고 조치하는 과정을 서술하시오.",
+      "reference": "먼저 실제 실행 계측(EXPLAIN ANALYZE / DBMS_XPLAN.DISPLAY_CURSOR)으로 계획을 뽑아 추정 행 수와 실제 행 수의 괴리를 확인한다. 괴리가 크면 통계가 낡아 비용 기반 옵티마이저가 카디널리티를 오판하고 풀 스캔을 고른 것이다. 1차 조치로 통계를 갱신한다(ANALYZE / ANALYZE TABLE / DBMS_STATS.GATHER_TABLE_STATS). 재실행해 인덱스 스캔으로 바뀌고 실측치가 정확해졌는지 확인한다. 재발을 막으려면 대량 적재 파이프라인 끝에 통계 갱신을 넣고, 자동 통계 수집 주기와 필요한 컬럼의 히스토그램 정밀도(예: SET STATISTICS)를 조정하는 정책을 세운다.",
+      "hint": "계획을 '읽는 것'에서 시작해, 무엇을 갱신하고, 재발 방지를 위해 어떤 정책을 두어야 할지 순서대로 짚어 보세요.",
+      "keywords": ["추정", "실제", "통계", "갱신", "정책"]
+    },
+    {
+      "id": "advperf-partition-decision-essay",
+      "type": "essay",
+      "dbms": "neutral",
+      "q": "3억 건 규모의 주문 테이블에 파티셔닝 도입을 검토하고 있다. 무엇을 근거로 판단하고 어떤 트레이드오프를 감수해야 하는지 서술하시오.",
+      "reference": "먼저 쿼리 패턴의 대부분이 파티션 키를 포함하는지 확인한다. 포함하지 않는 조회는 모든 파티션을 뒤져 오히려 느려지기 때문이다. 시계열이라면 created_at 기준 Range가 자연스럽고, 도입하면 파티션 프루닝으로 해당 구간만 스캔하며 오래된 데이터를 DROP PARTITION으로 즉시 정리할 수 있어 성능뿐 아니라 라이프사이클 관리 이점도 크다. 감수할 점은 글로벌 유니크 제약·외래키 제약(MySQL은 모든 유니크 키가 파티션 키를 포함해야 함), Oracle에서는 파티셔닝이 EE 유료 옵션이라는 비용, 글로벌 인덱스 사용 시 파티션 DROP에 따르는 인덱스 재구성 비용이다. 도입 후에는 실행계획으로 프루닝이 실제 동작하는지 검증해야 한다.",
+      "hint": "'무조건 좋다'가 아닙니다. 어떤 쿼리 패턴일 때 이득이고, 제약 조건과 라이선스·인덱스 측면에서 무엇을 잃는지 함께 적어 보세요.",
+      "keywords": ["파티션 키", "프루닝", "제약", "DROP PARTITION"]
+    },
+    {
+      "id": "advperf-buffer-pool-essay",
+      "type": "essay",
+      "dbms": "neutral",
+      "q": "버퍼 풀 크기를 어떻게 산정하고, 적절한지 어떻게 확인할지 서술하시오.",
+      "reference": "핵심 기준은 워킹셋(자주 접근하는 데이터·인덱스 페이지)이 메모리에 들어가는가다. 전용 서버라면 MySQL InnoDB는 RAM의 60~75%, PostgreSQL shared_buffers는 25% 정도가 통상 출발점이며 PostgreSQL은 effective_cache_size로 OS 캐시까지 포함한 추정치를 옵티마이저에 알린다. 산정 후에는 버퍼 풀 히트율을 모니터링해 판단한다. 히트율이 낮고 물리 읽기가 잦으면 메모리가 부족하거나 비효율 쿼리가 워킹셋을 밀어내는 것이므로 크기를 재산정하거나 쿼리를 튜닝한다.",
+      "hint": "숫자를 외우는 문제가 아니라, '무엇이 메모리에 들어가야 하는가'와 '설정 후 무엇으로 검증하는가'가 핵심입니다.",
+      "keywords": ["워킹셋", "히트율", "물리 읽기", "재산정"]
+    },
+    {
+      "id": "advperf-pool-defense-essay",
+      "type": "essay",
+      "dbms": "neutral",
+      "q": "커넥션 풀을 단순한 성능 최적화가 아니라 '부하 방어벽'으로 활용한다는 말의 의미를 서술하시오.",
+      "reference": "커넥션 풀은 연결 재사용으로 생성·인증 비용을 줄이는 최적화이기도 하지만, 더 중요하게는 DB로 향하는 동시성의 상한을 고정하는 장치다. 트래픽이 급증해도 애플리케이션이 연결을 무한히 늘려 DB를 압도하지 못하도록, PgBouncer의 default_pool_size처럼 실제 DB로 나가는 연결 수를 제한한다. 특히 PostgreSQL은 연결마다 프로세스를 쓰기 때문에 유휴 연결이 많으면 메모리를 잠식한다. 상한이 고정되면 초과 요청은 풀에서 대기하게 되고, DB는 감당 가능한 동시성만 처리하므로 과부하로 전체가 붕괴하는 대신 예측 가능한 성능을 유지한다.",
+      "hint": "연결 수에 상한이 없으면 트래픽 급증 시 DB에 무슨 일이 생길까요? 상한이 있으면 초과분은 어디서 기다리게 될까요?",
+      "keywords": ["상한", "동시성", "재사용", "예측 가능"]
+    }
+  ]
+}
