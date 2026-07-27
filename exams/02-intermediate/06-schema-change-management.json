@@ -1,0 +1,111 @@
+{
+  "chapter": "02-intermediate/06-schema-change-management.md",
+  "title": "06. 스키마 변경 관리",
+  "questions": [
+    {
+      "id": "schema-why-migration-tool",
+      "type": "mcq",
+      "dbms": "neutral",
+      "q": "각 서버에 `ALTER TABLE`을 수동으로 실행하는 방식의 문제로 보기 어려운 것은?",
+      "choices": [
+        "쿼리 실행 계획이 나빠진다",
+        "환경마다 적용 누락이 생겨 스키마가 불일치한다",
+        "어떤 변경이 언제 적용됐는지 이력이 남지 않는다",
+        "동일한 변경을 재현하기 어렵다"
+      ],
+      "answer": 0,
+      "hint": "수동 적용이 만드는 문제는 '일관성·이력·재현성' 쪽입니다. 그와 무관한 항목을 고르세요.",
+      "explain": "수동 DDL은 누락·불일치·이력 부재를 부른다. 그래서 변경을 스크립트로 버전 관리하고 적용 이력을 기록하는 마이그레이션 도구를 쓴다. 실행 계획 악화는 별개의 문제다."
+    },
+    {
+      "id": "schema-checksum",
+      "type": "mcq",
+      "dbms": "neutral",
+      "q": "이미 적용된 마이그레이션 파일을 나중에 수정하면 안 되는 이유는?",
+      "choices": [
+        "도구가 기록해 둔 체크섬과 달라져 검증에 실패하기 때문",
+        "파일 이름의 버전 번호가 자동으로 바뀌기 때문",
+        "DBMS가 파일을 잠그기 때문",
+        "수정하면 롤백이 자동 실행되기 때문"
+      ],
+      "answer": 0,
+      "hint": "Flyway는 적용 이력 테이블에 파일의 지문(해시)을 함께 저장해 둡니다.",
+      "explain": "Flyway는 flyway_schema_history에 적용 이력과 체크섬을 기록한다. 파일을 고치면 체크섬이 어긋나 validate가 실패한다. 잘못된 변경은 새 마이그레이션으로 교정한다."
+    },
+    {
+      "id": "schema-online-ddl-why",
+      "type": "mcq",
+      "dbms": "neutral",
+      "q": "전통적인 `ALTER TABLE`이 서비스 중단을 유발할 수 있는 이유는?",
+      "choices": [
+        "테이블에 강한 락을 걸어 변경 동안 읽기/쓰기가 막히기 때문",
+        "실행 중 인덱스가 모두 삭제되기 때문",
+        "트랜잭션 격리 수준이 자동으로 낮아지기 때문",
+        "복제가 자동으로 중단되기 때문"
+      ],
+      "answer": 0,
+      "hint": "큰 테이블을 통째로 재작성하는 동안 다른 세션은 그 테이블에 접근할 수 있을까요?",
+      "explain": "전통적 ALTER TABLE은 테이블 전체를 복사·재작성하며 강한 락을 잡아 그동안 DML이 막힌다. 온라인 DDL은 변경 중에도 DML을 허용해 이 중단을 없앤다."
+    },
+    {
+      "id": "schema-expand-contract",
+      "type": "mcq",
+      "dbms": "neutral",
+      "q": "대용량 테이블에 NOT NULL 컬럼을 무중단으로 추가하는 올바른 순서는?",
+      "choices": [
+        "nullable로 추가 → 애플리케이션이 값을 채우도록 배포 → 기존 행 배치 백필 → NOT NULL 제약 추가",
+        "NOT NULL 컬럼을 한 번에 추가 → 애플리케이션 배포",
+        "테이블을 잠그고 전체 UPDATE → 컬럼 추가",
+        "테이블을 새로 만들고 전체 데이터를 한 번에 복사"
+      ],
+      "answer": 0,
+      "hint": "'확장 → 백필 → 정리' 패턴입니다. 제약은 값이 다 채워진 뒤에 걸어야 짧게 끝납니다.",
+      "explain": "확장(expand) → 백필(migrate) → 정리(contract) 패턴. 기존 행을 한 번의 UPDATE로 채우면 락·부하가 커지므로 범위를 나눠 배치로 백필한다. 컬럼명·타입 변경, 테이블 분리에도 같은 전략이 쓰인다."
+    },
+    {
+      "id": "schema-pg-concurrently",
+      "type": "short",
+      "dbms": "postgresql",
+      "q": "PostgreSQL에서 큰 테이블에 제약을 추가할 때 락 시간을 줄이려고 우선 검증을 미루며 추가하려면 `ADD CONSTRAINT ...` 뒤에 어떤 키워드를 붙이는가?",
+      "accept": ["not valid"],
+      "hint": "'아직 검증하지 않았다'는 뜻의 두 단어입니다. 나중에 VALIDATE CONSTRAINT로 따로 검증합니다.",
+      "explain": "ALTER TABLE orders ADD CONSTRAINT chk_amount CHECK (amount >= 0) NOT VALID; 로 짧게 추가한 뒤, ALTER TABLE orders VALIDATE CONSTRAINT chk_amount; 로 검증해 락 시간을 분리한다."
+    },
+    {
+      "id": "schema-mysql-instant",
+      "type": "short",
+      "dbms": "mysql",
+      "q": "MySQL 8.0에서 메타데이터만 수정해 즉시 컬럼을 추가하려면 `ALTER TABLE ...` 뒤에 어떤 절을 붙이는가? (형식: ALGORITHM=값)",
+      "accept": ["algorithm=instant", "algorithm = instant"],
+      "hint": "테이블을 복사하지도, 제자리에서 고치지도 않고 '즉시' 끝낸다는 뜻의 알고리즘 값입니다.",
+      "explain": "ALTER TABLE orders ADD COLUMN priority INT NOT NULL DEFAULT 0, ALGORITHM=INSTANT; — INPLACE는 테이블 복사 없이 변경, COPY는 전체 복사(락)다."
+    },
+    {
+      "id": "schema-mysql-gh-ost",
+      "type": "short",
+      "dbms": "mysql",
+      "q": "MySQL에서 온라인 DDL로 처리하기 어려운 변경을 무중단으로 수행할 때 쓰는 대표적인 외부 도구 두 가지 중 하나의 이름을 쓰시오.",
+      "accept": ["pt-online-schema-change", "gh-ost", "pt-osc"],
+      "hint": "하나는 Percona Toolkit의 트리거 기반 도구, 다른 하나는 GitHub이 만든 binlog 기반 도구입니다.",
+      "explain": "pt-online-schema-change(트리거 기반)와 gh-ost(binlog 기반) 모두 원본 테이블을 복사한 새 테이블에 변경을 적용하고 데이터를 따라잡은 뒤 원자적으로 교체하는 방식이다."
+    },
+    {
+      "id": "schema-process-essay",
+      "type": "essay",
+      "dbms": "neutral",
+      "q": "운영 DB의 스키마 변경을 안전하게 적용하기 위한 프로세스를 서술하시오.",
+      "reference": "마이그레이션 스크립트를 애플리케이션 코드와 같은 저장소에서 버전 관리하고, DDL도 코드 리뷰 대상으로 삼아 락 영향·롤백 방법·백필 필요 여부를 점검한다. 애플리케이션의 구·신 버전이 잠시 공존해도 깨지지 않도록 확장과 정리 단계를 분리해 하위 호환을 유지한다. 동일 스크립트를 개발 → 스테이징 → 운영 순으로 적용하고, 되돌리는 스크립트나 복구 절차를 미리 준비한다. 적용은 트래픽이 낮은 시간대에 백업 직후 수행하며 적용 전후를 모니터링한다.",
+      "hint": "'어디에 보관하고, 누가 보고, 어떤 순서로 환경에 올리고, 실패하면 어떻게 되돌리고, 언제 실행하는가'를 차례로 짚어 보세요.",
+      "keywords": ["버전 관리", "리뷰", "하위 호환", "롤백", "순차 적용"]
+    },
+    {
+      "id": "schema-online-ddl-essay",
+      "type": "essay",
+      "dbms": "neutral",
+      "q": "각 DBMS가 제공하는 온라인 DDL 수단을 예로 들어 설명하시오.",
+      "reference": "PostgreSQL은 CREATE INDEX CONCURRENTLY로 쓰기를 막지 않고 인덱스를 만들고, 11 이상에서는 상수 기본값이 있는 컬럼 추가도 메타데이터만 수정하며, 제약은 NOT VALID로 추가한 뒤 VALIDATE CONSTRAINT로 검증을 분리해 락을 줄인다. MySQL 8.0은 ALGORITHM=INSTANT(메타데이터만), INPLACE(테이블 복사 없이), COPY(전체 복사·락)를 선택할 수 있고 LOCK=NONE으로 DML을 허용하며, 어려운 변경은 pt-online-schema-change나 gh-ost로 처리한다. Oracle은 ADD ... ONLINE, CREATE INDEX ... ONLINE, DBMS_REDEFINITION으로 온라인 재정의를 지원한다.",
+      "hint": "세 DBMS가 각각 어떤 키워드/옵션으로 '락을 줄이거나 없애는지' 떠올려 보세요.",
+      "keywords": ["CONCURRENTLY", "INSTANT", "INPLACE", "ONLINE"]
+    }
+  ]
+}
