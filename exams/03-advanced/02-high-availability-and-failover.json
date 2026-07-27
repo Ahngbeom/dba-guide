@@ -1,0 +1,123 @@
+{
+  "chapter": "03-advanced/02-high-availability-and-failover.md",
+  "title": "02. 고가용성과 페일오버",
+  "questions": [
+    {
+      "id": "ha-vs-dr",
+      "type": "mcq",
+      "dbms": "neutral",
+      "q": "HA와 DR의 차이로 옳은 것은?",
+      "choices": [
+        "HA는 주로 같은 리전에서 초~분 단위로 자동 복구하고, DR은 리전 단위 재해를 사람이 개입해 더 긴 시간에 복구한다",
+        "HA와 DR은 같은 것을 다르게 부르는 말이다",
+        "HA를 구성하면 DR은 자동으로 확보된다",
+        "DR은 초 단위 자동 복구, HA는 수동 복구를 뜻한다"
+      ],
+      "answer": 0,
+      "hint": "복구 범위(가용영역 vs 리전), 시간 척도(초~분 vs 시간), 개입 방식(자동 vs 사람)이 다릅니다.",
+      "explain": "HA는 같은 리전/데이터센터 안의 구성 요소 장애를 자동으로 넘기는 것이고, DR은 리전 전체가 사라지는 재해를 대비한다. 목적도 비용도 다르므로 HA가 있다고 DR이 되는 것은 아니다."
+    },
+    {
+      "id": "ha-split-brain",
+      "type": "mcq",
+      "dbms": "neutral",
+      "q": "스플릿 브레인(split-brain)을 방지하는 핵심 수단으로 옳게 묶인 것은?",
+      "choices": [
+        "쿼럼(quorum)과 펜싱(STONITH)으로 옛 리더를 격리·차단",
+        "복제 지연 모니터링과 백업 주기 단축",
+        "인덱스 재구성과 통계 갱신",
+        "커넥션 풀 크기 확대"
+      ],
+      "answer": 0,
+      "hint": "'과반이 동의해야 리더가 된다'와 '옛 리더가 더는 쓰기를 못 하게 물리적으로 막는다' 두 가지가 짝을 이룹니다.",
+      "explain": "옛 Primary가 살아 있는데 새 Primary가 뜨면 쓰기가 두 곳에서 발생해 데이터가 갈린다. 과반 합의(쿼럼)로 리더를 하나만 뽑고, 펜싱/STONITH로 옛 리더를 강제 격리해 막는다."
+    },
+    {
+      "id": "ha-switchover-vs-failover",
+      "type": "mcq",
+      "dbms": "neutral",
+      "q": "계획된 switchover와 비상 failover의 차이로 옳은 것은?",
+      "choices": [
+        "switchover는 계획된 무손실 역할 교체이고, failover는 비상 상황에서 데이터 손실 가능성을 감수하고 가용성을 우선하는 전환이다",
+        "switchover는 데이터가 반드시 유실되고, failover는 무손실이다",
+        "둘은 명령어 이름만 다르고 동작이 같다",
+        "switchover는 자동으로만, failover는 수동으로만 수행된다"
+      ],
+      "answer": 0,
+      "hint": "하나는 정기 점검처럼 미리 준비해서 하는 전환, 다른 하나는 이미 죽은 상황에서 어쩔 수 없이 하는 전환입니다.",
+      "explain": "switchover는 양쪽이 살아 있는 상태에서 순서를 지켜 역할을 바꾸므로 무손실이며 정기 훈련에 적합하다. failover는 Primary가 응답하지 않는 상황에서 강제 전환하므로 미전송 트랜잭션이 유실될 수 있다."
+    },
+    {
+      "id": "ha-pg-rewind",
+      "type": "short",
+      "dbms": "postgresql",
+      "q": "PostgreSQL에서 페일오버 후 옛 Primary를 새 Primary의 Standby로 재편입할 때, 분기 지점을 정합시키는 데 쓰는 도구 이름은?",
+      "accept": ["pg_rewind"],
+      "hint": "pg_ 로 시작하며, 갈라진 시점까지 '되감는다'는 뜻의 이름입니다.",
+      "explain": "pg_rewind --target-pgdata=/data --source-server=\"host=node-b ...\" — 전체 베이스백업을 다시 받지 않고 분기 이후 변경분만 되돌려 빠르게 재편입한다."
+    },
+    {
+      "id": "ha-mysql-fencing",
+      "type": "short",
+      "dbms": "mysql",
+      "q": "MySQL에서 격리된 옛 Primary에 실수로 쓰기가 들어오지 못하도록 소프트 펜싱할 때 설정하는 전역 변수 명령을 작성하시오.",
+      "accept": [
+        "set global read_only = on",
+        "set global read_only=on",
+        "set global read_only = 1",
+        "set global read_only=1"
+      ],
+      "hint": "그 노드를 '읽기 전용'으로 만드는 전역 변수를 켭니다.",
+      "explain": "SET GLOBAL read_only = ON; — Orchestrator 등이 옛 Primary를 이렇게 격리해 STONITH에 준하는 소프트 펜싱을 수행한다. 확실한 격리는 인스턴스 중지나 네트워크 차단이다."
+    },
+    {
+      "id": "ha-oracle-dgmgrl-switchover",
+      "type": "short",
+      "dbms": "oracle",
+      "q": "Oracle Data Guard Broker(DGMGRL)에서 standby_db로 계획된 무손실 역할 전환을 수행하는 명령을 작성하시오.",
+      "accept": [
+        "switchover to 'standby_db'",
+        "switchover to standby_db",
+        "dgmgrl> switchover to 'standby_db'"
+      ],
+      "hint": "비상 전환(FAILOVER)이 아니라 계획된 전환을 뜻하는 동사에 대상 DB 이름을 붙입니다.",
+      "explain": "DGMGRL> SWITCHOVER TO 'standby_db'; — Maximum Availability 모드라면 RPO=0으로 역할이 교체된다. 비상시에는 FAILOVER TO 'standby_db'를 쓴다."
+    },
+    {
+      "id": "ha-false-positive-essay",
+      "type": "essay",
+      "dbms": "neutral",
+      "q": "자동 페일오버의 오탐(false positive)이 왜 위험하며, 이를 줄이려면 어떻게 설계해야 하는지 서술하시오.",
+      "reference": "네트워크 순단처럼 일시적인 문제를 장애로 오인해 페일오버하면, 멀쩡한 Primary를 내리고 불필요한 다운타임과 재연결 폭풍을 유발해 오히려 서비스가 흔들린다. 최악의 경우 옛 Primary가 살아 있어 스플릿 브레인으로 이어진다. 줄이려면 헬스체크를 단발 실패가 아니라 연속 실패 횟수와 타임아웃 조합으로 판정하고(예: 5회 연속 실패 약 30초), 여러 관측 지점에서 합의(쿼럼)로 판단하며, 펜싱을 반드시 함께 구성한다. 성숙한 방식은 처음에는 자동 감지 + 수동 승격으로 시작해 신뢰가 쌓이면 자동화 범위를 넓히고, 애매하면 사람에게 넘기도록 임계값을 튜닝하는 것이다.",
+      "hint": "멀쩡한 Primary를 내렸을 때 벌어지는 일부터 생각하고, '한 번의 실패로 판단하지 않는' 설계를 떠올려 보세요.",
+      "keywords": ["순단", "연속 실패", "타임아웃", "쿼럼", "수동 승격"]
+    },
+    {
+      "id": "ha-rpo-tradeoff-essay",
+      "type": "essay",
+      "dbms": "neutral",
+      "q": "동기 복제와 비동기 복제가 페일오버 시 RPO에 미치는 영향을 설명하고, 어떻게 절충할 수 있는지 서술하시오.",
+      "reference": "비동기 복제는 Primary가 커밋을 먼저 반환하므로, 장애 순간 아직 전송되지 않은 트랜잭션이 유실된다(RPO > 0). 동기 복제는 Standby의 수신·기록 확인 후 커밋하므로 손실이 없지만(RPO=0) 커밋 지연이 늘고, Standby가 응답하지 않으면 Primary 쓰기 자체가 멈춰 가용성이 떨어질 수 있다. 절충안으로는 가까운 Standby 1대만 동기로 두고 나머지는 비동기로 구성하거나(예: FIRST 1 방식), MySQL의 준동기 복제, Oracle의 Maximum Availability 모드처럼 '평소에는 무손실을 보장하되 Standby 장애 시 Primary를 멈추지는 않는' 모드를 택한다.",
+      "hint": "커밋을 확정하기 전에 상대의 응답을 기다리는지가 갈림길입니다. 그리고 '전부 동기'가 아닌 중간 지점이 있습니다.",
+      "keywords": ["RPO", "유실", "지연", "준동기", "절충"]
+    },
+    {
+      "id": "ha-runbook-essay",
+      "type": "essay",
+      "dbms": "neutral",
+      "q": "새벽 3시에 온콜 담당자가 그대로 따라 할 수 있는 페일오버 Runbook에는 어떤 항목이 들어가야 하는지 서술하시오.",
+      "reference": "첫째, 발동 조건이다. 언제 이 문서를 여는지를 구체적 지표로 적는다(예: Primary 헬스체크 5회 연속 실패이면서 애플리케이션 5xx 급증, 자동 페일오버가 60초 내 완료되지 않은 경우). 둘째, 섣부른 승격을 막는 사전 확인이다. 옛 Primary가 정말 죽었는지, 승격 후보의 복제 지연이 0에 가까운지, 쿼럼 상태가 정상인지 점검한다. 셋째, 실행 절차를 번호가 매겨진 명령 단위로 적고 옛 Primary 펜싱과 애플리케이션 커넥션 풀 재시작까지 포함한다. 넷째, 검증 항목이다(새 Primary에 쓰기 성공, 에러율 정상화, 데이터 정합성 스팟 체크). 다섯째, 사후 조치로 옛 노드 재편입과 포스트모템 티켓 생성을 적는다. 마지막으로 롤백·에스컬레이션 경로를 명시해 실패 시 누구를 부를지 정해 둔다.",
+      "hint": "'언제 연다 → 하기 전에 확인 → 실행 → 잘 됐는지 검증 → 끝난 뒤 할 일 → 안 될 때'의 흐름으로 구성해 보세요.",
+      "keywords": ["발동 조건", "사전 확인", "실행 절차", "검증", "에스컬레이션"]
+    },
+    {
+      "id": "ha-architecture-choice-essay",
+      "type": "essay",
+      "dbms": "neutral",
+      "q": "HA 아키텍처 패턴(Active-Standby, 클라우드 Multi-AZ, Patroni/Pacemaker 같은 셀프 매니지드 클러스터)의 장단점을 비교하고 선택 기준을 서술하시오.",
+      "reference": "Active-Standby(Primary-Replica)는 가장 널리 쓰이는 기본형으로 구조가 단순하지만 승격·펜싱을 직접 설계해야 한다. 클라우드 Multi-AZ는 벤더가 다른 가용영역의 동기 Standby와 자동 페일오버를 관리해 운영 부담이 가장 낮은 대신, 세부 제어와 비용 통제 여지가 적다. Patroni + etcd는 분산 합의로 리더 선출을 관리하는 셀프 매니지드 PostgreSQL의 사실상 표준이고, Pacemaker + Corosync는 VIP 이동과 STONITH까지 세밀히 제어할 수 있지만 복잡도가 높다. 선택 기준은 운영 인력의 성숙도와 요구 RTO/RPO, 클라우드 종속 허용 여부, 필요한 제어 수준이다. 운영 여력이 적으면 매니지드를, 세밀한 제어나 온프레미스가 필요하면 합의 기반 클러스터를 택한다.",
+      "hint": "각 패턴이 '무엇을 대신해 주는지'와 '대신 무엇을 포기하는지'를 짝지어 보세요. 선택은 조직의 운영 여력과도 관련됩니다.",
+      "keywords": ["운영 부담", "제어", "합의", "복잡도", "RTO"]
+    }
+  ]
+}

@@ -1,0 +1,120 @@
+{
+  "chapter": "03-advanced/08-kubernetes-db-operators.md",
+  "title": "08. Kubernetes 기반 DB Operator",
+  "questions": [
+    {
+      "id": "k8s-reconcile-loop",
+      "type": "mcq",
+      "dbms": "neutral",
+      "q": "Operator 패턴이 Terraform/Ansible의 one-shot 실행과 근본적으로 다른 점은?",
+      "choices": [
+        "컨트롤러가 reconcile loop로 현재 상태를 계속 관찰하며 원하는 상태와의 차이를 자동으로 줄인다",
+        "실행할 때마다 리소스를 새로 만든다",
+        "선언적이지 않고 명령형으로 동작한다",
+        "상태 파일을 사용하지 않아 변경 이력이 남지 않는다"
+      ],
+      "answer": 0,
+      "hint": "한쪽은 '그 순간의 차이만' 반영하고 손을 뗍니다. 다른 쪽은 계속 무엇을 하고 있을까요?",
+      "explain": "Terraform의 plan/apply는 실행 시점의 차이만 반영하고 끝나지만, Operator는 항상 감시하며 노드가 죽으면 스스로 새 노드를 추가·재합류시킨다. 이 '지속적인 운영 지식'이 컨트롤러 코드에 담겨 있다."
+    },
+    {
+      "id": "k8s-statefulset-gap",
+      "type": "mcq",
+      "dbms": "neutral",
+      "q": "`StatefulSet`만으로 DB 클러스터 운영이 부족한 이유로 옳은 것은?",
+      "choices": [
+        "클러스터 부트스트랩 순서, 자동 페일오버, 백업/PITR 같은 DB 도메인 지식이 필요하기 때문",
+        "StatefulSet은 파드 이름을 고정하지 못하기 때문",
+        "StatefulSet은 영구 볼륨을 붙일 수 없기 때문",
+        "StatefulSet은 파드를 하나만 만들 수 있기 때문"
+      ],
+      "answer": 0,
+      "hint": "StatefulSet이 이미 보장해 주는 것(이름 고정·전용 볼륨) 말고, DB라서 추가로 필요한 것들을 떠올려 보세요.",
+      "explain": "StatefulSet은 안정적인 네트워크 식별자와 파드별 PVC를 보장하지만, 첫 노드 초기화와 이후 노드 합류 방식, 프라이머리 선출, 엔진 도구를 쓰는 백업·PITR은 담당하지 않는다. Operator가 이 도메인 지식을 컨트롤러에 담는다."
+    },
+    {
+      "id": "k8s-operator-tradeoff",
+      "type": "mcq",
+      "dbms": "neutral",
+      "q": "클라우드 매니지드 DB 대비 Kubernetes Operator 운영의 트레이드오프로 옳은 것은?",
+      "choices": [
+        "운영 부담(스토리지 클래스·리소스·네트워크 정책)이 크지만 벤더 종속이 적고 이식성이 높다",
+        "운영 부담이 더 적으면서 이식성도 더 높다",
+        "벤더 종속이 더 강하지만 비용이 항상 저렴하다",
+        "매니지드 DB와 운영 부담·이식성 면에서 차이가 없다"
+      ],
+      "answer": 0,
+      "hint": "직접 챙겨야 하는 것이 늘어나는 대신 무엇을 얻는지 생각해 보세요.",
+      "explain": "Operator는 스토리지 성능, 파드 리소스 요청/제한, 네트워크 정책, 업그레이드 절차를 팀이 직접 책임져야 한다. 대신 어느 클라우드·온프레미스에서도 동일하게 동작하고 애플리케이션과 같은 플랫폼의 도구를 재사용할 수 있다. K8s 역량이 있는 팀에 적합하다."
+    },
+    {
+      "id": "k8s-crd",
+      "type": "short",
+      "dbms": "neutral",
+      "q": "Kubernetes에서 \"MySQL 클러스터가 3노드로 존재해야 한다\" 같은 사용자 정의 리소스 종류를 정의하는 오브젝트의 약어는?",
+      "accept": ["crd", "customresourcedefinition", "custom resource definition"],
+      "hint": "Custom Resource ___ 의 세 글자 약어입니다.",
+      "explain": "CRD(Custom Resource Definition)로 새 리소스 종류를 정의하면, 사용자는 CR을 kubectl apply해 원하는 상태를 선언하고 Operator 컨트롤러가 그 상태를 맞춘다."
+    },
+    {
+      "id": "k8s-mysql-operators",
+      "type": "short",
+      "dbms": "mysql",
+      "q": "Galera 기반 멀티 프라이머리 동기 복제를 Kubernetes에서 운영하는 대표적인 MySQL Operator의 이름은?",
+      "accept": [
+        "percona xtradb cluster operator",
+        "percona operator",
+        "pxc operator",
+        "percona xtradb cluster",
+        "percona"
+      ],
+      "hint": "Percona가 배포하며, CR 종류 이름이 PerconaXtraDBCluster입니다.",
+      "explain": "Percona XtraDB Cluster Operator는 Galera 기반 멀티 프라이머리 클러스터를 운영한다. Oracle MySQL Operator는 Group Replication 기반 InnoDBCluster(보통 단일 프라이머리)를 운영해 복제 방식이 근본적으로 다르다."
+    },
+    {
+      "id": "k8s-cnpg",
+      "type": "short",
+      "dbms": "postgresql",
+      "q": "PostgreSQL 진영에서 가장 활발한 Kubernetes Operator의 이름은?",
+      "accept": ["cloudnativepg", "cloud native pg", "cnpg"],
+      "hint": "이름에 'cloud native'와 'pg'가 붙어 있습니다. Cluster CRD로 프라이머리/스탠바이를 관리합니다.",
+      "explain": "CloudNativePG는 Cluster CRD로 프라이머리/스탠바이 구성, 자동 페일오버, WAL 아카이빙 기반 백업을 선언적으로 관리한다. MySQL Operator들과 철학이 같다."
+    },
+    {
+      "id": "k8s-operator-value-essay",
+      "type": "essay",
+      "dbms": "neutral",
+      "q": "상태를 가진 데이터베이스 워크로드에 Operator 패턴이 특히 유용한 이유를 서술하시오.",
+      "reference": "DB는 만들고 끝나는 것이 아니라 만든 이후의 지속적인 운영이 더 중요하다. 노드가 죽으면 즉시 새 프라이머리를 뽑아야 하고, 백업은 스케줄대로 계속 돌아야 하며, 멤버를 추가할 때 데이터 동기화가 안전하게 이뤄져야 한다. Terraform 같은 one-shot 도구는 실행 시점의 차이만 반영하고 손을 떼므로 이런 지속적 운영을 담당할 수 없다. Operator는 CRD로 원하는 상태를 선언하게 하고, 컨트롤러가 reconcile loop로 현재 상태를 계속 관찰하며 차이를 줄인다. 즉 사람이 밤새 지켜보며 하던 운영 지식을 코드로 인코딩해 자동 수행되게 만든다.",
+      "hint": "DB 운영에서 '만든 다음에도 계속 해야 하는 일'들을 나열해 보고, 그것을 누가 계속 지켜보는지 생각해 보세요.",
+      "keywords": ["지속", "reconcile", "선언", "자동", "페일오버"]
+    },
+    {
+      "id": "k8s-replication-difference-essay",
+      "type": "essay",
+      "dbms": "neutral",
+      "q": "같은 MySQL을 운영하더라도 Operator가 채택한 복제 방식에 따라 페일오버 동작이 어떻게 달라지는지 서술하시오.",
+      "reference": "Percona XtraDB Cluster Operator는 Galera 기반 멀티 프라이머리 동기 복제를 쓴다. 여러 노드가 동시에 쓰기를 받을 수 있어 한 파드가 죽어도 로드밸런서(HAProxy)가 남은 정상 노드로 트래픽을 계속 보내고, Operator는 죽은 파드를 재생성해 클러스터에 재합류시킨다. 반면 Oracle MySQL Operator의 InnoDB Cluster는 Group Replication 기반의 단일 프라이머리 구조라, 프라이머리 파드가 죽으면 남은 세컨더리 중 하나를 새 프라이머리로 선출하는 과정에서 수 초의 쓰기 불가 구간이 생긴다. 또 \"어느 노드로 쓰기가 가능한가\"가 페일오버 전후로 바뀌므로 애플리케이션이나 MySQL Router가 이를 인지하고 라우팅을 갱신해야 한다.",
+      "hint": "여러 노드가 동시에 쓰기를 받는 구조와, 한 노드만 쓰기를 받는 구조를 비교해 보세요. 장애 순간 쓰기가 가능한지가 갈립니다.",
+      "keywords": ["멀티 프라이머리", "단일 프라이머리", "선출", "쓰기 불가", "라우팅"]
+    },
+    {
+      "id": "k8s-failover-drill-essay",
+      "type": "essay",
+      "dbms": "neutral",
+      "q": "Operator로 배포한 DB 클러스터에서 장애 주입 훈련을 어떻게 수행하고 무엇을 관찰할지 서술하시오.",
+      "reference": "프라이머리 역할을 하는 파드를 강제로 삭제해 장애를 주입한다(kubectl delete pod). 그다음 관찰할 것은 첫째, 애플리케이션 트래픽이 남은 정상 노드로 계속 흘러가는지다(HAProxy·Router 같은 접속 계층이 제 역할을 하는지). 둘째, Operator가 삭제된 파드를 재생성하고 클러스터에 재합류시키는 과정을 실시간으로 지켜본다(kubectl get pods -w). 셋째, 쓰기가 불가능했던 구간의 길이와 그동안의 에러를 계측한다. 넷째, 재합류 후 클러스터 크기와 상태가 원래대로 돌아왔는지 확인한다. 이 계측값이 곧 이 구성의 실제 RTO 근거가 된다.",
+      "hint": "훈련은 '죽여 보는 것'에서 끝나지 않습니다. 트래픽·복구 과정·중단 시간·최종 상태를 각각 확인해야 합니다.",
+      "keywords": ["파드 삭제", "라우팅", "재생성", "재합류", "계측"]
+    },
+    {
+      "id": "k8s-vs-managed-essay",
+      "type": "essay",
+      "dbms": "neutral",
+      "q": "클라우드 매니지드 DB와 Kubernetes Operator 중 무엇을 선택할지 판단 기준을 서술하시오.",
+      "reference": "매니지드 DB는 프로비저닝·패치·백업·페일오버를 클라우드가 대신해 운영 부담이 가장 낮지만 특정 벤더에 묶인다. Operator는 스토리지 클래스와 볼륨 성능, 파드 리소스 요청/제한, 네트워크 정책, 업그레이드 절차까지 팀이 직접 설계·책임져야 해 운영 부담이 크다. 대신 어떤 클라우드나 온프레미스에서도 동일하게 동작해 멀티·하이브리드 클라우드 이식성이 확보되고, 애플리케이션과 같은 K8s 플랫폼의 배포·관측 도구를 재사용할 수 있다. 따라서 이미 K8s 위에서 애플리케이션을 운영 중이고 K8s 운영 역량을 갖췄으며 이식성·비용 이점이 큰 조직이면 Operator가, 운영 인력이 적고 벤더 종속을 감수할 수 있으면 매니지드가 낫다.",
+      "hint": "'누가 운영 부담을 지는가'와 '어디에 묶이는가'가 축입니다. 조직의 역량과 이미 쓰고 있는 플랫폼도 판단에 들어갑니다.",
+      "keywords": ["운영 부담", "이식성", "종속", "K8s 역량"]
+    }
+  ]
+}

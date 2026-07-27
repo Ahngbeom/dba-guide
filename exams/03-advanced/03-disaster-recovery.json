@@ -1,0 +1,117 @@
+{
+  "chapter": "03-advanced/03-disaster-recovery.md",
+  "title": "03. 재해복구 (DR)",
+  "questions": [
+    {
+      "id": "dr-strategy-spectrum",
+      "type": "mcq",
+      "dbms": "neutral",
+      "q": "DR 전략을 RTO가 짧은 순서(빠른 복구 → 느린 복구)로 옳게 나열한 것은?",
+      "choices": [
+        "Hot Standby → Warm Standby → Cold Standby(Pilot Light) → Backup & Restore",
+        "Backup & Restore → Cold Standby → Warm Standby → Hot Standby",
+        "Cold Standby → Hot Standby → Backup & Restore → Warm Standby",
+        "네 전략의 RTO는 모두 같고 비용만 다르다"
+      ],
+      "answer": 0,
+      "hint": "대기 인프라가 '이미 풀 규모로 떠 있는가, 축소 상태인가, 꺼져 있는가, 아예 없는가'가 복구 속도를 결정합니다.",
+      "explain": "Hot(풀 규모 상시, 초 단위) → Warm(축소 상시, 수 분~수십 분) → Cold/Pilot Light(코어만, 수십 분~시간) → Backup & Restore(백업만, 수 시간~일). RTO가 짧을수록 비용은 가파르게 오른다."
+    },
+    {
+      "id": "dr-logical-disaster",
+      "type": "mcq",
+      "dbms": "neutral",
+      "q": "운영자가 `DELETE FROM orders`를 WHERE 없이 실행했다. 이 사고에 대한 설명으로 옳은 것은?",
+      "choices": [
+        "복제본에도 그대로 전파되므로 HA로는 막을 수 없고 PITR로 복구해야 한다",
+        "Standby로 페일오버하면 삭제 전 데이터가 남아 있어 즉시 복구된다",
+        "동기 복제를 쓰고 있었다면 자동으로 차단된다",
+        "리드 리플리카는 읽기 전용이므로 영향을 받지 않는다"
+      ],
+      "answer": 0,
+      "hint": "복제는 '변경을 그대로 따라 하는' 구조입니다. 잘못된 DELETE도 충실히 따라 하겠지요.",
+      "explain": "이것은 인프라 재해가 아니라 논리적 재해다. 복제본도 같은 DELETE를 재생하므로 HA·복제로는 막지 못하며, 기준 백업 + 로그를 사고 직전 시점까지 재적용하는 PITR이 답이다."
+    },
+    {
+      "id": "dr-multiregion-sync",
+      "type": "mcq",
+      "dbms": "neutral",
+      "q": "리전 간 복제를 대개 비동기로 구성하는 가장 큰 이유는?",
+      "choices": [
+        "리전 간 왕복 지연이 수십~수백 ms라 동기 복제 시 쓰기 성능이 크게 나빠지기 때문",
+        "비동기 복제가 동기보다 데이터 손실이 적기 때문",
+        "클라우드가 동기 복제를 지원하지 않기 때문",
+        "비동기 복제가 규제 요건상 필수이기 때문"
+      ],
+      "answer": 0,
+      "hint": "커밋마다 상대 리전의 응답을 기다린다면 그 왕복 시간이 어디에 더해질지 생각해 보세요.",
+      "explain": "동기 복제는 커밋마다 상대의 확인을 기다리므로 리전 간 지연이 그대로 쓰기 지연이 된다. 그래서 리전 간은 비동기가 현실적이며, 그만큼 RPO > 0을 감수한다."
+    },
+    {
+      "id": "dr-pg-archive-command",
+      "type": "short",
+      "dbms": "postgresql",
+      "q": "PostgreSQL에서 WAL 파일을 다른 리전의 오브젝트 스토리지로 아카이빙할 때, 실제 복사 명령을 지정하는 설정 파라미터 이름은?",
+      "accept": ["archive_command"],
+      "hint": "archive_mode를 켠 뒤, 파일을 어떻게 보낼지 알려 주는 '명령'을 담는 파라미터입니다.",
+      "explain": "archive_command = 'aws s3 cp %p s3://dr-wal-bucket/%f' — 복구 시에는 restore_command로 되가져온다. 원격 아카이빙이 Cold/Warm DR의 기반이 된다."
+    },
+    {
+      "id": "dr-mysql-binlog-stop",
+      "type": "short",
+      "dbms": "mysql",
+      "q": "mysqlbinlog로 binlog를 사고 직전 시점까지만 재적용하려면 어떤 옵션을 쓰는가?",
+      "accept": ["--stop-datetime", "stop-datetime"],
+      "hint": "'언제까지(datetime) 재적용을 멈출지'를 지정하는 옵션입니다.",
+      "explain": "mysqlbinlog --stop-datetime=\"2026-07-15 03:59:00\" mysql-bin.000042 | mysql — 풀백업 복원 후 이 옵션으로 사고 직전까지만 재생한다."
+    },
+    {
+      "id": "dr-oracle-flashback",
+      "type": "short",
+      "dbms": "oracle",
+      "q": "Oracle에서 인적 실수에 대비해 데이터베이스 전체를 특정 시점으로 되감는 기능의 명령은? (대상 시각은 제외)",
+      "accept": [
+        "flashback database",
+        "flashback database to timestamp"
+      ],
+      "hint": "'과거로 되감는다'는 뜻의 기능 이름에 DATABASE를 붙인 명령입니다.",
+      "explain": "FLASHBACK DATABASE TO TIMESTAMP TO_TIMESTAMP('2026-07-15 03:59:00','YYYY-MM-DD HH24:MI:SS'); — 전체 복원 없이 되감을 수 있어 논리적 재해 대응에 유용하다."
+    },
+    {
+      "id": "dr-rpo-rto-tiering-essay",
+      "type": "essay",
+      "dbms": "neutral",
+      "q": "RPO와 RTO를 정의하고, 모든 데이터에 같은 값을 적용하지 않는 이유를 서술하시오.",
+      "reference": "RPO는 허용 가능한 데이터 손실량을 시간으로 표현한 것으로 복제·백업 주기가 결정하고, RTO는 허용 가능한 복구 소요 시간으로 대기 인프라의 준비 상태가 결정한다. RPO=0, RTO=0에 가까워질수록 비용이 기하급수적으로 늘기 때문에, 모든 데이터에 최고 수준을 적용하면 비용을 감당할 수 없다. 결제처럼 손실이 치명적인 데이터는 RPO 0에 가깝게, 분석용 로그는 RPO 24시간처럼 느슨하게 두는 데이터 등급별 차등 설계가 필요하다. DR 설계의 본질은 기술이 아니라 비즈니스가 정한 목표를 가장 싸게 달성하는 아키텍처를 고르는 협상이다.",
+      "hint": "두 지표가 각각 무엇에 의해 결정되는지, 그리고 최고 수준을 모두에 적용하면 무엇이 문제인지 짚어 보세요.",
+      "keywords": ["손실", "복구 시간", "비용", "등급별", "차등"]
+    },
+    {
+      "id": "dr-logical-recovery-essay",
+      "type": "essay",
+      "dbms": "neutral",
+      "q": "WHERE 없는 DELETE 사고가 발생했을 때의 복구 절차를 순서대로 서술하시오.",
+      "reference": "먼저 추가 쓰기를 차단한다(애플리케이션을 읽기 전용이나 점검 모드로). 다음으로 로그·binlog에서 사고 발생 직전 타임스탬프를 정확히 특정한다. 복구는 운영 인스턴스에 바로 덮어쓰지 않고 별도 인스턴스에서 수행한다. 최근 풀백업을 새 인스턴스에 복원한 뒤 WAL/binlog를 사고 직전 시점까지만 재적용한다. 그 복구본에서 삭제된 데이터만 추출해, 사고 이후 발생한 정상 트랜잭션과 충돌하지 않도록 운영에 병합한다. 마지막으로 왜 WHERE 없는 DELETE가 가능했는지 회고하고 프로덕션 접근 통제, sql_safe_updates, 리뷰 게이트 같은 재발 방지책을 도입한다.",
+      "hint": "가장 먼저 '더 나빠지지 않게' 하는 조치가 있습니다. 그리고 운영 DB에 바로 복원하면 안 되는 이유도 생각해 보세요.",
+      "keywords": ["쓰기 차단", "시점 특정", "별도 인스턴스", "병합", "재발 방지"]
+    },
+    {
+      "id": "dr-drill-essay",
+      "type": "essay",
+      "dbms": "neutral",
+      "q": "정기 DR Drill(훈련)을 어떻게 계획·실행하고 무엇을 남겨야 하는지 서술하시오.",
+      "reference": "먼저 계획 단계에서 범위(전체/부분), 저트래픽 일시, 참여자(온콜·DBA·앱팀), 성공 기준(예: RTO 60분, RPO 5분)을 정의한다. 이해관계자에게 사전 공지하고 롤백 계획을 준비한다. 실행은 Runbook 그대로 DR 리전을 승격하고 트래픽을 전환하며, 가능하면 실제 트래픽 일부로 검증한다. 계측이 핵심이다. 실제 RTO/RPO와 각 단계 소요 시간, 막힌 지점을 기록한다. 그 뒤 페일백으로 원복하고, 목표 대비 실제의 갭을 분석해 Runbook·자동화·아키텍처 개선 항목을 도출한다. 훈련하지 않은 DR은 존재하지 않는 것과 같다.",
+      "hint": "훈련은 '해봤다'로 끝나면 안 됩니다. 무엇을 숫자로 남기고, 그 숫자로 무엇을 개선하는지가 핵심입니다.",
+      "keywords": ["성공 기준", "계측", "RTO", "페일백", "회고"]
+    },
+    {
+      "id": "dr-backup-illusion-essay",
+      "type": "essay",
+      "dbms": "neutral",
+      "q": "\"우리는 백업이 있으니 DR이 된다\"는 말이 왜 착각인지 서술하시오.",
+      "reference": "백업의 존재와 복구 능력은 다르다. 첫째, 복원을 실제로 해보지 않은 백업은 손상되었거나 절차가 잘못되었을 수 있어 정작 필요할 때 쓸 수 없다. 둘째, 복원에 걸리는 시간이 RTO를 초과하면 목표를 달성하지 못하므로 DR로서 실패다. 셋째, 백업이 원본과 같은 리전·같은 데이터센터에만 있다면 그 리전이 소실될 때 백업도 함께 사라진다. 따라서 원격지 보관, 복원 시간 계측, 정기적인 복원 검증 루틴이 함께 있어야 비로소 DR이라 할 수 있다.",
+      "hint": "백업 파일이 있다는 사실만으로 부족한 이유를 세 가지 관점(검증·시간·위치)에서 짚어 보세요.",
+      "keywords": ["검증", "복원 시간", "RTO", "원격지"]
+    }
+  ]
+}
