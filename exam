@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# 학습 점검 시험 간편 실행 래퍼.
+# 인자 없이 실행하면 TUI에서 DBMS·티어·챕터를 골라 시험을 시작한다.
+# 모든 인자는 scripts/exam.py로 그대로 전달된다.
+set -euo pipefail
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec python3 "$here/scripts/exam.py" "$@"
