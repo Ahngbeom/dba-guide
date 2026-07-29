@@ -1,0 +1,57 @@
+# 장애 대응 게임용 로컬 MySQL 랩.
+#
+# 두 서버는 복제가 "구성되지 않은" 상태로 뜬다 — binlog/GTID만 켜두고
+# CHANGE REPLICATION SOURCE는 하지 않는다. 복제 구성 자체가 구축 스테이지의
+# 과제이고, 장애 스테이지는 setup 단계에서 엔진이 알아서 배선하기 때문이다.
+#
+#   ./shoot up     기동
+#   ./shoot down   정리(볼륨 포함)
+name: dbshoot
+
+services:
+  primary:
+    image: mysql:8.4
+    container_name: dbshoot-primary
+    command: --mysql-native-password=OFF
+    environment:
+      MYSQL_ROOT_PASSWORD: dbshoot-root
+      MYSQL_ROOT_HOST: "%"
+    ports:
+      - "3306:3306"
+    volumes:
+      - primary-data:/var/lib/mysql
+      - ./conf/primary.cnf:/etc/mysql/conf.d/zz-dbshoot.cnf:ro
+      - ./conf/root-client.cnf:/root/.my.cnf:ro
+      - ./seed:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      # 자격증명은 /root/.my.cnf에서 읽는다 — 명령줄에 비밀번호를 노출하지 않는다.
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 40s
+
+  replica:
+    image: mysql:8.4
+    container_name: dbshoot-replica
+    command: --mysql-native-password=OFF
+    environment:
+      MYSQL_ROOT_PASSWORD: dbshoot-root
+      MYSQL_ROOT_HOST: "%"
+    ports:
+      - "3307:3306"
+    volumes:
+      - replica-data:/var/lib/mysql
+      - ./conf/replica.cnf:/etc/mysql/conf.d/zz-dbshoot.cnf:ro
+      - ./conf/root-client.cnf:/root/.my.cnf:ro
+      - ./seed:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 40s
+
+volumes:
+  primary-data:
+  replica-data:

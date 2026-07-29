@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# DB 장애 대응 게임 간편 실행 래퍼.
+# 인자 없이 실행하면 스테이지를 골라 바로 시작한다.
+# 모든 인자는 scripts/shooting.py로 그대로 전달된다.
+set -euo pipefail
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec python3 "$here/scripts/shooting.py" "$@"

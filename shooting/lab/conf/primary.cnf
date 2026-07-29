@@ -1,0 +1,16 @@
+[mysqld]
+server_id = 1
+log_bin = mysql-bin
+gtid_mode = ON
+enforce_gtid_consistency = ON
+
+# 플레이어가 친 명령을 게임 엔진이 읽기 위한 설정.
+# log_output=TABLE 이면 파일을 tail 하지 않고 mysql.general_log 를 SQL로 조회할 수 있고,
+# user_host 컬럼으로 "플레이어(dba)"와 "엔진(root@localhost)"을 구분할 수 있다.
+general_log = ON
+log_output = TABLE
+
+# 락 경합 스테이지에서 피해 세션이 플레이어가 손쓰기도 전에 스스로 풀려버리면
+# 장애가 재현되지 않는다. 기본 50초는 너무 짧다.
+# 넉넉히 잡아야 느리게 푸는 플레이어도 클리어할 수 있다(등급만 내려간다).
+innodb_lock_wait_timeout = 1800
