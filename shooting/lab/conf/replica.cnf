@@ -1,0 +1,14 @@
+[mysqld]
+server_id = 2
+log_bin = mysql-bin
+gtid_mode = ON
+enforce_gtid_consistency = ON
+relay_log = relay-bin
+
+general_log = ON
+log_output = TABLE
+
+innodb_lock_wait_timeout = 300
+
+# read_only는 일부러 켜지 않는다 — 복제 구성은 구축 스테이지의 과제이고,
+# read_only 설정도 그 과제의 일부다.

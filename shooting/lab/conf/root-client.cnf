@@ -1,0 +1,6 @@
+; 컨테이너 안 /root/.my.cnf 로 마운트된다.
+; `docker exec dbshoot-primary mysql -e "..."` 가 자격증명 없이 동작하게 해
+; 게임 엔진이 명령줄에 비밀번호를 노출하지 않도록 한다.
+[client]
+user = root
+password = dbshoot-root

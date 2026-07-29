@@ -9,3 +9,6 @@ __pycache__/
 
 # 시험 결과 로컬 저장 (개인 학습 기록 — 커밋하지 않음)
 .exam-results/
+
+# 장애 대응 게임 진행 기록 (개인 학습 기록 — 커밋하지 않음)
+.shooting-progress/
