@@ -65,6 +65,15 @@ EXPECT_OPS = ("eq", "ne", "lt", "lte", "gt", "gte", "contains", "in")
 # wait_gtid_sync만 sql 없이 동작한다(대기 자체가 단계의 내용이다).
 SETUP_TYPES = ("sql", "session", "sessions", "wait_gtid_sync")
 
+# 엔진의 장부질(로그 비우기)은 binlog에 남기지 않는다.
+#
+# 이게 없으면 primary에서 도는 `TRUNCATE TABLE mysql.general_log`가 binlog에 실려
+# **replica에서도 그대로 실행된다.** 감시는 primary 로그를 먼저 읽고(=비우고)
+# replica 로그를 나중에 읽으므로, 그 사이 복제가 전달한 TRUNCATE가 replica의
+# 로그를 지워버린다 — 플레이어가 replica에서 친 명령이 매 주기 증발한다.
+# 복제를 구성하기 전에는 드러날 수 없던 함정이다.
+NO_BINLOG = "SET SESSION sql_log_bin = 0; "
+
 # 플레이어(dba)가 친 질의만 골라 읽고, 읽은 즉시 로그를 비운다.
 #
 # 비우는 게 핵심이다. mysql.general_log는 CSV 엔진이라 인덱스가 없어 조회할 때마다
@@ -77,6 +86,7 @@ SETUP_TYPES = ("sql", "session", "sessions", "wait_gtid_sync")
 #
 # 개행/탭은 SQL 단계에서 공백으로 눌러 TSV 파싱이 깨지지 않게 한다.
 PLAYER_LOG_SQL = (
+    NO_BINLOG +
     "SELECT REPLACE(REPLACE(REPLACE("
     "CONVERT(argument USING utf8mb4), '\\r', ' '), '\\n', ' '), '\\t', ' ') "
     "FROM mysql.general_log "
@@ -964,8 +974,9 @@ def reset_player_log(target):
     """플레이어 명령 로그를 비운다. 스테이지 시작 시점을 0으로 맞춘다.
 
     로깅을 켜 둔 채로 TRUNCATE가 가능하므로 off/on 토글이 필요 없다.
+    binlog에서 빼는 이유는 NO_BINLOG 주석 참고 — 복제되면 replica의 로그까지 지운다.
     """
-    mysql(target, "TRUNCATE TABLE mysql.general_log")
+    mysql(target, NO_BINLOG + "TRUNCATE TABLE mysql.general_log")
 
 
 def read_player_commands(target):

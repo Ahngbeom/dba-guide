@@ -845,6 +845,20 @@ class ShippedStagesTest(unittest.TestCase):
         self.assertTrue(by_name["long-reader"].get("culprit"))
         self.assertFalse(by_name["deploy-alter"].get("culprit"))
 
+    def test_replication_lag_stage_puts_the_culprit_on_the_replica(self):
+        stage = shooting.load_stage(
+            REPO_ROOT / "shooting" / "stages" / "2-2-replication-lag.json")
+        culprits = [s for s in stage["setup"] if s.get("culprit")]
+        self.assertEqual(len(culprits), 1)
+        # 이 스테이지의 요점은 "범인이 primary에 있다"는 습관을 깨는 것이다.
+        # replica로 옮겨두지 않으면 1-3과 같은 스테이지가 되어버린다.
+        self.assertEqual(culprits[0]["on"], "replica")
+
+    def test_engine_bookkeeping_stays_out_of_the_binlog(self):
+        # primary의 로그 비우기가 binlog에 실리면 replica에서도 실행되어,
+        # 플레이어가 replica에서 친 명령이 감시 주기마다 증발한다.
+        self.assertIn(shooting.NO_BINLOG, shooting.PLAYER_LOG_SQL)
+
     def test_missing_index_stage_has_no_culprit(self):
         stage = shooting.load_stage(
             REPO_ROOT / "shooting" / "stages" / "4-1-missing-index.json")
