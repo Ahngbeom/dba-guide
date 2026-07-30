@@ -344,6 +344,64 @@ class ValidateStageTest(unittest.TestCase):
             constraints=[{"id": "c", "detect": "텔레파시"}]))
         self.assertTrue(any("detect" in e for e in errs))
 
+    def test_wait_gtid_sync_step_needs_no_sql(self):
+        # 이 단계는 대기 자체가 내용이라 실행할 SQL이 없다.
+        errs = shooting.validate_stage(_minimal_stage(
+            setup=[{"type": "wait_gtid_sync", "on": "replica",
+                    "source": "primary", "timeout_seconds": 60}]))
+        self.assertEqual(errs, [])
+
+    def test_wait_gtid_sync_rejects_unknown_source(self):
+        errs = shooting.validate_stage(_minimal_stage(
+            setup=[{"type": "wait_gtid_sync", "on": "replica",
+                    "source": "어딘가"}]))
+        self.assertTrue(any("source" in e for e in errs))
+
+    def test_sql_step_still_requires_sql(self):
+        # wait_gtid_sync 예외가 다른 단계의 검사까지 풀어버리면 안 된다.
+        errs = shooting.validate_stage(_minimal_stage(
+            setup=[{"type": "sql", "on": "primary"}]))
+        self.assertTrue(any("sql" in e for e in errs))
+
+
+class TolerateErrorTest(unittest.TestCase):
+    """조회 대상이 아직 없는 목표를 '고장'이 아니라 '미충족'으로 읽는 경로.
+
+    복제를 붙이기 전의 빈 replica에서 shop.orders를 세면 당연히 에러다.
+    그걸 빨간 '감시 오류'로 띄우면 플레이어가 감시가 죽은 줄로 오인한다.
+    """
+
+    def setUp(self):
+        self._real_mysql = shooting.mysql
+
+        def boom(*a, **kw):
+            raise shooting.LabError("Unknown database 'shop'")
+
+        shooting.mysql = boom
+        self.addCleanup(setattr, shooting, "mysql", self._real_mysql)
+
+    def _run(self, **extra):
+        obj = {"id": "o1", "type": "state", "on": "replica",
+               "query": "SELECT COUNT(*) FROM shop.orders",
+               "expect": {"op": "eq", "value": 200000}}
+        obj.update(extra)
+        stage = _minimal_stage(objectives=[obj])
+        session = shooting.init_session(stage)
+        step = {"kind": "state", "id": "o1", "label": "복제 데이터"}
+        err = shooting.run_watch_step(step, stage, session, {})
+        return err, session["states"]["o1"]
+
+    def test_tolerated_error_reads_as_unmet_without_alarming(self):
+        err, st = self._run(tolerate_error=True)
+        self.assertIsNone(err)
+        self.assertIsNone(st["error"])
+        self.assertFalse(st["done"])
+
+    def test_untolerated_error_still_surfaces(self):
+        err, st = self._run()
+        self.assertIn("Unknown database", err)
+        self.assertIn("Unknown database", st["error"])
+
 
 class WatchPlanTest(unittest.TestCase):
     """감시를 한 바퀴에 한 단계씩 나눠 도는 계획 로직.
