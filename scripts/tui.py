@@ -119,54 +119,6 @@ def move_line(chars, pos, delta):
     return min(next_start + col, next_end)
 
 
-def hscroll(text, pos, width):
-    """한 줄 입력을 폭 안에 담기 위한 가로 스크롤 → (보이는 조각, 커서 열).
-
-    커서가 항상 보이도록 창을 민다. 폭은 표시 폭(전각=2) 기준이라
-    긴 SQL을 한 줄로 칠 때도 커서가 화면 밖으로 나가지 않는다.
-    """
-    width = max(1, width)
-    pos = min(max(pos, 0), len(text))
-    start = 0
-    # 커서가 오른쪽 밖으로 나가면 시작점을 오른쪽으로 민다.
-    while cwidth(text[start:pos]) > width - 1:
-        start += 1
-    return fit(text[start:], width), cwidth(text[start:pos])
-
-
-def hslice(text, offset, width):
-    """표시 폭 기준으로 왼쪽 offset칸을 버리고 width칸을 잘라낸다.
-
-    넓은 결과 테이블(예: performance_schema.data_locks는 한 줄 254칸)을
-    가로로 밀어 보기 위한 것. 전각 문자를 반으로 쪼개지 않는다.
-    """
-    offset = max(0, int(offset))
-    if offset:
-        used = 0
-        for i, ch in enumerate(text):
-            if used >= offset:
-                text = text[i:]
-                break
-            used += 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
-        else:
-            text = ""
-    return fit(text, max(0, width))
-
-
-def clamp_scroll(offset, total, height):
-    """스크롤백 오프셋을 유효 범위로 고정한다.
-
-    total <= height 면 스크롤할 것이 없으므로 항상 0.
-    """
-    height = max(1, height)
-    if total <= height:
-        return 0
-    return min(max(int(offset), 0), total - height)
-
-
-# --------------------------------------------------------------------------- #
-# 화면 출력 (curses 모듈을 인자로 받는다)
-# --------------------------------------------------------------------------- #
 def put(stdscr, curses, y, x, text, cols, attr=0):
     """(y, x)부터 cols 컬럼 안에서 안전하게 텍스트를 그린다.
 

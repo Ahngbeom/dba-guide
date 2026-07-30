@@ -7,8 +7,12 @@ Docker도 MySQL도 띄우지 않는다 — 가짜 로그 행과 가짜 쿼리 �
 실행:
     python3 -m unittest discover -s tests
 """
+import builtins
+import contextlib
+import io
 import json
 import sys
+import types
 import unittest
 from pathlib import Path
 
@@ -408,8 +412,8 @@ class WatchPlanTest(unittest.TestCase):
         self.assertIsNone(step)
 
 
-class ConsoleTest(unittest.TestCase):
-    """TUI 내장 SQL 콘솔의 순수 로직."""
+class ClientHandoffTest(unittest.TestCase):
+    """진짜 mysql 클라이언트로 넘기는 경로."""
 
     def setUp(self):
         self.stage = shooting.load_stage(
@@ -428,139 +432,303 @@ class ConsoleTest(unittest.TestCase):
         self.assertEqual(shooting.objective_marks(self.stage, {}),
                          "[?][?][ ][ ]")
 
-    def test_history_walks_backwards_then_returns_to_new_line(self):
-        hist = ["SELECT 1", "SELECT 2", "SELECT 3"]
-        idx, text = shooting.history_move(hist, 0, +1)
-        self.assertEqual((idx, text), (1, "SELECT 3"))    # 가장 최근부터
-        idx, text = shooting.history_move(hist, idx, +1)
-        self.assertEqual((idx, text), (2, "SELECT 2"))
-        idx, text = shooting.history_move(hist, idx, -1)
-        self.assertEqual((idx, text), (1, "SELECT 3"))
-        idx, text = shooting.history_move(hist, idx, -1)
-        self.assertEqual((idx, text), (0, ""))            # 편집 중이던 새 줄
+    def test_command_uses_player_credentials(self):
+        cmd = shooting.mysql_client_command(self.stage)
+        self.assertEqual(cmd[0], "mysql")
+        self.assertIn(f"-u{shooting.PLAYER_USER}", cmd)
+        self.assertIn(f"-D{shooting.PLAYER_DB}", cmd)
+        self.assertIn(f"-h{shooting.PLAYER_HOST}", cmd)
+        self.assertIn(f"-P{shooting.PLAYER_PORT}", cmd)
 
-    def test_history_clamps_at_the_oldest_entry(self):
-        hist = ["a", "b"]
-        idx, text = shooting.history_move(hist, 2, +1)
-        self.assertEqual((idx, text), (2, "a"))
+    def test_wide_rows_switch_to_vertical(self):
+        # data_locks 는 한 줄이 254칸이다 — 이 옵션이 빠지면 화면에서 잘린다.
+        self.assertIn("--auto-vertical-output",
+                      shooting.mysql_client_command(self.stage))
 
-    def test_history_empty_is_safe(self):
-        self.assertEqual(shooting.history_move([], 0, +1), (0, None))
+    def test_prompt_carries_stage_context(self):
+        cmd = shooting.mysql_client_command(self.stage)
+        prompt = [a for a in cmd if a.startswith("--prompt=")]
+        self.assertEqual(len(prompt), 1)
+        self.assertIn(self.stage["id"], prompt[0])
 
-    def test_clip_output_passes_short_results(self):
-        lines, clipped = shooting.clip_output("a\nb\nc")
-        self.assertEqual(lines, ["a", "b", "c"])
-        self.assertFalse(clipped)
+    def test_pager_only_when_available(self):
+        without = shooting.mysql_client_command(self.stage)
+        self.assertFalse([a for a in without if a.startswith("--pager=")])
+        withp = shooting.mysql_client_command(self.stage, pager="less -SFX")
+        self.assertIn("--pager=less -SFX", withp)
 
-    def test_clip_output_truncates_huge_results(self):
-        # SELECT * FROM orders 는 20만 행이다. 암묵적 LIMIT을 붙여 의미를 바꾸는
-        # 대신 표시만 자른다.
-        lines, clipped = shooting.clip_output("\n".join(str(i)
-                                                        for i in range(5000)),
-                                              max_lines=100)
-        self.assertEqual(len(lines), 100)
-        self.assertTrue(clipped)
+    def test_password_never_on_the_command_line(self):
+        # 비밀번호는 MYSQL_PWD 환경변수로 넘긴다 — ps 에 노출되면 안 된다.
+        cmd = shooting.mysql_client_command(self.stage, pager="less")
+        self.assertFalse([a for a in cmd
+                          if shooting.PLAYER_PASSWORD in a and a != "mysql"])
 
-    def test_clip_output_empty(self):
-        self.assertEqual(shooting.clip_output(""), ([], False))
-        self.assertEqual(shooting.clip_output(None), ([], False))
-
-    def test_console_credentials_match_the_seed_grants(self):
-        # shooting/lab/seed/03-users.sql 과 어긋나면 콘솔이 조용히 인증 실패한다.
+    def test_credentials_match_the_seed_grants(self):
+        # shooting/lab/seed/03-users.sql 과 어긋나면 조용히 인증 실패한다.
         seed = (REPO_ROOT / "shooting" / "lab" / "seed"
                 / "03-users.sql").read_text(encoding="utf-8")
         self.assertIn(f"'{shooting.PLAYER_USER}'@'%'", seed)
         self.assertIn(f"IDENTIFIED BY '{shooting.PLAYER_PASSWORD}'", seed)
         self.assertIn(f"ON {shooting.PLAYER_DB}.*", seed)
 
+    def test_connect_hint_derives_from_the_same_constants(self):
+        hint = shooting._connect_hint({})
+        for part in (shooting.PLAYER_HOST, shooting.PLAYER_PORT,
+                     shooting.PLAYER_USER, shooting.PLAYER_DB):
+            self.assertIn(part, hint)
 
-class CompletionTest(unittest.TestCase):
-    """콘솔 Tab 자동완성.
+    def test_banner_lists_only_unfinished_objectives(self):
+        session = shooting.init_session(self.stage)
+        done, rest = self.stage["objectives"][0], self.stage["objectives"][1:]
+        session["states"][done["id"]]["done"] = True
+        banner = shooting.client_banner(self.stage, session)
+        self.assertNotIn(f"[ ] {done.get('label', done['id'])}", banner)
+        for o in rest:
+            self.assertIn(f"[ ] {o.get('label', o['id'])}", banner)
 
-    MySQL은 존재하지 않는 객체도 권한 오류로 답하기 때문에
-    (`performence_schema` 오타 → "SELECT command denied"), 사람이 철자가 아니라
-    GRANT를 의심하게 된다. 오타가 애초에 나지 않게 하는 게 이 기능의 목적이다.
+    def test_banner_is_returned_not_printed(self):
+        # curses가 화면을 잡고 있는 동안 print()하면 게임 화면 위에 겹쳐 찍힌다.
+        # 그래서 배너는 문자열로 나와 endwin() 뒤에 출력돼야 한다.
+        session = shooting.init_session(self.stage)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            banner = shooting.client_banner(self.stage, session)
+        self.assertEqual(buf.getvalue(), "")
+        self.assertIn(self.stage["id"], banner)
+        self.assertIn("exit", banner)
+
+    def test_run_in_terminal_prints_banner_after_endwin(self):
+        order = []
+
+        class FakeCurses:
+            def def_prog_mode(self):
+                order.append("def_prog_mode")
+
+            def endwin(self):
+                order.append("endwin")
+
+            def reset_prog_mode(self):
+                order.append("reset_prog_mode")
+
+        class FakeScreen:
+            def clear(self):
+                pass
+
+            def refresh(self):
+                pass
+
+        def fake_run(cmd, env=None):
+            order.append("run")
+            return types.SimpleNamespace(returncode=0)
+
+        real_print = builtins.print
+        builtins.print = lambda *a, **k: order.append("print")
+        real_run = shooting.subprocess.run
+        shooting.subprocess.run = fake_run
+        try:
+            rc = shooting.run_in_terminal(FakeScreen(), FakeCurses(),
+                                          ["true"], banner="hello")
+        finally:
+            builtins.print = real_print
+            shooting.subprocess.run = real_run
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(order, ["def_prog_mode", "endwin", "print", "run",
+                                 "reset_prog_mode"])
+
+
+class RecordEventTest(unittest.TestCase):
+    def test_appends_in_order(self):
+        s = {}
+        shooting.record_event(s, "command", "SHOW PROCESSLIST", 41)
+        shooting.record_event(s, "command", "KILL 213", 138)
+        self.assertEqual([e["text"] for e in s["events"]],
+                         ["SHOW PROCESSLIST", "KILL 213"])
+
+    def test_duplicate_commands_are_kept(self):
+        # 같은 질의를 두 번 친 것도 타임라인에서는 의미가 있다.
+        s = {}
+        shooting.record_event(s, "command", "SHOW PROCESSLIST", 10)
+        shooting.record_event(s, "command", "SHOW PROCESSLIST", 55)
+        self.assertEqual(len(s["events"]), 2)
+
+    def test_unique_suppresses_repeats(self):
+        # 금지 행동은 폴링마다 다시 감지된다 — 그대로 두면 타임라인이 도배된다.
+        s = {}
+        for at in (10, 12, 14):
+            shooting.record_event(s, "violation", "무차별 KILL 금지", at,
+                                  unique=True)
+        self.assertEqual(len(s["events"]), 1)
+        self.assertEqual(s["events"][0]["at"], 10)   # 최초 발생 시각을 남긴다
+
+    def test_negative_time_is_clamped(self):
+        s = {}
+        shooting.record_event(s, "hint", "힌트", -5)
+        self.assertEqual(s["events"][0]["at"], 0.0)
+
+
+class BuildNoteTest(unittest.TestCase):
+    """포스트모템 초안 — 사실은 채우고 분석은 비운다."""
+
+    def setUp(self):
+        self.stage = shooting.load_stage(
+            REPO_ROOT / "shooting" / "stages" / "1-3-lock-contention.json")
+        self.session = shooting.init_session(self.stage)
+        self.session["states"]["diagnose-symptom"].update(done=True,
+                                                          correct=True)
+        self.session["states"]["diagnose-view"].update(done=True,
+                                                       correct=False)
+        self.session["states"]["unblock"]["done"] = True
+        self.session["hints_used"] = 1
+        self.session["violations"] = [{"id": "no-kill-all",
+                                       "label": "무차별 KILL 금지",
+                                       "detail": "범인 외 세션 3건을 KILL했습니다"}]
+        shooting.record_event(self.session, "command", "KILL 213", 138)
+        self.note = shooting.build_note(
+            self.stage, self.session,
+            shooting.summarize(self.stage, self.session), "2026-07-29")
+
+    def test_follows_the_chapter_template(self):
+        for section in ("## 요약", "## 타임라인", "## 근본 원인 분석 (5 Whys)",
+                        "## 잘된 점 (What went well)",
+                        "## 아쉬운 점 (What went wrong)",
+                        "## 재발 방지 액션 아이템",
+                        "## 비난 없음(Blameless) 노트"):
+            self.assertIn(section, self.note)
+
+    def test_analysis_sections_stay_blank(self):
+        # 이걸 채워주면 회고 연습이 되지 않는다. 스테이지 해설은 노트를 쓴 뒤에 본다.
+        self.assertIn("- 근본 원인: <!-- 직접 채우세요 -->", self.note)
+        self.assertIn("1. 왜? → ", self.note)
+        self.assertIn("5. 왜? → ", self.note)
+        self.assertIn("- [ ] <!--", self.note)
+
+    def test_debrief_answer_is_not_leaked(self):
+        self.assertNotIn(self.stage["debrief"].split("\n")[0], self.note)
+
+    def test_timeline_is_sorted_and_marked(self):
+        lines = [ln for ln in self.note.splitlines()
+                 if ln.startswith("- 00:") or ln.startswith("- 02:")]
+        self.assertTrue(lines[0].startswith("- 00:00"))
+        self.assertIn("🔥 장애 발생", lines[0])
+        self.assertIn("KILL 213", "\n".join(lines))
+
+    def test_wrong_quiz_becomes_the_mistake_note(self):
+        self.assertIn("**오답**", self.note)
+        self.assertIn("data_lock_waits", self.note)     # 정답
+        self.assertIn("금지 행동", self.note)
+        self.assertIn("힌트 1회 사용", self.note)
+
+    def test_wrong_answer_is_not_listed_as_a_win(self):
+        wins = self.note.split("## 잘된 점 (What went well)")[1] \
+                        .split("## 아쉬운 점")[0]
+        self.assertIn("상황 식별", wins)
+        self.assertNotIn("확인 경로 파악", wins)
+
+    def test_clean_run_has_no_empty_regret_bullet_list(self):
+        session = shooting.init_session(self.stage)
+        for o in self.stage["objectives"]:
+            session["states"][o["id"]]["done"] = True
+            if o["type"] == "quiz":
+                session["states"][o["id"]]["correct"] = True
+        note = shooting.build_note(
+            self.stage, session,
+            shooting.summarize(self.stage, session), "2026-07-29")
+        regret = note.split("## 아쉬운 점 (What went wrong)")[1] \
+                     .split("## 재발 방지")[0]
+        self.assertIn("<!-- 직접 채우세요 -->", regret)
+
+
+class DebriefAttachmentTest(unittest.TestCase):
+    """해설은 초안이 아니라 **편집기를 닫은 뒤** 노트에 붙는다.
+
+    초안에 넣으면 근본 원인·5 Whys를 빈칸으로 둔 의미가 사라진다
+    (같은 파일 안에 정답이 있으면 스크롤 한 번이다).
     """
 
-    SCHEMAS = ["information_schema", "mysql", "performance_schema", "shop",
-               "sys"]
-    TABLES = {
-        "performance_schema": ["data_lock_waits", "data_locks", "threads"],
-        "shop": ["orders"],
-    }
+    def setUp(self):
+        self.stage = shooting.load_stage(
+            REPO_ROOT / "shooting" / "stages" / "1-3-lock-contention.json")
 
-    def _complete(self, text):
-        start, token = shooting.completion_prefix(text, len(text))
-        cands = shooting.completion_candidates(token, self.SCHEMAS,
-                                               self.TABLES, "shop")
-        new, pos, show = shooting.apply_completion(text, len(text), start,
-                                                   cands, self.SCHEMAS)
-        return new, show
+    def test_section_carries_the_debrief_and_a_blank_review_slot(self):
+        section = shooting.debrief_section(self.stage)
+        self.assertIn(shooting.DEBRIEF_MARKER, section)
+        self.assertIn(self.stage["debrief"].split("\n")[0], section)
+        self.assertIn("## 대조 메모", section)
 
-    def test_prefix_finds_identifier_before_cursor(self):
-        start, token = shooting.completion_prefix("SELECT * FROM perf", 18)
-        self.assertEqual(token, "perf")
-        self.assertEqual(start, 14)
+    def test_no_debrief_means_no_section(self):
+        self.assertIsNone(shooting.debrief_section({}))
+        self.assertIsNone(shooting.debrief_section({"debrief": "   "}))
 
-    def test_prefix_handles_qualified_names(self):
-        text = "SELECT * FROM performance_schema.data_"
-        _, token = shooting.completion_prefix(text, len(text))
-        self.assertEqual(token, "performance_schema.data_")
+    def _note(self, tmp):
+        p = Path(tmp) / "note.md"
+        p.write_text("# 내 회고\n\n## 근본 원인 분석 (5 Whys)\n1. 왜? → 내가 쓴 답\n",
+                     encoding="utf-8")
+        return p
 
-    def test_prefix_empty_after_space(self):
-        start, token = shooting.completion_prefix("SELECT * FROM ", 14)
-        self.assertEqual((start, token), (14, ""))
+    def test_appends_once_and_is_idempotent(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            p = self._note(tmp)
+            self.assertTrue(shooting.append_debrief(p, self.stage))
+            # 노트를 다시 열어 편집해도 해설이 중복되면 안 된다.
+            self.assertFalse(shooting.append_debrief(p, self.stage))
+            body = p.read_text(encoding="utf-8")
+            self.assertEqual(body.count(shooting.DEBRIEF_MARKER), 1)
+            # 내가 쓴 내용은 그대로 남는다
+            self.assertIn("1. 왜? → 내가 쓴 답", body)
+            # 해설은 내 분석 **뒤에** 온다
+            self.assertLess(body.index("내가 쓴 답"),
+                            body.index(shooting.DEBRIEF_MARKER))
 
-    def test_single_schema_match_appends_dot(self):
-        # 스키마를 완성하면 다음 Tab이 바로 테이블을 잇도록 '.'을 붙인다.
-        new, show = self._complete("SELECT * FROM perf")
-        self.assertEqual(new, "SELECT * FROM performance_schema.")
-        self.assertEqual(show, [])
+    def test_safe_on_missing_path_and_none(self):
+        self.assertFalse(shooting.append_debrief(None, self.stage))
+        self.assertFalse(
+            shooting.append_debrief("/no/such/dir/x.md", self.stage))
 
-    def test_multiple_matches_extend_to_common_prefix_and_list(self):
-        new, show = self._complete("SELECT * FROM performance_schema.data_")
-        self.assertEqual(new, "SELECT * FROM performance_schema.data_lock")
-        self.assertEqual(show, ["performance_schema.data_lock_waits",
-                                "performance_schema.data_locks"])
-
-    def test_misspelled_schema_yields_nothing(self):
-        # 이번 사건의 재현 — 오타 스키마에는 후보가 없어야 한다.
-        new, show = self._complete("SELECT * FROM performence_schema.data_")
-        self.assertEqual(new, "SELECT * FROM performence_schema.data_")
-        self.assertEqual(show, [])
-
-    def test_default_schema_tables_complete_without_qualification(self):
-        new, _ = self._complete("SELECT * FROM ord")
-        self.assertEqual(new, "SELECT * FROM orders")
-
-    def test_completion_inserts_before_trailing_text(self):
-        text = "SELECT * FROM perf WHERE 1"
-        start, token = shooting.completion_prefix(text, 18)
-        cands = shooting.completion_candidates(token, self.SCHEMAS,
-                                               self.TABLES, "shop")
-        new, pos, _ = shooting.apply_completion(text, 18, start, cands,
-                                                self.SCHEMAS)
-        self.assertEqual(new, "SELECT * FROM performance_schema. WHERE 1")
-        self.assertEqual(new[:pos], "SELECT * FROM performance_schema.")
-
-    def test_common_prefix(self):
-        self.assertEqual(shooting.common_prefix(["data_lock_waits",
-                                                 "data_locks"]), "data_lock")
-        self.assertEqual(shooting.common_prefix(["abc"]), "abc")
-        self.assertEqual(shooting.common_prefix(["ab", "cd"]), "")
-        self.assertEqual(shooting.common_prefix([]), "")
-
-    def test_no_candidates_leaves_text_untouched(self):
-        text, pos, show = shooting.apply_completion("SELECT x", 8, 7, [])
-        self.assertEqual((text, pos, show), ("SELECT x", 8, []))
+    def test_stage_without_debrief_appends_nothing(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            p = self._note(tmp)
+            before = p.read_text(encoding="utf-8")
+            self.assertFalse(shooting.append_debrief(p, {"id": "x"}))
+            self.assertEqual(p.read_text(encoding="utf-8"), before)
 
 
-class WideResultTest(unittest.TestCase):
-    def test_max_line_width_uses_display_width(self):
-        self.assertEqual(shooting.max_line_width(["abc", "abcdef"]), 6)
-        self.assertEqual(shooting.max_line_width(["복제"]), 4)
-        self.assertEqual(shooting.max_line_width([]), 0)
-        self.assertEqual(shooting.max_line_width(None), 0)
+class NoteFilesTest(unittest.TestCase):
+    def test_collect_puts_current_stage_first_then_newest(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for stage_id, names in [
+                ("1-3-lock", ["20260701-100000-B.md", "20260705-100000-A.md"]),
+                ("2-1-repl", ["20260703-100000-S.md"]),
+            ]:
+                (root / stage_id).mkdir(parents=True)
+                for n in names:
+                    (root / stage_id / n).write_text("x", encoding="utf-8")
+
+            got = shooting.collect_notes(root, "1-3-lock")
+            self.assertEqual([p.parent.name for p in got],
+                             ["1-3-lock", "1-3-lock", "2-1-repl"])
+            # 같은 스테이지 안에서는 최신이 먼저
+            self.assertTrue(got[0].name.startswith("20260705"))
+
+    def test_collect_on_missing_dir(self):
+        self.assertEqual(shooting.collect_notes("/no/such/dir", "x"), [])
+
+    def test_heading_shows_stage_time_and_rank(self):
+        head = shooting.note_heading(
+            Path("/n/1-3-lock-contention/20260729-011122-S.md"))
+        self.assertIn("1-3-lock-contention", head)
+        self.assertIn("20260729-011122", head)
+        self.assertIn("RANK S", head)
+
+    def test_note_path_layout(self):
+        p = shooting.note_path("1-3-lock", "20260729-011122", "A")
+        self.assertEqual(p.parent.name, "1-3-lock")
+        self.assertEqual(p.name, "20260729-011122-A.md")
+        self.assertEqual(p.parent.parent, shooting.NOTES_DIR)
 
 
 class ShippedStagesTest(unittest.TestCase):
