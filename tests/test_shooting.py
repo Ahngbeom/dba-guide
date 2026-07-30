@@ -752,6 +752,25 @@ class ShippedStagesTest(unittest.TestCase):
         # 범인 세션을 표시해두지 않으면 "범인 외 KILL" 판정이 성립하지 않는다.
         self.assertEqual(culprits[0]["name"], "villain")
 
+    def test_metadata_lock_stage_spares_the_blocked_alter(self):
+        stage = shooting.load_stage(
+            REPO_ROOT / "shooting" / "stages" / "1-4-metadata-lock.json")
+        by_name = {s.get("name"): s for s in stage["setup"] if s.get("name")}
+        # 잠금을 쥔 쪽만 범인이다. 막혀 있는 ALTER는 피해자이므로 표시하지
+        # 않아야 "배포를 KILL해버린" 실수가 위반으로 잡힌다.
+        self.assertTrue(by_name["long-reader"].get("culprit"))
+        self.assertFalse(by_name["deploy-alter"].get("culprit"))
+
+    def test_missing_index_stage_has_no_culprit(self):
+        stage = shooting.load_stage(
+            REPO_ROOT / "shooting" / "stages" / "4-1-missing-index.json")
+        # 이 스테이지에는 범인이 없다 — 아무도 남을 막고 있지 않다.
+        # 그래서 allowed_pids가 비고, 어떤 KILL이든 위반으로 잡힌다.
+        # "장애 = KILL" 반사를 깨는 것이 스테이지의 목적이므로 이게 핵심 불변조건이다.
+        self.assertFalse([s for s in stage["setup"] if s.get("culprit")])
+        self.assertIn("kill_precision",
+                      [c["detect"] for c in stage["constraints"]])
+
 
 class SessionTest(unittest.TestCase):
     def test_init_session_prepares_state_per_objective(self):

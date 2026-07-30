@@ -1,0 +1,107 @@
+{
+  "id": "1-4-metadata-lock",
+  "world": 1,
+  "stage": 4,
+  "kind": "incident",
+  "dbms": "mysql",
+  "title": "멈춘 배포",
+  "brief": "배포 스크립트가 걸어둔 ALTER TABLE이 몇 분째 끝나지 않는다. 컬럼 하나 추가하는 작업이고 테이블도 크지 않은데 진행이 없다. CPU는 한가하고, 잠금 대기 화면을 봐도 비어 있다.",
+  "target_seconds": 240,
+  "connect_hint": "MYSQL_PWD=shoot mysql -h127.0.0.1 -P3306 -udba",
+
+  "setup": [
+    {
+      "type": "sql",
+      "on": "primary",
+      "sql": "GRANT ALTER ON shop.* TO 'app'@'%'"
+    },
+    {
+      "type": "sql",
+      "on": "primary",
+      "sql": "SET @has := (SELECT COUNT(*) FROM information_schema.columns WHERE table_schema='shop' AND table_name='orders' AND column_name='region'); SET @s := IF(@has > 0, 'ALTER TABLE shop.orders DROP COLUMN region', 'DO 0'); PREPARE st FROM @s; EXECUTE st; DEALLOCATE PREPARE st"
+    },
+    {
+      "type": "session",
+      "on": "primary",
+      "name": "long-reader",
+      "culprit": true,
+      "user": "app",
+      "password": "app",
+      "sql": "START TRANSACTION; SELECT * FROM shop.orders WHERE id = 1; SELECT SLEEP(3600);"
+    },
+    {
+      "type": "session",
+      "on": "primary",
+      "name": "deploy-alter",
+      "user": "app",
+      "password": "app",
+      "sql": "SELECT SLEEP(2); ALTER TABLE shop.orders ADD COLUMN region VARCHAR(8) NULL;"
+    }
+  ],
+
+  "objectives": [
+    {
+      "id": "diagnose-symptom",
+      "type": "quiz",
+      "label": "상황 식별",
+      "trigger": { "after_seconds": 30 },
+      "question": {
+        "type": "mcq",
+        "q": "ALTER TABLE이 멈춰 있는데 performance_schema.data_lock_waits는 비어 있다. 무엇을 의심해야 하는가?",
+        "choices": [
+          "커밋하지 않은 트랜잭션이 테이블의 메타데이터 잠금을 쥐고 있어 DDL이 배타 잠금을 얻지 못하고 있다",
+          "행 잠금 대기 사슬이 길어 data_lock_waits가 미처 갱신되지 않았다",
+          "ALTER가 테이블을 통째로 복사하는 중이라 원래 오래 걸린다",
+          "디스크 여유 공간이 부족해 임시 테이블을 만들지 못하고 있다"
+        ],
+        "answer": 0,
+        "explain": "data_lock_waits는 InnoDB의 '행' 잠금만 보여준다. DDL이 기다리는 것은 그보다 상위의 메타데이터 잠금(MDL)이라 이 화면에는 아무것도 잡히지 않는다. 트랜잭션은 SELECT 한 줄만 했더라도 열려 있는 동안 그 테이블의 SHARED_READ MDL을 계속 쥔다."
+      }
+    },
+    {
+      "id": "diagnose-view",
+      "type": "quiz",
+      "label": "확인 경로 파악",
+      "question": {
+        "type": "short",
+        "q": "DDL이 기다리는 메타데이터 잠금의 보유자와 대기자를 보여주는 performance_schema 테이블 이름은?",
+        "accept": [
+          "metadata_locks",
+          "performance_schema.metadata_locks"
+        ],
+        "explain": "performance_schema.metadata_locks에서 lock_status가 GRANTED인 보유자와 PENDING인 대기자가 함께 보인다. 다만 owner_thread_id는 processlist의 id가 아니라 performance_schema의 thread_id이므로, KILL할 대상을 찾으려면 performance_schema.threads와 조인해 processlist_id로 바꿔야 한다."
+      }
+    },
+    {
+      "id": "alter-done",
+      "type": "state",
+      "label": "배포 ALTER 완료",
+      "on": "primary",
+      "query": "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema='shop' AND table_name='orders' AND column_name='region'",
+      "expect": { "op": "eq", "value": 1 },
+      "hold_seconds": 5
+    }
+  ],
+
+  "constraints": [
+    {
+      "id": "no-restart",
+      "label": "DB 재시작 금지",
+      "detect": "container_restart"
+    },
+    {
+      "id": "no-kill-all",
+      "label": "무차별 KILL 금지",
+      "detect": "kill_precision",
+      "max_extra_kills": 0
+    }
+  ],
+
+  "hints": [
+    "행 잠금 화면이 비어 있다면 기다리는 대상이 행이 아닐 수 있다. SHOW PROCESSLIST에서 ALTER의 State 컬럼이 무엇이라고 말하는지 그대로 읽어보라.",
+    "performance_schema.metadata_locks가 보유자(GRANTED)와 대기자(PENDING)를 함께 보여준다. 단, owner_thread_id는 processlist의 id가 아니다 — performance_schema.threads와 조인해 processlist_id로 바꿔야 KILL할 대상이 나온다.",
+    "범인은 SELECT 한 줄만 하고 커밋하지 않은 채 열려 있는 트랜잭션이다. 대기 중인 ALTER 자체는 피해자이므로 그것을 KILL하면 배포가 죽는다."
+  ],
+
+  "debrief": "범인은 SELECT 한 줄만 하고 커밋하지 않은 트랜잭션이었다.\n\n1-3에서 배운 경로(performance_schema.data_lock_waits)로는 이 장애가 보이지 않는다.\ndata_lock_waits는 InnoDB의 '행' 잠금만 다루는데, DDL이 막힌 지점은 그보다\n한 층 위인 메타데이터 잠금(MDL)이기 때문이다.\n\nMDL은 행 잠금과 성질이 다르다. 트랜잭션이 어떤 테이블을 한 번이라도\n읽으면 그 트랜잭션이 끝날 때까지 SHARED_READ MDL을 놓지 않는다.\n읽기만 했으니 괜찮다는 직관이 여기서 깨진다.\n\n  SELECT t.processlist_id, t.processlist_user, ml.lock_status\n  FROM performance_schema.metadata_locks ml\n  JOIN performance_schema.threads t ON t.thread_id = ml.owner_thread_id\n  WHERE ml.object_schema = 'shop' AND ml.object_name = 'orders';\n\n대기 중인 ALTER를 KILL하면 화면상 '멈춤'은 사라진다. 하지만 그건 복구가\n아니라 배포를 죽인 것이다. 잠시 뒤 배포가 재시도되면 같은 자리에서 다시 멈춘다.\n\n한 가지 더 — 잠금 대기 시간을 정하는 설정이 둘로 나뉘어 있다.\n행 잠금은 innodb_lock_wait_timeout, MDL은 lock_wait_timeout이 따로 관장한다\n(기본값 1년). 앞의 값만 줄여두고 '타임아웃을 걸어놨다'고 안심하면\n정확히 이 장애에서 무방비가 된다.\n\n온라인 DDL(ALGORITHM=INPLACE, LOCK=NONE)도 이 문제를 피하지 못한다.\n본 작업이 온라인일 뿐, 시작과 끝에 잠깐 배타 MDL을 잡아야 하기 때문이다.\n\n재발 방지: 애플리케이션의 유휴 트랜잭션 정리(autocommit 확인, 커넥션 풀의\n트랜잭션 반납), 스키마 변경 전 information_schema.innodb_trx에서 trx_started가\n오래된 트랜잭션 점검, 배포 스크립트에 lock_wait_timeout을 짧게 걸어\n무한정 기다리는 대신 빠르게 실패하고 재시도하게 만들기."
+}
