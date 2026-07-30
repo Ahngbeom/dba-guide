@@ -25,6 +25,8 @@ import argparse
 import json
 import os
 import re
+import shlex
+import shutil
 import subprocess
 import sys
 import time
@@ -37,11 +39,11 @@ LAB_DIR = REPO_ROOT / "shooting" / "lab"
 COMPOSE_FILE = LAB_DIR / "compose.yaml"
 PROGRESS_DIR = REPO_ROOT / ".shooting-progress"   # 비커밋 — .gitignore
 PROGRESS_FILE = PROGRESS_DIR / "results.jsonl"
+NOTES_DIR = PROGRESS_DIR / "notes"                # 포스트모템 노트(비커밋)
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from tui import (  # noqa: E402
-    bar, clamp_scroll, cwidth, hscroll, hslice, is_backspace, is_enter,
-    is_idle, key_char, put, read_key, wrap,
+    bar, cwidth, is_backspace, is_enter, is_idle, key_char, put, read_key, wrap,
 )
 from exam import grade_mcq, grade_short, shuffle_choices  # noqa: E402
 
@@ -50,14 +52,14 @@ CONTAINERS = {"primary": "dbshoot-primary", "replica": "dbshoot-replica"}
 
 POLL_SECONDS = 2.0        # DB 상태 폴링 주기
 
-# TUI 내장 SQL 콘솔이 쓰는 접속 정보. shooting/lab/seed/03-users.sql 과 맞춰야 한다.
+# 플레이어 접속 정보. shooting/lab/seed/03-users.sql 및 compose 포트 매핑과 맞춰야 한다.
 PLAYER_USER = "dba"
 PLAYER_PASSWORD = "shoot"
 PLAYER_DB = "shop"
-CONSOLE_TIMEOUT = 15      # 초. 락 대기로 막힌 질의가 TUI를 얼리지 않게 한다.
-CONSOLE_MAX_OUTPUT = 2000  # 질의 1회당 담을 최대 출력 줄 수
-CONSOLE_SCROLLBACK = 4000  # 콘솔이 보관하는 최대 줄 수
-HSCROLL_STEP = 20          # 결과 가로 스크롤 한 번에 미는 칸 수
+PLAYER_HOST = "127.0.0.1"
+PLAYER_PORT = "3306"
+# -S 긴 줄 자르기 / -F 한 화면이면 즉시 종료 / -X 나갈 때 화면 지우지 않기
+CLIENT_PAGER = "less -SFX"
 OBJECTIVE_TYPES = ("state", "quiz")
 EXPECT_OPS = ("eq", "ne", "lt", "lte", "gt", "gte", "contains", "in")
 
@@ -232,6 +234,190 @@ def fmt_mmss(seconds):
 
 
 # --------------------------------------------------------------------------- #
+# 포스트모템 타임라인 (순수 로직)
+# --------------------------------------------------------------------------- #
+def record_event(session, kind, text, at, unique=False):
+    """타임라인 이벤트를 기록한다 → 실제로 추가됐는지.
+
+    `unique=True`면 같은 (kind, text)를 한 번만 남긴다 — 금지 행동 위반은 폴링마다
+    다시 감지되므로 그대로 두면 타임라인이 같은 줄로 도배된다. 반대로 플레이어
+    명령은 같은 질의를 두 번 친 것도 의미가 있으므로 중복을 허용한다.
+    """
+    events = session.setdefault("events", [])
+    if unique and any(e["kind"] == kind and e["text"] == text for e in events):
+        return False
+    events.append({"at": max(0.0, float(at)), "kind": kind, "text": text})
+    return True
+
+
+def elapsed_of(session):
+    """세션 시작 이후 경과 초."""
+    return time.monotonic() - session["started"]
+
+
+def note_path(stage_id, stamp, rank):
+    """노트 저장 경로. 파일명만으로 스테이지·시각·등급이 읽힌다."""
+    return NOTES_DIR / stage_id / f"{stamp}-{rank}.md"
+
+
+def collect_notes(notes_dir, current_stage_id=None):
+    """과거 노트 경로 목록 — 현재 스테이지 먼저, 각 그룹 안에서는 최신순.
+
+    "다음 스테이지에서 지난 기록을 꺼내 본다"가 이 정렬의 이유다.
+    """
+    base = Path(notes_dir)
+    if not base.is_dir():
+        return []
+    paths = sorted(base.glob("*/*.md"),
+                   key=lambda p: (p.parent.name != (current_stage_id or ""),
+                                  p.parent.name,
+                                  p.name),
+                   reverse=False)
+    # 같은 스테이지 안에서는 최신이 먼저 오도록 뒤집는다.
+    out = []
+    for stage_id in dict.fromkeys(p.parent.name for p in paths):
+        same = [p for p in paths if p.parent.name == stage_id]
+        out.extend(sorted(same, key=lambda p: p.name, reverse=True))
+    return out
+
+
+def note_heading(path):
+    """`less`로 이어 붙일 때 각 노트 앞에 넣을 구분선."""
+    stem = Path(path).stem                     # <YYYYMMDD-HHMMSS>-<rank>
+    stamp, _, rank = stem.rpartition("-")
+    return (f"{'═' * 70}\n"
+            f"  {Path(path).parent.name}   {stamp}   RANK {rank}\n"
+            f"{'═' * 70}")
+
+
+_EVENT_MARK = {"incident": "🔥", "command": ">", "objective": "✓",
+               "quiz": "?", "hint": "…", "violation": "!"}
+
+
+def build_note(stage, session, result, today):
+    """세션에서 포스트모템 초안(Markdown)을 만든다.
+
+    `03-advanced/09-incident-response-and-postmortem.md`가 가르치는 템플릿을
+    그대로 따른다 — 장애 직후 그 템플릿으로 회고를 쓰는 것이 그 챕터의 실습이다.
+
+    **관찰된 사실만 채우고 분석은 비워 둔다.** 근본 원인·5 Whys·재발 방지를
+    미리 채워주면 회고 연습이 되지 않는다. 스테이지의 정답 해설(debrief)은
+    노트를 쓴 뒤에 보여준다.
+    """
+    correct, total = quiz_totals(stage, session)
+    out = [f"# 포스트모템: {today} {stage.get('title', '')}"
+           f" ({stage.get('id', '')})", ""]
+
+    out += ["## 요약",
+            f"- 영향: {fmt_mmss(result['elapsed'])} 동안 대응 "
+            f"(목표 {fmt_mmss(stage.get('target_seconds'))})",
+            f"- 등급: {result['rank']} ({result['score']}/4)",
+            "- 근본 원인: <!-- 직접 채우세요 -->", ""]
+
+    out.append("## 타임라인")
+    for e in sorted(session.get("events") or [], key=lambda x: x["at"]):
+        mark = _EVENT_MARK.get(e["kind"], "-")
+        out.append(f"- {fmt_mmss(e['at'])} {mark} {e['text']}")
+    out.append("")
+
+    out += ["## 근본 원인 분석 (5 Whys)"]
+    out += [f"{i}. 왜? → " for i in range(1, 6)]
+    out.append("")
+
+    out.append("## 잘된 점 (What went well)")
+    for o in stage["objectives"]:
+        st = session["states"][o["id"]]
+        # 틀린 진단은 '달성'했어도 잘된 점이 아니다 — 아래 '아쉬운 점'으로 간다.
+        if st["done"] and st.get("correct") is not False:
+            out.append(f"- {o.get('label', o['id'])}")
+    if stage.get("target_seconds") and result["elapsed"] <= stage["target_seconds"]:
+        out.append("- 목표 시간 안에 복구했다")
+    out.append("- <!-- 더 있으면 추가하세요 -->")
+    out.append("")
+
+    # 오답노트는 별도 문서로 분리하지 않고 여기에 녹인다 —
+    # 회고 하나로 통합하는 편이 나중에 다시 볼 때 쓸모 있다.
+    out.append("## 아쉬운 점 (What went wrong)")
+    wrong = False
+    for obj in stage["objectives"]:
+        st = session["states"][obj["id"]]
+        if obj["type"] != "quiz" or st.get("correct") is not False:
+            continue
+        wrong = True
+        q = obj["question"]
+        out.append(f"- **오답** «{obj.get('label', obj['id'])}» {q['q']}")
+        if q.get("type") == "mcq":
+            out.append(f"  - 정답: {q['choices'][q['answer']]}")
+        elif q.get("accept"):
+            out.append(f"  - 정답: {q['accept'][0]}")
+        if q.get("explain"):
+            out.append(f"  - {q['explain']}")
+    for v in session.get("violations") or []:
+        wrong = True
+        out.append(f"- **금지 행동** {v['label']} — {v['detail']}")
+    if session.get("hints_used"):
+        wrong = True
+        out.append(f"- 힌트 {session['hints_used']}회 사용")
+    if not wrong:
+        out.append("- <!-- 직접 채우세요 -->")
+    out.append("")
+
+    out += ["## 재발 방지 액션 아이템",
+            "- [ ] <!-- 담당자·기한 없이는 실행되지 않는다 -->", "",
+            "## 비난 없음(Blameless) 노트", "", ""]
+
+    out += ["---",
+            f"진단 정확도 {correct}/{total} · "
+            f"금지 행동 {len(session.get('violations') or [])}건 · "
+            f"힌트 {session.get('hints_used', 0)}회",
+            "이 노트는 `n` 키로 다음 스테이지에서도 다시 꺼내 볼 수 있습니다."]
+    return "\n".join(out) + "\n"
+
+
+DEBRIEF_MARKER = "## 스테이지 해설 (공식)"
+
+
+def debrief_section(stage):
+    """노트 끝에 덧붙일 해설 절(Markdown). `debrief`가 없으면 None.
+
+    **초안에는 넣지 않는다.** 편집기를 닫은 뒤에 덧붙여야 근본 원인·5 Whys를
+    스스로 쓰게 되고, 그러면서도 나중에 다시 꺼내 볼 때는 내 분석과 공식 해설이
+    한 문서에 나란히 남는다.
+    """
+    body = (stage.get("debrief") or "").strip()
+    if not body:
+        return None
+    return "\n".join([
+        "", "---", "", DEBRIEF_MARKER, "",
+        "<!-- 노트를 쓴 뒤에 덧붙었습니다. 위에 쓴 내 분석과 대조해 보세요. -->",
+        "", body, "",
+        "## 대조 메모", "",
+        "<!-- 내 5 Whys와 공식 해설이 어긋난 지점을 적어두면 다음에 도움이 됩니다. -->",
+        "", ""])
+
+
+def mysql_client_command(stage, pager=None):
+    """대화형 mysql 클라이언트 인자 목록.
+
+    직접 만든 콘솔을 대체한다. readline·히스토리·컬럼 완성·페이저·자동 세로
+    출력을 전부 클라이언트가 제공하므로 우리가 다시 만들 이유가 없다.
+
+    `--auto-rehash`(스키마·테이블·컬럼 완성)는 기본값이라 주지 않는다.
+    """
+    cmd = [
+        "mysql",
+        f"-h{PLAYER_HOST}", f"-P{PLAYER_PORT}",
+        f"-u{PLAYER_USER}", f"-D{PLAYER_DB}",
+        # 행이 터미널보다 넓으면 알아서 \G 세로 출력으로 바꾼다.
+        "--auto-vertical-output",
+        f"--prompt=[{stage.get('id', 'shoot')}] mysql> ",
+    ]
+    if pager:
+        cmd.append(f"--pager={pager}")
+    return cmd
+
+
+# --------------------------------------------------------------------------- #
 # 감시 단계 계획 (순수 로직)
 # --------------------------------------------------------------------------- #
 # 감시를 한 번에 몰아서 하면 docker 호출 4개가 연달아 일어나 UI가 ~240ms 멈춘다.
@@ -308,109 +494,6 @@ def objective_marks(stage, session):
         else:
             out.append("[ ]")
     return "".join(out)
-
-
-def history_move(history, index, delta):
-    """질의 기록 탐색 → (새 인덱스, 표시할 문자열).
-
-    인덱스는 '뒤에서 몇 번째'다. 0이면 편집 중인 새 줄(빈 문자열).
-    """
-    if not history:
-        return 0, None
-    new = min(max(index + delta, 0), len(history))
-    if new == 0:
-        return 0, ""
-    return new, history[len(history) - new]
-
-
-def clip_output(text, max_lines=CONSOLE_MAX_OUTPUT):
-    """질의 출력이 화면을 삼키지 않도록 자른다 → (줄 목록, 잘렸는지).
-
-    `SELECT * FROM orders`는 20만 행이다. 암묵적 LIMIT을 붙이면 의미가 조용히
-    바뀌므로, 실행은 그대로 두고 표시만 자른 뒤 잘렸다고 알린다.
-    """
-    lines = (text or "").rstrip("\n").split("\n") if text else []
-    if len(lines) > max_lines:
-        return lines[:max_lines], True
-    return lines, False
-
-
-# --------------------------------------------------------------------------- #
-# SQL 콘솔 자동완성 (순수 로직)
-# --------------------------------------------------------------------------- #
-# MySQL은 존재하지 않는 객체도 권한 오류로 답한다("SELECT command denied ...").
-# 그래서 `performence_schema` 같은 오타를 만나면 사람이 철자가 아니라 GRANT를
-# 의심하러 간다. 오류 메시지를 손보는 대신 오타가 나지 않게 하는 쪽을 택했다.
-_IDENT_RE = re.compile(r"[A-Za-z0-9_$.]+$")
-
-
-def completion_prefix(text, pos):
-    """커서 앞의 식별자 토큰 → (시작 인덱스, 토큰). 없으면 (pos, "")."""
-    pos = min(max(int(pos), 0), len(text or ""))
-    m = _IDENT_RE.search((text or "")[:pos])
-    if not m:
-        return pos, ""
-    return m.start(), m.group(0)
-
-
-def common_prefix(strings):
-    """후보들의 최장 공통 접두사."""
-    items = list(strings or [])
-    if not items:
-        return ""
-    first, last = min(items), max(items)
-    for i, ch in enumerate(first):
-        if i >= len(last) or last[i] != ch:
-            return first[:i]
-    return first
-
-
-def completion_candidates(token, schemas, tables_by_schema, default_schema):
-    """토큰 모양에 맞는 후보 목록(정렬됨).
-
-    점이 없으면  → 스키마 이름 + 기본 스키마의 테이블
-    `sch.부분`   → 그 스키마의 테이블 (`sch.table` 형태로 돌려준다)
-    """
-    token = token or ""
-    schemas = sorted(schemas or [])
-    tables_by_schema = tables_by_schema or {}
-    if "." in token:
-        schema, _, partial = token.rpartition(".")
-        return sorted(f"{schema}.{t}"
-                      for t in tables_by_schema.get(schema, [])
-                      if t.startswith(partial))
-    out = [s for s in schemas if s.startswith(token)]
-    out += [t for t in tables_by_schema.get(default_schema, [])
-            if t.startswith(token)]
-    return sorted(set(out))
-
-
-def apply_completion(text, pos, start, candidates, schemas=()):
-    """자동완성 결과를 반영 → (새 텍스트, 새 커서, 보여줄 후보 목록).
-
-    셸 관례를 따른다 — 후보가 하나면 완성하고, 여럿이면 공통 접두사까지만
-    확장한 뒤 목록을 보여준다. 스키마를 완성했을 땐 뒤에 '.'을 붙여 다음 Tab이
-    곧바로 테이블을 잇도록 한다.
-    """
-    text = text or ""
-    if not candidates:
-        return text, pos, []
-    if len(candidates) == 1:
-        done = candidates[0]
-        if done in set(schemas):
-            done += "."
-        return text[:start] + done + text[pos:], start + len(done), []
-    shared = common_prefix(candidates)
-    current = text[start:pos]
-    if len(shared) > len(current):
-        return (text[:start] + shared + text[pos:], start + len(shared),
-                candidates)
-    return text, pos, candidates
-
-
-def max_line_width(lines):
-    """가장 넓은 줄의 표시 폭. 넓은 결과 안내를 띄울지 판단한다."""
-    return max((cwidth(ln) for ln in (lines or [])), default=0)
 
 
 def spinner_frame(watch):
@@ -598,65 +681,213 @@ def mysql_spawn(target, user, password, sql):
             "mysql", "--no-defaults", "-u", user, "-e", sql)
 
 
-def run_player_sql(target, sql, timeout=CONSOLE_TIMEOUT):
-    """콘솔에서 플레이어가 친 SQL을 실행한다 → (stdout, stderr, timed_out).
+def run_in_terminal(stdscr, curses, cmd, env=None, on_error=None, banner=None):
+    """curses를 잠시 내리고 외부 도구를 이 터미널에 띄운다 → 종료 코드.
 
-    **`mysql()`을 재사용하면 안 된다.** 그 함수는 sql_log_off로 로깅을 끄는데,
-    플레이어 명령은 반드시 general_log에 남아야 판정이 성립한다.
+    편집기·페이저·DB 클라이언트를 curses 안에 다시 만들지 않기 위한 공용 통로다.
+    직접 만들면 readline·검색·히스토리를 전부 재구현하게 되고 결과는 늘 원본보다
+    못하다(실제로 SQL 콘솔에서 그렇게 됐다).
 
-    dba 계정으로 접속하는 것도 같은 이유다 — 판정은 '어디서 쳤는가'가 아니라
-    'general_log에 누구로 기록됐는가'를 보므로, 이렇게 하면 콘솔에서 친 명령과
-    외부 터미널에서 친 명령이 로그상 구분되지 않는다.
+    `banner`는 **반드시 endwin() 뒤에** 찍는다 — curses가 화면을 잡고 있는 동안
+    print()로 쓰면 curses의 화면 모델 밖에서 터미널에 직접 나가 게임 화면 위에
+    겹쳐 찍힌다. 그래서 문자열로 받아 여기서 출력한다.
 
-    `--no-defaults`가 없으면 컨테이너의 /root/.my.cnf(root 비밀번호)가 MYSQL_PWD를
-    이겨 dba 인증이 조용히 실패한다.
-
-    타임아웃이 필요한 이유: 락 인시던트 중에 UPDATE를 치면 서버의
-    innodb_lock_wait_timeout(1800초)까지 막힌다. 그대로 두면 TUI가 얼어붙는다.
+    종료 코드가 0이 아니면 화면을 지우기 전에 멈춰 오류 메시지를 읽게 한다.
     """
-    container = CONTAINERS.get(target, target)
+    curses.def_prog_mode()
+    curses.endwin()
+    if banner:
+        print(banner)
+    rc = None
     try:
-        p = _docker("exec", "-e", f"MYSQL_PWD={PLAYER_PASSWORD}", container,
-                    "mysql", "--no-defaults", "-u", PLAYER_USER, "-t",
-                    "-D", PLAYER_DB, "-e", sql, timeout=timeout)
-    except subprocess.TimeoutExpired:
-        return "", "", True
-    return p.stdout, p.stderr, False
+        rc = subprocess.run(cmd, env=env).returncode
+    except FileNotFoundError:
+        print(f"\n실행할 수 없습니다: {cmd[0]} — 설치되어 있는지 확인하세요.")
+    except KeyboardInterrupt:
+        rc = 130
+    if rc not in (0, 130):
+        if on_error:
+            print("\n" + on_error)
+        try:
+            input("\n계속하려면 Enter를 누르세요… ")
+        except (EOFError, KeyboardInterrupt):
+            pass
+    curses.reset_prog_mode()
+    stdscr.clear()
+    stdscr.refresh()
+    return rc
 
 
-def load_schema_names(target="primary"):
-    """자동완성용 스키마·테이블 이름 → (스키마 리스트, {스키마: [테이블]}).
+def client_banner(stage, session):
+    """mysql 프롬프트 위에 남길 문맥 요약(순수 함수).
 
-    **반드시 엔진 경로(`mysql()`)로 가져와야 한다.** `run_player_sql`을 쓰면
-    자동완성용 질의가 general_log에 남아, 플레이어가 치지도 않은 명령이
-    판정 대상 목록에 섞인다.
+    클라이언트로 넘어가도 "지금 뭘 고쳐야 하는지"를 잃지 않게 하는 것이 목적이라
+    남은 목표만 나열한다. 출력은 호출자가 endwin() 뒤에 한다.
     """
-    schemas = [r[0] for r in mysql(
-        target, "SELECT SCHEMA_NAME FROM information_schema.schemata") if r]
-    tables = {}
-    for row in mysql(target, "SELECT TABLE_SCHEMA, TABLE_NAME "
-                             "FROM information_schema.tables"):
-        if len(row) >= 2:
-            tables.setdefault(row[0], []).append(row[1])
-    for names in tables.values():
-        names.sort()
-    return sorted(schemas), tables
+    lines = ["", "─" * 60,
+             f" {stage.get('id')}  {stage.get('title')}   "
+             f"{fmt_mmss(elapsed_of(session))}   "
+             f"{objective_marks(stage, session)}"]
+    lines += [f"   [ ] {o.get('label', o['id'])}" for o in stage["objectives"]
+              if not session["states"][o["id"]]["done"]]
+    lines += [" 게임 화면으로 돌아가려면  exit  (또는 \\q)", "─" * 60, ""]
+    return "\n".join(lines)
 
 
-def console_names(session, target="primary", ttl=30.0):
-    """이름 목록을 캐시해 돌려준다(구축 스테이지에서 만든 객체도 잡히게 TTL)."""
-    cache = session.get("console_names")
-    now = time.monotonic()
-    if cache and now - cache["at"] < ttl:
-        return cache["schemas"], cache["tables"]
+def open_mysql_client(stdscr, curses, stage, session):
+    """진짜 mysql 클라이언트를 띄운다.
+
+    판정은 그대로다 — 클라이언트도 dba 계정으로 접속하므로 general_log 귀속이
+    외부 터미널과 동일하다. 지속 세션이라 트랜잭션·SET SESSION도 살아있다.
+    """
+    pager = CLIENT_PAGER if shutil.which("less") else None
+    return run_in_terminal(
+        stdscr, curses, mysql_client_command(stage, pager),
+        env={**os.environ, "MYSQL_PWD": PLAYER_PASSWORD},
+        banner=client_banner(stage, session),
+        on_error=("접속에 실패했습니다. ~/.my.cnf 에 password= 설정이 있으면\n"
+                  "MYSQL_PWD 보다 우선해 인증을 가로챌 수 있습니다\n"
+                  "(MySQL 옵션 우선순위: 명령줄 > 옵션 파일 > 환경변수)."))
+
+
+def write_note_draft(stage, session, result):
+    """초안을 파일로 쓰고 경로를 돌려준다."""
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    path = note_path(stage.get("id", "unknown"), stamp, result["rank"])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        build_note(stage, session, result, time.strftime("%Y-%m-%d")),
+        encoding="utf-8")
+    return path
+
+
+def _find_editor():
+    editor = os.environ.get("VISUAL") or os.environ.get("EDITOR")
+    if editor:
+        return editor
+    for cand in ("vim", "vi", "nano"):
+        if shutil.which(cand):
+            return cand
+    return None
+
+
+def notes_text(paths):
+    """과거 노트를 구분선과 함께 하나로 이어 붙인다."""
+    body = []
+    for p in paths:
+        body.append(note_heading(p))
+        try:
+            body.append(Path(p).read_text(encoding="utf-8"))
+        except OSError as e:
+            body.append(f"(읽을 수 없습니다: {e})")
+    return "\n\n".join(body)
+
+
+def page_text(text):
+    """텍스트를 페이저로 넘긴다(curses 밖에서 호출).
+
+    뷰어를 curses로 만들지 않는다 — `less`가 스크롤·검색(`/`)을 이미 다 한다.
+    목록 UI조차 필요 없다: 이어 붙여 넘기면 끝이다.
+    """
+    pager = os.environ.get("PAGER") or ("less -R" if shutil.which("less")
+                                        else None)
+    if not pager:
+        print(text)
+        return 0
     try:
-        schemas, tables = load_schema_names(target)
-    except LabError:
-        if cache:
-            return cache["schemas"], cache["tables"]
-        return [], {}
-    session["console_names"] = {"at": now, "schemas": schemas, "tables": tables}
-    return schemas, tables
+        proc = subprocess.Popen(shlex.split(pager), stdin=subprocess.PIPE,
+                                text=True)
+        proc.communicate(text)
+        return proc.returncode
+    except (OSError, KeyboardInterrupt):
+        print(text)
+        return 0
+
+
+def open_notes_pager(stdscr, curses, paths):
+    """플레이 중 `n` 키 — curses를 내리고 과거 노트를 페이저로 본다."""
+    curses.def_prog_mode()
+    curses.endwin()
+    page_text(notes_text(paths))
+    curses.reset_prog_mode()
+    stdscr.clear()
+    stdscr.refresh()
+
+
+def offer_note(stage, session, result):
+    """결과 화면 뒤에 회고 작성을 권한다(curses가 이미 내려간 뒤).
+
+    스테이지의 정답 해설은 **이 다음에** 보여준다 — 해설을 먼저 보면 5 Whys를
+    스스로 쓸 이유가 사라진다.
+    """
+    if not sys.stdin.isatty():
+        return None
+    try:
+        ans = input("정리 노트(포스트모템)를 작성하시겠습니까? [Y/n] ").strip()
+    except (EOFError, KeyboardInterrupt):
+        return None
+    if ans.lower() in ("n", "no"):
+        return None
+
+    path = write_note_draft(stage, session, result)
+    editor = _find_editor()
+    if not editor:
+        print(f"\n편집기를 찾지 못했습니다(VISUAL/EDITOR 미설정).\n"
+              f"초안을 저장했습니다: {path}")
+        return path
+    try:
+        subprocess.run(shlex.split(editor) + [str(path)])
+    except (OSError, KeyboardInterrupt):
+        pass
+    print(f"\n노트를 저장했습니다: {path}")
+    return path
+
+
+def append_debrief(path, stage):
+    """노트 끝에 해설 절을 덧붙인다 → 실제로 덧붙였는지.
+
+    멱등하다 — 이미 붙어 있으면 건너뛴다. 노트를 다시 열어 편집하는 경우에도
+    해설이 중복되지 않아야 한다.
+    """
+    if not path:
+        return False
+    section = debrief_section(stage)
+    if not section:
+        return False
+    p = Path(path)
+    try:
+        current = p.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    if DEBRIEF_MARKER in current:
+        return False
+    try:
+        with open(p, "a", encoding="utf-8") as f:
+            f.write(section)
+    except OSError:
+        return False
+    return True
+
+
+def offer_review_edit(path):
+    """해설을 덧붙인 뒤 '대조 메모'를 쓸 기회를 준다(기본값 아니오)."""
+    if not sys.stdin.isatty():
+        return False
+    try:
+        ans = input("대조 메모를 남기시겠습니까? [y/N] ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        return False
+    if ans not in ("y", "yes"):
+        return False
+    editor = _find_editor()
+    if not editor:
+        print(f"편집기를 찾지 못했습니다. 직접 열어 주세요: {path}")
+        return False
+    try:
+        subprocess.run(shlex.split(editor) + [str(path)])
+    except (OSError, KeyboardInterrupt):
+        pass
+    return True
 
 
 def container_started_at(target):
@@ -869,10 +1100,21 @@ def run_watch_step(step, stage, session, baseline):
             ok = evaluate_expect(obj.get("expect"), value)
             st["hold"], st["done"] = update_hold(
                 st["hold"], ok, now, obj.get("hold_seconds", 0))
+            if st["done"]:
+                record_event(session, "objective",
+                             f"{obj.get('label', obj['id'])} 달성 (값 {value})",
+                             elapsed_of(session), unique=True)
 
         elif kind == "commands":
             # 로그는 읽으면서 비워지므로 '새 것'만 온다 → 누적은 여기서.
-            session["commands"].extend(read_player_commands("primary"))
+            fresh = read_player_commands("primary")
+            session["commands"].extend(fresh)
+            # 시각은 폴링 도착 시각(±2초)을 쓴다. general_log의 event_time을
+            # 끌어오면 read_player_commands의 반환 형태가 바뀌어 판정 경로
+            # (parse_kill_targets)와 그 테스트까지 건드려야 한다.
+            # 포스트모템 타임라인은 분 단위면 충분하다.
+            for sql in fresh:
+                record_event(session, "command", sql, elapsed_of(session))
             recompute_violations(stage, session, baseline)
 
         elif kind == "restart":
@@ -899,6 +1141,9 @@ def recompute_violations(stage, session, baseline):
         "restarted": session.get("restarted", False),
     }
     session["violations"] = detect_violations(stage.get("constraints"), ctx)
+    for v in session["violations"]:
+        record_event(session, "violation", f"{v['label']} — {v['detail']}",
+                     elapsed_of(session), unique=True)
 
 
 def _objective_by_id(stage, oid):
@@ -957,6 +1202,8 @@ def init_session(stage, rng=None):
         "restarted": False,
         "watch_error": None,
         "finished": False,
+        # 포스트모템 타임라인의 재료. 첫 줄은 장애 발생 시점이다.
+        "events": [{"at": 0.0, "kind": "incident", "text": "장애 발생"}],
     }
 
 
@@ -1005,8 +1252,11 @@ def summarize(stage, session):
 # 라인 모드 (curses 폴백)
 # --------------------------------------------------------------------------- #
 def _connect_hint(stage):
-    return stage.get("connect_hint",
-                     "MYSQL_PWD=shoot mysql -h127.0.0.1 -P3306 -udba")
+    """수동 접속 명령. 접속 정보의 단일 출처는 위 PLAYER_* 상수다."""
+    return stage.get(
+        "connect_hint",
+        f"MYSQL_PWD={PLAYER_PASSWORD} mysql -h{PLAYER_HOST} "
+        f"-P{PLAYER_PORT} -u{PLAYER_USER} -D{PLAYER_DB}")
 
 
 def run_line(stage, session, baseline):
@@ -1113,8 +1363,7 @@ def run_curses(stage, session, baseline):
             pending = _due_quiz(stage, session)
             if pending is not None:
                 session["states"][pending["id"]]["prompted"] = True
-                _quiz_screen(stdscr, curses, pending,
-                             session["states"][pending["id"]])
+                _answer_quiz(stdscr, curses, pending, session)
                 stdscr.timeout(KEY_TIMEOUT_MS)
                 continue
 
@@ -1131,18 +1380,25 @@ def run_curses(stage, session, baseline):
             if ch == "r":
                 nxt = _next_unanswered_quiz(stage, session)
                 if nxt:
-                    _quiz_screen(stdscr, curses, nxt,
-                                 session["states"][nxt["id"]])
+                    _answer_quiz(stdscr, curses, nxt, session)
                     stdscr.timeout(KEY_TIMEOUT_MS)
                 else:
                     _notice(stdscr, curses, "답할 상황 보고가 남아있지 않습니다.")
                     stdscr.timeout(KEY_TIMEOUT_MS)
             elif ch == "c":
-                watch, cleared = _console_screen(stdscr, curses, stage,
-                                                 session, baseline, watch)
+                open_mysql_client(stdscr, curses, stage, session)
+                # 클라이언트 안에서 고쳤을 수 있다 — 복귀 즉시 폴링되도록 리셋.
+                watch = init_watch(stage)
                 stdscr.timeout(KEY_TIMEOUT_MS)
-                if cleared:
-                    return summarize(stage, session)
+            elif ch == "n":
+                notes = collect_notes(NOTES_DIR, stage.get("id"))
+                if notes:
+                    open_notes_pager(stdscr, curses, notes)
+                else:
+                    _notice(stdscr, curses,
+                            "아직 작성한 정리 노트가 없습니다. "
+                            "스테이지를 끝내면 회고를 쓸 수 있습니다.")
+                stdscr.timeout(KEY_TIMEOUT_MS)
             elif ch == "h":
                 _hint_screen(stdscr, curses, stage, session)
                 stdscr.timeout(KEY_TIMEOUT_MS)
@@ -1209,7 +1465,7 @@ def _draw_play(stdscr, curses, stage, session, watch=None):
 
     row = 2
     put(stdscr, curses, row, 1, "접속", w - 2, curses.A_DIM)
-    put(stdscr, curses, row, 8, "c 키로 SQL 콘솔", w - 9,
+    put(stdscr, curses, row, 8, "c 키로 mysql 접속", w - 9,
         curses.color_pair(4) | curses.A_BOLD)
     row += 1
     put(stdscr, curses, row, 8, f"또는 {_connect_hint(stage)}", w - 9,
@@ -1277,218 +1533,11 @@ def _draw_play(stdscr, curses, stage, session, watch=None):
                 f" · {watch.get('current') or ''}", w - 2, curses.A_DIM)
 
     hints = stage.get("hints") or []
+    notes = len(collect_notes(NOTES_DIR, stage.get("id")))
     bar(stdscr, curses, h - 1, w,
-        f" c SQL 콘솔   r 상황 보고   "
+        f" c mysql 접속   r 상황 보고   n 지난 기록({notes})   "
         f"h 힌트({session['hints_used']}/{len(hints)})   q 포기 ")
     stdscr.refresh()
-
-
-def _console_screen(stdscr, curses, stage, session, baseline, watch):
-    """TUI 내장 SQL 콘솔 → (새 watch 상태, 클리어됐는지).
-
-    질의당 새 접속을 쓰는 무상태 콘솔이다(트랜잭션·SET SESSION은 유지되지 않는다).
-    판정은 바뀌지 않는다 — dba 계정으로 접속하므로 general_log 귀속이 외부
-    터미널과 동일하다.
-
-    콘솔이 열려 있는 동안에도 감시를 계속 돌린다. 여기서 장애를 고쳤는데 화면을
-    나가야만 반영되면 곤란하기 때문이다.
-    """
-    lines = session.setdefault("console_lines", [
-        f"{PLAYER_USER}@{PLAYER_DB} 로 접속됩니다. 질의 끝의 세미콜론은 생략해도 됩니다.",
-        "트랜잭션 유지가 필요하면 외부 터미널을 쓰세요(질의마다 새 접속입니다).",
-        "",
-    ])
-    history = session.setdefault("console_history", [])
-    buf = list(session.get("console_draft", ""))
-    pos = len(buf)
-    hist_idx = 0
-    scroll = 0            # 0 = 맨 아래(최신)
-    hoffset = 0           # 결과 가로 스크롤(넓은 테이블용)
-    stdscr.timeout(KEY_TIMEOUT_MS)
-
-    def _emit(new_lines):
-        lines.extend(new_lines)
-        del lines[:-CONSOLE_SCROLLBACK]
-
-    while True:
-        now = time.monotonic()
-        watch, step = advance_watch(watch, now)
-        if step is not None:
-            err = run_watch_step(step, stage, session, baseline)
-            watch = dict(watch, error=err)
-            session["watch_error"] = err
-        if all_done(stage, session):
-            session["console_draft"] = "".join(buf)
-            return watch, True
-
-        h, w = stdscr.getmaxyx()
-        body_h = max(1, h - 4)                 # 상태줄 + 구분선 + 입력줄 + 키안내
-        view = clamp_scroll(scroll, len(lines), body_h)
-
-        stdscr.erase()
-        bar(stdscr, curses, 0, w,
-            f" {stage.get('id')}  {stage.get('title')}  "
-            f"{fmt_mmss(now - session['started'])}  "
-            f"{objective_marks(stage, session)} ")
-
-        start = max(0, len(lines) - body_h - view)
-        shown = lines[start:start + body_h]
-        widest = max_line_width(shown)
-        for i, line in enumerate(shown):
-            put(stdscr, curses, 1 + i, 1, hslice(line, hoffset, w - 2), w - 2)
-        if widest > w - 2 or hoffset:
-            more = "▶" if widest - hoffset > w - 2 else " "
-            put(stdscr, curses, h - 3, 1,
-                f"{'◀' if hoffset else ' '} 가로 {hoffset}칸 "
-                f"(폭 {widest}) {more}", w - 2, curses.A_DIM)
-
-        visible, col = hscroll("".join(buf), pos, w - 4)
-        put(stdscr, curses, h - 2, 1, "> ", 2, curses.color_pair(4))
-        put(stdscr, curses, h - 2, 3, visible, w - 4, curses.A_BOLD)
-        bar(stdscr, curses, h - 1, w,
-            " Enter 실행  Tab 완성  ↑↓ 기록  PgUp/PgDn 세로  "
-            "^B/^F 가로  Esc 돌아가기 ")
-        try:
-            curses.curs_set(1)
-            stdscr.move(h - 2, min(3 + col, w - 2))
-        except curses.error:
-            pass
-        stdscr.refresh()
-
-        kind, key = read_key(stdscr, curses, wide=True)
-        stdscr.timeout(KEY_TIMEOUT_MS)
-        if is_idle(kind, key):
-            continue
-        if kind == "esc":
-            curses.curs_set(0)
-            session["console_draft"] = "".join(buf)
-            return watch, False
-        if kind in ("alt", "ctrl"):
-            # 보조 바인딩. 터미널이 온전히 전달하면 동작하지만 주 키는 아니다 —
-            # 아래 Ctrl+B/F 주석 참고.
-            if key in (curses.KEY_LEFT, "b", "B"):
-                hoffset = max(0, hoffset - HSCROLL_STEP)
-            elif key in (curses.KEY_RIGHT, "f", "F"):
-                hoffset += HSCROLL_STEP
-            continue
-        if kind != "key" or key is None:
-            continue
-
-        # 결과 가로 스크롤의 **주 키**는 Ctrl+B / Ctrl+F 다.
-        # 단일 바이트라 ESCDELAY와 무관하게 항상 도착한다. 수식키+화살표는
-        # 다중 바이트 이스케이프 시퀀스라, Esc 응답성을 위해 낮춰둔
-        # set_escdelay(25) 때문에 쪼개져 단독 Esc로 오해될 수 있다.
-        #
-        # wide=True면 get_wch()가 '\x06' 같은 **문자열**을 준다 — 정수 6과
-        # 직접 비교하면 조용히 죽는다. 반드시 key_char로 정규화한다.
-        ctrl = key_char(key)
-        if ctrl == "\x02":                # Ctrl+B — 왼쪽으로
-            hoffset = max(0, hoffset - HSCROLL_STEP)
-            continue
-        if ctrl == "\x06":                # Ctrl+F — 오른쪽으로
-            hoffset += HSCROLL_STEP
-            continue
-
-        if is_enter(key):
-            sql = "".join(buf).strip()
-            if not sql:
-                continue
-            history.append(sql)
-            hist_idx = 0
-            _emit([f"> {sql}"])
-            curses.curs_set(0)
-            _emit(_run_console_sql(stdscr, curses, sql, w - 2))
-            buf, pos, scroll, hoffset = [], 0, 0, 0
-            session["console_draft"] = ""
-            stdscr.timeout(KEY_TIMEOUT_MS)
-            continue
-
-        if key_char(key) == "\t":
-            text = "".join(buf)
-            begin, token = completion_prefix(text, pos)
-            schemas, tables = console_names(session)
-            cands = completion_candidates(token, schemas, tables, PLAYER_DB)
-            text, pos, show = apply_completion(text, pos, begin, cands, schemas)
-            buf = list(text)
-            if show:
-                _emit(_format_candidates(show, w - 4))
-                scroll = 0
-            continue
-
-        if key == curses.KEY_UP:
-            hist_idx, text = history_move(history, hist_idx, +1)
-            if text is not None:
-                buf, pos = list(text), len(text)
-        elif key == curses.KEY_DOWN:
-            hist_idx, text = history_move(history, hist_idx, -1)
-            if text is not None:
-                buf, pos = list(text), len(text)
-        elif key == curses.KEY_PPAGE:
-            scroll = clamp_scroll(view + body_h, len(lines), body_h)
-        elif key == curses.KEY_NPAGE:
-            scroll = clamp_scroll(view - body_h, len(lines), body_h)
-        elif key == curses.KEY_LEFT:
-            pos = max(0, pos - 1)
-        elif key == curses.KEY_RIGHT:
-            pos = min(len(buf), pos + 1)
-        elif key == curses.KEY_HOME:
-            pos = 0
-        elif key == curses.KEY_END:
-            pos = len(buf)
-        elif key == curses.KEY_DC:
-            if pos < len(buf):
-                del buf[pos]
-        elif is_backspace(key):
-            if pos > 0:
-                del buf[pos - 1]
-                pos -= 1
-        else:
-            ch = key_char(key)
-            if ch and ch.isprintable():
-                buf.insert(pos, ch)
-                pos += 1
-
-
-CONSOLE_MAX_CANDIDATES = 60
-
-
-def _format_candidates(candidates, width):
-    """자동완성 후보를 스크롤백에 넣을 줄 목록으로."""
-    shown = candidates[:CONSOLE_MAX_CANDIDATES]
-    lines = wrap("  ".join(shown), width)
-    if len(candidates) > len(shown):
-        lines.append(f"  … 외 {len(candidates) - len(shown)}개")
-    return lines + [""]
-
-
-def _run_console_sql(stdscr, curses, sql, width):
-    """질의를 실행하고 화면에 넣을 줄 목록을 만든다."""
-    h, w = stdscr.getmaxyx()
-    bar(stdscr, curses, h - 1, w, " 실행 중… ")
-    stdscr.refresh()
-
-    stdout, stderr, timed_out = run_player_sql("primary", sql)
-    if timed_out:
-        return [f"! 질의가 {CONSOLE_TIMEOUT}초를 넘겨 중단했습니다.",
-                "  잠금 대기에 막혔을 수 있습니다 — 지금이 바로 그런 상황입니다.",
-                "  누가 막고 있는지부터 확인해 보세요.", ""]
-    out, clipped = clip_output(stdout)
-    if clipped:
-        out.append(f"… 결과가 {CONSOLE_MAX_OUTPUT}줄에서 잘렸습니다.")
-    widest = max_line_width(out)
-    if widest > width:
-        # performance_schema.data_locks 는 한 줄이 254칸이다. 가로로 끝까지
-        # 미는 건 괴로우므로 실무 정석인 세로 출력(\G)을 함께 알려준다.
-        out.append(f"⚠ 행이 {widest}칸으로 화면({width}칸)보다 넓습니다.")
-        out.append("  Ctrl+F / Ctrl+B 로 좌우로 밀거나, "
-                   "끝에 \\G 를 붙여 세로로 보세요.")
-    for line in (stderr or "").rstrip("\n").split("\n"):
-        if line.strip():
-            out.append(line)
-    if not out:
-        out.append("(결과 없음)")
-    out.append("")
-    return out
 
 
 def _notice(stdscr, curses, text):
@@ -1504,6 +1553,17 @@ def _notice(stdscr, curses, text):
     stdscr.refresh()
     stdscr.timeout(-1)
     read_key(stdscr, curses)
+
+
+def _answer_quiz(stdscr, curses, obj, session):
+    """진단 문항 화면을 띄우고, 답했으면 타임라인에 남긴다."""
+    st = session["states"][obj["id"]]
+    _quiz_screen(stdscr, curses, obj, st)
+    if st["done"]:
+        record_event(session, "quiz",
+                     f"상황 보고 «{obj.get('label', obj['id'])}» — "
+                     + ("정답" if st["correct"] else "오답"),
+                     elapsed_of(session), unique=True)
 
 
 def _quiz_screen(stdscr, curses, obj, st):
@@ -1609,6 +1669,8 @@ def _hint_screen(stdscr, curses, stage, session):
         return
     text = hints[session["hints_used"]]
     session["hints_used"] += 1
+    record_event(session, "hint", f"힌트 {session['hints_used']}번 사용",
+                 elapsed_of(session))
     stdscr.erase()
     h, w = stdscr.getmaxyx()
     bar(stdscr, curses, 0, w,
@@ -1627,6 +1689,7 @@ def _hint_screen(stdscr, curses, stage, session):
 # 결과 출력
 # --------------------------------------------------------------------------- #
 def print_result(stage, result):
+    """등급표만 출력한다. 후일담(정답 해설)은 노트를 쓴 뒤에 보여준다."""
     print(f"\n{'=' * 46}")
     print(f"  STAGE CLEAR — {stage.get('title')}")
     print(f"{'=' * 46}")
@@ -1634,10 +1697,15 @@ def print_result(stage, result):
         print(f"  {label:<10} {value:<24} {'+' if ok else '-'}")
     print(f"{'-' * 46}")
     print(f"  RANK  {result['rank']}   ({result['score']}/4)")
-    if stage.get("debrief"):
-        print(f"\n  후일담\n")
-        for line in stage["debrief"].split("\n"):
-            print(f"    {line}")
+    print()
+
+
+def print_debrief(stage):
+    if not stage.get("debrief"):
+        return
+    print(f"\n  후일담\n")
+    for line in stage["debrief"].split("\n"):
+        print(f"    {line}")
     print()
 
 
@@ -1660,6 +1728,19 @@ def cmd_list():
         print(f"  {kind} {stage.get('id'):<24} {stage.get('title')}")
         print(f"     {stage.get('brief', '')[:70]}")
     print()
+    return 0
+
+
+def cmd_notes(stage_id=None):
+    """게임 밖에서 지난 정리 노트를 본다."""
+    notes = collect_notes(NOTES_DIR, stage_id)
+    if stage_id:
+        notes = [p for p in notes if p.parent.name == stage_id] or notes
+    if not notes:
+        print("\n아직 작성한 정리 노트가 없습니다.")
+        print(f"스테이지를 끝내면 {NOTES_DIR.relative_to(REPO_ROOT)}/ 에 쌓입니다.\n")
+        return 0
+    page_text(notes_text(notes))
     return 0
 
 
@@ -1795,12 +1876,24 @@ def cmd_play(target=None, force_line=False):
         teardown_stage(stage)
 
     if result is None:
+        # 포기한 판이야말로 회고가 필요하다 — 등급표 없이 노트만 권한다.
+        # 해설은 붙이지 않는다: 붙이면 '포기'가 정답을 얻는 지름길이 된다.
+        # 스테이지는 다시 플레이할 수 있으므로 클리어했을 때만 해설을 준다.
         print("\n스테이지를 포기했습니다.")
+        offer_note(stage, session, summarize(stage, session))
         return 0
 
     print_result(stage, result)
     save_progress(stage, result["rank"], result["score"], result["elapsed"],
                   session["hints_used"], len(session["violations"]))
+
+    # 순서가 중요하다 — 내 분석을 먼저 쓰게 하고, 그 다음에 해설을 붙인다.
+    note = offer_note(stage, session, result)
+    appended = append_debrief(note, stage) if note else False
+    print_debrief(stage)
+    if appended:
+        print(f"  해설을 노트에도 덧붙였습니다: {note}\n")
+        offer_review_edit(note)
     return 0
 
 
@@ -1808,7 +1901,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(
         prog="shoot", description="DB 장애 대응 게임")
     parser.add_argument("command", nargs="?", default="play",
-                        help="play(기본) | up | down | doctor")
+                        help="play(기본) | up | down | doctor | notes")
     parser.add_argument("stage", nargs="?",
                         help="스테이지 id 또는 JSON 경로")
     parser.add_argument("--list", action="store_true", help="스테이지 목록")
@@ -1824,11 +1917,13 @@ def main(argv=None):
     cmd = args.command
     stage_arg = args.stage
     # `./shoot 1-3-lock-contention` 처럼 스테이지를 바로 준 경우
-    if cmd not in ("play", "up", "down", "doctor"):
+    if cmd not in ("play", "up", "down", "doctor", "notes"):
         stage_arg, cmd = cmd, "play"
 
     if cmd == "doctor":
         return cmd_doctor()
+    if cmd == "notes":
+        return cmd_notes(stage_arg)
     if cmd == "up":
         try:
             lab_up()
