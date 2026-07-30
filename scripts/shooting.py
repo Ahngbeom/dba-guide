@@ -62,6 +62,8 @@ PLAYER_PORT = "3306"
 CLIENT_PAGER = "less -SFX"
 OBJECTIVE_TYPES = ("state", "quiz")
 EXPECT_OPS = ("eq", "ne", "lt", "lte", "gt", "gte", "contains", "in")
+# wait_gtid_sync만 sql 없이 동작한다(대기 자체가 단계의 내용이다).
+SETUP_TYPES = ("sql", "session", "sessions", "wait_gtid_sync")
 
 # 플레이어(dba)가 친 질의만 골라 읽고, 읽은 즉시 로그를 비운다.
 #
@@ -570,11 +572,14 @@ def validate_stage(stage):
 
     for step in stage.get("setup") or []:
         stype = step.get("type")
-        if stype not in ("sql", "session", "sessions"):
+        if stype not in SETUP_TYPES:
             errs.append(f"setup: 알 수 없는 type '{stype}'")
         if step.get("on") and step["on"] not in CONTAINERS:
             errs.append(f"setup: 알 수 없는 대상 '{step['on']}'")
-        if not step.get("sql"):
+        if stype == "wait_gtid_sync":
+            if step.get("source") and step["source"] not in CONTAINERS:
+                errs.append(f"setup: 알 수 없는 source '{step['source']}'")
+        elif not step.get("sql"):
             errs.append(f"setup: sql이 비었습니다 ({stype})")
         if stype == "sessions" and int(step.get("count", 0)) < 1:
             errs.append("setup: sessions의 count는 1 이상이어야 합니다")
@@ -972,6 +977,31 @@ def read_player_commands(target):
     return [r[0] for r in mysql(target, PLAYER_LOG_SQL) if r]
 
 
+def wait_gtid_sync(target, source, timeout_seconds):
+    """`target`이 `source`의 현재 GTID를 모두 적용할 때까지 기다린다 → 성공 여부.
+
+    엔진이 자동으로 해주는 "모든 state 목표가 미충족일 때까지 대기"로는 이걸
+    표현할 수 없다. 그 대기는 **장애가 걸렸는지**를 보는데, 여기서 기다리는 것은
+    장애를 걸기 **전에** 끝나 있어야 하는 초기 동기화이기 때문이다. 복제 지연
+    스테이지에서 이 대기가 없으면 "초기 20만 행이 아직 흐르는 중"과 "장애로
+    밀렸다"가 섞여 판정이 흔들린다.
+
+    gtid_executed는 UUID가 여럿이면 개행으로 나뉘어 나온다. `mysql -N -B` 출력을
+    줄 단위로 자르는 parse_tsv에 그대로 넣으면 첫 UUID만 남으므로 SQL에서 미리
+    개행을 없앤다.
+    """
+    gtid = first_scalar(
+        mysql(source, "SELECT REPLACE(@@GLOBAL.gtid_executed, '\\n', '')"))
+    if not gtid:
+        return True                     # 원본이 비었으면 따라잡을 것도 없다
+    # 클라이언트 타임아웃이 먼저 터지면 대기 결과를 읽지 못한다 — 여유를 둔다.
+    rows = mysql(target,
+                 f"SELECT WAIT_FOR_EXECUTED_GTID_SET('{gtid}', {timeout_seconds})",
+                 timeout=timeout_seconds + 15)
+    # 0 = 다 따라잡음, 1 = 시간 초과.
+    return first_scalar(rows) == "0"
+
+
 def _all_containers_are(field, want):
     """두 컨테이너의 inspect 필드가 모두 want 인가 → bool.
 
@@ -1049,10 +1079,22 @@ def setup_stage(stage, log=print):
     for step in stage.get("setup") or []:
         target = step.get("on", "primary")
         stype = step["type"]
-        sql = step["sql"]
+        sql = step.get("sql")           # wait_gtid_sync 단계에는 SQL이 없다
         if stype == "sql":
             log(f"[setup] {target}: 상태 복원 SQL")
             mysql(target, sql)
+            continue
+
+        if stype == "wait_gtid_sync":
+            source = step.get("source", "primary")
+            secs = int(step.get("timeout_seconds", 60))
+            log(f"[setup] {target}: {source} 따라잡기 대기 (최대 {secs}초)")
+            if not wait_gtid_sync(target, source, secs):
+                # 조용히 넘어가면 초기 동기화가 덜 끝난 채로 장애를 주입하게 되고,
+                # 플레이어는 자기가 만들지 않은 지연을 진단하게 된다.
+                raise LabError(
+                    f"{target}가 {secs}초 안에 {source}를 따라잡지 못했습니다 "
+                    f"— 복제 상태를 확인하세요.")
             continue
 
         count = int(step.get("count", 1)) if stype == "sessions" else 1
@@ -1142,7 +1184,16 @@ def run_watch_step(step, stage, session, baseline):
             st = session["states"][obj["id"]]
             if st["done"]:
                 return None
-            value = first_scalar(mysql(obj.get("on", "primary"), obj["query"]))
+            try:
+                value = first_scalar(
+                    mysql(obj.get("on", "primary"), obj["query"]))
+            except LabError:
+                if not obj.get("tolerate_error"):
+                    raise
+                # 조회 대상이 아직 없는 것도 '미충족'의 한 형태다. 복제를 붙이기
+                # 전의 빈 replica에서 shop.orders를 세면 당연히 에러인데, 그걸
+                # 빨간 '감시 오류'로 띄우면 고장으로 오인된다.
+                value = None
             st["value"], st["error"] = value, None
             ok = evaluate_expect(obj.get("expect"), value)
             st["hold"], st["done"] = update_hold(
