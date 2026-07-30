@@ -11,6 +11,7 @@ import builtins
 import contextlib
 import io
 import json
+import shutil
 import sys
 import types
 import unittest
@@ -780,6 +781,82 @@ class SessionTest(unittest.TestCase):
         self.assertFalse(shooting.all_done(stage, session))
         session["states"]["b"]["done"] = True
         self.assertTrue(shooting.all_done(stage, session))
+
+
+class DoctorTest(unittest.TestCase):
+    """docker가 없는 머신에서도 `./shoot doctor`는 진단을 내놔야 한다.
+
+    README가 "docker 확인은 `./shoot doctor`"라고 안내하므로, 이 명령이
+    docker 부재로 죽으면 정확히 필요한 순간에 쓸 수 없다.
+    """
+
+    @contextlib.contextmanager
+    def _no_docker(self):
+        """PATH에서 docker가 사라지고 실행 시도는 FileNotFoundError가 되는 상황."""
+        real_which, real_run = shooting.shutil.which, shooting.subprocess.run
+
+        def fake_which(name, *a, **k):
+            return None if name == "docker" else real_which(name, *a, **k)
+
+        def fake_run(cmd, *a, **k):
+            if cmd and cmd[0] == "docker":
+                raise FileNotFoundError(2, "No such file or directory", "docker")
+            return real_run(cmd, *a, **k)
+
+        shooting.shutil.which, shooting.subprocess.run = fake_which, fake_run
+        try:
+            yield
+        finally:
+            shooting.shutil.which, shooting.subprocess.run = real_which, real_run
+
+    def _run_doctor(self):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = shooting.cmd_doctor()
+        return rc, buf.getvalue()
+
+    def test_reports_missing_docker_instead_of_crashing(self):
+        with self._no_docker():
+            rc, out = self._run_doctor()
+        self.assertEqual(rc, 1)
+        self.assertIn("[!!] docker", out)
+        self.assertIn("설치되어 있지 않습니다", out)
+
+    def test_skips_the_lab_probe_when_docker_is_absent(self):
+        # "내려가 있음"으로 찍으면 `./shoot up`으로 해결된다는 오진이 된다.
+        with self._no_docker():
+            _, out = self._run_doctor()
+        self.assertIn("확인 불가", out)
+        self.assertNotIn("내려가 있음", out)
+
+    def test_still_checks_the_rest(self):
+        # docker가 없어도 나머지 항목은 계속 점검한다.
+        with self._no_docker():
+            _, out = self._run_doctor()
+        self.assertIn("compose 파일", out)
+        self.assertIn("스테이지 정의", out)
+
+    def test_docker_available_reads_the_path(self):
+        with self._no_docker():
+            self.assertFalse(shooting.docker_available())
+        self.assertEqual(shooting.docker_available(),
+                         shutil.which("docker") is not None)
+
+    def test_docker_helper_raises_lab_error_not_file_not_found(self):
+        # LabError로 승격해야 이미 그것을 잡고 있는 호출자들이 살아난다.
+        with self._no_docker():
+            with self.assertRaises(shooting.LabError) as ctx:
+                shooting._docker("info")
+            self.assertIn("docker CLI", str(ctx.exception))
+            with self.assertRaises(shooting.LabError):
+                shooting._compose("ps")
+
+    def test_lab_predicates_absorb_the_error(self):
+        # cmd_play 의 `if not lab_running():` 는 bool을 기대한다.
+        with self._no_docker():
+            self.assertFalse(shooting.lab_running())
+            self.assertFalse(shooting.lab_healthy())
+            self.assertIsNone(shooting.container_started_at("primary"))
 
 
 if __name__ == "__main__":

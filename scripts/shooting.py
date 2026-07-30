@@ -637,15 +637,36 @@ def load_stage(path):
 # --------------------------------------------------------------------------- #
 # 도커 / MySQL I/O (얇게 유지 — 여기는 테스트하지 않는다)
 # --------------------------------------------------------------------------- #
+DOCKER_MISSING = ("docker CLI를 찾을 수 없습니다 — Docker Desktop을 설치하고 "
+                  "PATH에 docker가 있는지 확인하세요.")
+
+
+def docker_available():
+    """docker CLI가 PATH에 있는가.
+
+    `_docker`가 던지는 것은 잡을 수 있지만, 진단(`./shoot doctor`)은 "없다"와
+    "있지만 안 떠 있다"를 구분해 보여줘야 하므로 먼저 물어볼 수단이 필요하다.
+    """
+    return shutil.which("docker") is not None
+
+
 def _docker(*args, timeout=60):
-    return subprocess.run(["docker", *args], capture_output=True,
-                          text=True, timeout=timeout)
+    # docker가 없으면 FileNotFoundError가 그대로 올라가 트레이스백으로 죽는다.
+    # LabError로 승격해 두면 이미 그것을 잡고 있는 호출자들이 그대로 살아난다.
+    try:
+        return subprocess.run(["docker", *args], capture_output=True,
+                              text=True, timeout=timeout)
+    except FileNotFoundError:
+        raise LabError(DOCKER_MISSING) from None
 
 
 def _compose(*args, timeout=600):
-    return subprocess.run(
-        ["docker", "compose", "-f", str(COMPOSE_FILE), *args],
-        capture_output=True, text=True, timeout=timeout)
+    try:
+        return subprocess.run(
+            ["docker", "compose", "-f", str(COMPOSE_FILE), *args],
+            capture_output=True, text=True, timeout=timeout)
+    except FileNotFoundError:
+        raise LabError(DOCKER_MISSING) from None
 
 
 def mysql(target, sql, timeout=30, log_off=True):
@@ -893,7 +914,10 @@ def offer_review_edit(path):
 def container_started_at(target):
     """컨테이너 기동 시각(재시작 감지용). 조회 실패 시 None."""
     container = CONTAINERS.get(target, target)
-    p = _docker("inspect", "--format", "{{.State.StartedAt}}", container)
+    try:
+        p = _docker("inspect", "--format", "{{.State.StartedAt}}", container)
+    except LabError:
+        return None                    # "조회 실패 시 None" 계약을 지킨다
     return p.stdout.strip() if p.returncode == 0 else None
 
 
@@ -930,24 +954,31 @@ def read_player_commands(target):
     return [r[0] for r in mysql(target, PLAYER_LOG_SQL) if r]
 
 
+def _all_containers_are(field, want):
+    """두 컨테이너의 inspect 필드가 모두 want 인가 → bool.
+
+    docker 부재도 "아니다"의 한 경우로 흡수한다 — 이 두 술어의 호출자는
+    bool을 기대하므로(`cmd_play`의 `if not lab_running():`) 예외를 올리면
+    트레이스백이 된다. 실제 조치는 그 다음 `lab_up()`이 LabError로 안내한다.
+    """
+    try:
+        for target in ("primary", "replica"):
+            p = _docker("inspect", "--format", field, CONTAINERS[target])
+            if p.returncode != 0 or p.stdout.strip() != want:
+                return False
+    except LabError:
+        return False
+    return True
+
+
 def lab_running():
     """primary/replica 컨테이너가 모두 running 인가."""
-    for target in ("primary", "replica"):
-        p = _docker("inspect", "--format", "{{.State.Running}}",
-                    CONTAINERS[target])
-        if p.returncode != 0 or p.stdout.strip() != "true":
-            return False
-    return True
+    return _all_containers_are("{{.State.Running}}", "true")
 
 
 def lab_healthy():
     """두 컨테이너가 모두 healthy 인가."""
-    for target in ("primary", "replica"):
-        p = _docker("inspect", "--format", "{{.State.Health.Status}}",
-                    CONTAINERS[target])
-        if p.returncode != 0 or p.stdout.strip() != "healthy":
-            return False
-    return True
+    return _all_containers_are("{{.State.Health.Status}}", "healthy")
 
 
 def lab_up(wait_seconds=300):
@@ -1748,13 +1779,21 @@ def cmd_doctor():
     ok = True
     print("\n사전 점검\n")
 
-    p = subprocess.run(["docker", "info", "--format", "{{.ServerVersion}}"],
-                       capture_output=True, text=True)
-    if p.returncode == 0:
-        print(f"  [ok] docker            {p.stdout.strip()}")
-    else:
-        print("  [!!] docker            실행 중이 아닙니다 (Docker Desktop을 켜세요)")
+    # 진단 명령이 진단 대상의 부재로 죽으면 안 된다 — docker가 아예 없는 상태가
+    # 바로 이 명령을 실행하는 가장 흔한 이유다.
+    has_docker = docker_available()
+    if not has_docker:
+        print("  [!!] docker            설치되어 있지 않습니다 "
+              "(Docker Desktop을 설치하세요)")
         ok = False
+    else:
+        p = _docker("info", "--format", "{{.ServerVersion}}")
+        if p.returncode == 0:
+            print(f"  [ok] docker            {p.stdout.strip()}")
+        else:
+            print("  [!!] docker            실행 중이 아닙니다 "
+                  "(Docker Desktop을 켜세요)")
+            ok = False
 
     if COMPOSE_FILE.exists():
         print(f"  [ok] compose 파일      {COMPOSE_FILE.relative_to(REPO_ROOT)}")
@@ -1762,10 +1801,10 @@ def cmd_doctor():
         print(f"  [!!] compose 파일      없음: {COMPOSE_FILE}")
         ok = False
 
-    mysql_bin = subprocess.run(["which", "mysql"], capture_output=True,
-                               text=True)
-    if mysql_bin.returncode == 0:
-        print(f"  [ok] mysql 클라이언트  {mysql_bin.stdout.strip()}")
+    # `which`를 서브프로세스로 부르지 않는다 — 최소 이미지에는 그것도 없다.
+    mysql_bin = shutil.which("mysql")
+    if mysql_bin:
+        print(f"  [ok] mysql 클라이언트  {mysql_bin}")
     else:
         print("  [!!] mysql 클라이언트  없음 — 플레이어가 접속할 수단이 필요합니다")
         ok = False
@@ -1782,7 +1821,11 @@ def cmd_doctor():
         print(f"  [ok] 스테이지 정의     {len(stages)}개 정상")
     ok = ok and not bad
 
-    if lab_running():
+    # docker가 없으면 랩 상태를 물어볼 수 없다. "내려가 있음"으로 찍으면
+    # `./shoot up`으로 해결된다는 오진을 준다.
+    if not has_docker:
+        print("  [--] 랩 상태           확인 불가 — docker를 먼저 설치하세요")
+    elif lab_running():
         print(f"  [ok] 랩 상태           기동 중"
               f"{' (healthy)' if lab_healthy() else ' (준비 중)'}")
     else:
