@@ -1,0 +1,120 @@
+{
+  "id": "4-1-missing-index",
+  "world": 4,
+  "stage": 1,
+  "kind": "incident",
+  "dbms": "mysql",
+  "title": "느린 화면",
+  "brief": "'최근 주문' 화면을 배포한 뒤로 조회가 밀리기 시작했다. 에러는 없고 결과도 정확한데 응답이 오지 않는다. 커넥션이 계속 점유되어 앱 스레드가 말라가는 중이다. 데이터가 늘어난 것도 아니다.",
+  "target_seconds": 300,
+  "connect_hint": "MYSQL_PWD=shoot mysql -h127.0.0.1 -P3306 -udba",
+
+  "setup": [
+    {
+      "type": "sql",
+      "on": "primary",
+      "sql": "GRANT EXECUTE ON shop.* TO 'app'@'%'"
+    },
+    {
+      "type": "sql",
+      "on": "primary",
+      "sql": "SET @drops := (SELECT GROUP_CONCAT(CONCAT('DROP INDEX `', index_name, '`') SEPARATOR ', ') FROM (SELECT DISTINCT index_name FROM information_schema.statistics WHERE table_schema='shop' AND table_name='orders' AND index_name NOT IN ('PRIMARY','idx_status','idx_customer')) i); SET @s := IF(@drops IS NULL, 'DO 0', CONCAT('ALTER TABLE shop.orders ', @drops)); PREPARE st FROM @s; EXECUTE st; DEALLOCATE PREPARE st"
+    },
+    {
+      "type": "sql",
+      "on": "primary",
+      "sql": "DROP TABLE IF EXISTS shop.drain_log; CREATE TABLE shop.drain_log (id INT AUTO_INCREMENT PRIMARY KEY, done_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP) ENGINE=InnoDB"
+    },
+    {
+      "type": "sql",
+      "on": "primary",
+      "sql": "DROP PROCEDURE IF EXISTS shop.recent_orders_worker;\nDELIMITER //\nCREATE PROCEDURE shop.recent_orders_worker() SQL SECURITY INVOKER\nBEGIN\n  DECLARE i INT DEFAULT 0;\n  WHILE i < 8000 DO\n    SELECT COUNT(*) INTO @seen FROM (SELECT id FROM shop.orders\n      WHERE updated_at >= NOW() - INTERVAL 1 DAY ORDER BY updated_at DESC LIMIT 20) x;\n    SET i = i + 1;\n  END WHILE;\n  INSERT INTO shop.drain_log () VALUES ();\nEND//\nDELIMITER ;\n"
+    },
+    {
+      "type": "sessions",
+      "on": "primary",
+      "name": "recent-orders",
+      "count": 12,
+      "user": "app",
+      "password": "app",
+      "sql": "CALL shop.recent_orders_worker()"
+    }
+  ],
+
+  "objectives": [
+    {
+      "id": "diagnose-symptom",
+      "type": "quiz",
+      "label": "상황 식별",
+      "trigger": { "after_seconds": 30 },
+      "question": {
+        "type": "mcq",
+        "q": "결과는 정확한데 조회만 느리고, 같은 질의를 도는 세션이 계속 쌓인다. 가장 정확한 설명은?",
+        "choices": [
+          "조회 조건 컬럼에 인덱스가 없어 매 질의가 테이블 전체를 훑고 있고, 그만큼 세션이 오래 점유된다",
+          "커밋하지 않은 트랜잭션이 행 잠금을 쥐고 있어 뒤따르는 세션이 대기 중이다",
+          "DDL이 메타데이터 잠금을 기다리느라 뒤의 질의가 밀려 있다",
+          "커넥션 수가 max_connections에 도달해 새 접속이 거부되고 있다"
+        ],
+        "answer": 0,
+        "explain": "잠금 대기라면 세션이 '기다리는' 상태여야 하는데, 여기서는 세션이 실제로 '일하는' 중이다. 잠금 대기는 CPU를 쓰지 않지만 전체 스캔은 쓴다. 질의 하나는 끝나기는 하되 느리고, 그 느림이 동시성만큼 곱해져 커넥션을 말린다."
+      }
+    },
+    {
+      "id": "diagnose-tool",
+      "type": "quiz",
+      "label": "확인 경로 파악",
+      "question": {
+        "type": "short",
+        "q": "이 질의가 인덱스를 타지 못하고 전체를 훑는지 실행 계획으로 확인하는 SQL 키워드는?",
+        "accept": [
+          "EXPLAIN",
+          "explain",
+          "EXPLAIN ANALYZE",
+          "explain analyze"
+        ],
+        "explain": "EXPLAIN의 type이 ALL이면 전체 스캔, key가 NULL이면 인덱스를 쓰지 못한 것이다. Extra의 Using filesort는 정렬까지 메모리에서 따로 하고 있다는 뜻이다. EXPLAIN ANALYZE는 실제 실행까지 해 걸린 시간과 처리 행 수를 함께 보여준다."
+      }
+    },
+    {
+      "id": "index-added",
+      "type": "state",
+      "label": "조회 경로 인덱스 확보",
+      "on": "primary",
+      "query": "SELECT COUNT(*) FROM information_schema.statistics WHERE table_schema='shop' AND table_name='orders' AND column_name='updated_at' AND seq_in_index=1",
+      "expect": { "op": "gte", "value": 1 },
+      "hold_seconds": 5
+    },
+    {
+      "id": "backlog-drained",
+      "type": "state",
+      "label": "밀린 조회 정상 완주",
+      "on": "primary",
+      "query": "SELECT COUNT(*) FROM shop.drain_log",
+      "expect": { "op": "gte", "value": 1 },
+      "hold_seconds": 5
+    }
+  ],
+
+  "constraints": [
+    {
+      "id": "no-restart",
+      "label": "DB 재시작 금지",
+      "detect": "container_restart"
+    },
+    {
+      "id": "no-kill",
+      "label": "세션 KILL로 때우기 금지",
+      "detect": "kill_precision",
+      "max_extra_kills": 0
+    }
+  ],
+
+  "hints": [
+    "세션이 '기다리는' 중인지 '일하는' 중인지부터 가른다. SHOW PROCESSLIST의 State와 Command를 보라 — 잠금 대기라면 CPU가 한가하지만, 지금은 그렇지 않다.",
+    "같은 질의가 반복되고 있다. 그 질의를 EXPLAIN으로 떠보면 type과 key가 무엇이라고 말하는가? 20만 행짜리 테이블을 매번 훑고 있다면 원인은 잠금이 아니다.",
+    "WHERE와 ORDER BY가 모두 updated_at을 쓴다. 인덱스는 맨 앞 컬럼부터 사용되므로, updated_at이 선두인 인덱스여야 이 질의가 탈 수 있다."
+  ],
+
+  "debrief": "원인은 잠금이 아니라 인덱스였다.\n\n  SELECT id FROM shop.orders\n  WHERE updated_at >= NOW() - INTERVAL 1 DAY\n  ORDER BY updated_at DESC LIMIT 20;\n\nshop.orders에는 idx_status와 idx_customer만 있고 updated_at 인덱스가 없었다.\nEXPLAIN은 type=ALL, key=NULL, Extra='Using where; Using filesort'를 돌려준다 —\n20만 행을 전부 읽고, 그중 상위 20개를 뽑기 위해 전부 정렬까지 한 것이다.\n\n  ALTER TABLE shop.orders ADD INDEX idx_updated_at (updated_at);\n\n인덱스를 걸면 같은 질의가 type=range, Extra='Backward index scan'으로 바뀐다.\n정렬이 사라지는 게 핵심이다. B-tree는 이미 정렬된 구조라 뒤에서부터 20개만\n읽고 멈추면 되고, 읽는 행이 20만에서 20으로 줄어든다.\n\n**KILL은 이 장애의 답이 아니다.** 세션을 죽이면 화면상 적체는 사라지지만\n앱이 곧 같은 질의로 다시 접속하고 같은 자리로 돌아온다. 1-3과 1-4는 '누가\n막고 있는가'를 찾는 문제였지만, 여기서는 아무도 남을 막고 있지 않다.\n모두가 정직하게 자기 일을 하고 있을 뿐이고, 그 일이 너무 비쌌다.\n\n선두 컬럼이 중요하다. (status, updated_at) 같은 인덱스를 만들었다면 이 질의는\n여전히 인덱스를 타지 못한다. WHERE 조건이 status를 쓰지 않기 때문이다.\n인덱스는 왼쪽부터 순서대로 사용된다.\n\n재발 방지: 새 화면·새 질의를 배포하기 전 EXPLAIN으로 실행 계획 검토,\nslow_query_log와 sys.statements_with_full_table_scans로 전체 스캔 질의 상시 감시,\nperformance_schema.events_statements_summary_by_digest에서 질의별 평균 처리 행\n수(SUM_ROWS_EXAMINED / COUNT_STAR) 추적."
+}
