@@ -178,6 +178,15 @@ class KillPrecisionTest(unittest.TestCase):
     def test_no_kills_at_all(self):
         self.assertEqual(shooting.count_extra_kills([], [72]), 0)
 
+    def test_same_pid_on_another_server_is_not_the_culprit(self):
+        # pid는 서버마다 따로 매겨진다. 서버를 함께 보지 않으면 replica의
+        # 범인 12번을 근거로 primary의 무고한 12번을 죽인 것이 무사통과한다.
+        culprit = [("replica", 12)]
+        self.assertEqual(
+            shooting.count_extra_kills([("replica", 12)], culprit), 0)
+        self.assertEqual(
+            shooting.count_extra_kills([("primary", 12)], culprit), 1)
+
 
 class DetectViolationsTest(unittest.TestCase):
     CONSTRAINTS = [
@@ -363,6 +372,23 @@ class WatchPlanTest(unittest.TestCase):
         stage = _minimal_stage(setup=[{"type": "sql", "on": "replica",
                                        "sql": "SELECT 1"}])
         self.assertEqual(shooting.watch_targets(stage), {"primary", "replica"})
+
+    def test_watch_targets_includes_objective_containers(self):
+        # 장애를 넣은 서버와 플레이어가 고쳐야 할 서버가 다를 수 있다.
+        # 목표 대상이 빠지면 그 서버의 명령 로그가 통째로 감시되지 않는다.
+        stage = _minimal_stage(objectives=[
+            {"id": "a", "type": "state", "on": "replica",
+             "query": "SELECT 1", "expect": {"op": "eq", "value": 1}}])
+        self.assertEqual(shooting.watch_targets(stage), {"primary", "replica"})
+
+    def test_command_log_is_watched_on_every_container(self):
+        # primary만 읽으면 플레이어가 replica에서 한 일이 보이지 않아
+        # kill_precision이 영원히 걸리지 않고 회고 타임라인도 비어버린다.
+        stage = _minimal_stage(setup=[{"type": "sql", "on": "replica",
+                                       "sql": "SELECT 1"}])
+        steps = shooting.watch_steps(stage)
+        watched = {s["target"] for s in steps if s["kind"] == "commands"}
+        self.assertEqual(watched, {"primary", "replica"})
 
     def test_advance_returns_exactly_one_step_at_a_time(self):
         watch = shooting.init_watch(self.stage)

@@ -203,9 +203,14 @@ def count_extra_kills(kill_targets, allowed_pids):
 
     상태 검증만으로는 "범인만 정확히 죽이기"와 "전부 쓸어버리기"가 구분되지
     않는다. 이 함수가 결과 대신 방법을 본다.
+
+    양쪽 원소는 그냥 "같은 세션이면 같은 값"이기만 하면 된다. 단일 서버
+    스테이지에서는 pid 정수를, 서버가 둘 이상인 스테이지에서는 `(대상, pid)`
+    쌍을 넣는다 — pid는 서버마다 따로 매겨지므로 replica의 12번과 primary의
+    12번을 같은 세션으로 착각하면 판정이 조용히 틀린다.
     """
-    allowed = {int(p) for p in (allowed_pids or [])}
-    return sum(1 for pid in (kill_targets or []) if int(pid) not in allowed)
+    allowed = set(allowed_pids or ())
+    return sum(1 for target in (kill_targets or ()) if target not in allowed)
 
 
 def detect_violations(constraints, ctx):
@@ -427,10 +432,18 @@ SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
 
 
 def watch_targets(stage):
-    """재시작을 감시할 컨테이너 이름 집합."""
+    """스테이지가 건드리는 컨테이너 이름 집합.
+
+    목표(`objectives`)의 대상까지 넣는 이유는, 장애를 주입한 서버와 플레이어가
+    손을 대야 하는 서버가 다를 수 있기 때문이다 — 복제 스테이지가 그렇다.
+    여기 빠진 서버는 명령 로그도 재시작도 감시되지 않는다.
+    """
     targets = {"primary"}
     for step in stage.get("setup") or []:
         targets.add(step.get("on", "primary"))
+    for obj in stage.get("objectives") or []:
+        if obj.get("type") == "state":
+            targets.add(obj.get("on", "primary"))
     return targets
 
 
@@ -441,7 +454,12 @@ def watch_steps(stage):
         if obj.get("type") == "state":
             steps.append({"kind": "state", "id": obj["id"],
                           "label": obj.get("label", obj["id"])})
-    steps.append({"kind": "commands", "label": "명령 로그"})
+    # 명령 로그는 서버마다 따로 있다. primary만 읽으면 플레이어가 replica에서
+    # 한 일이 통째로 보이지 않아, 그 서버에 범인이 있는 스테이지에서
+    # kill_precision이 영원히 걸리지 않고 포스트모템 타임라인도 비어버린다.
+    for target in sorted(watch_targets(stage)):
+        steps.append({"kind": "commands", "target": target,
+                      "label": f"{target} 명령 로그"})
     for target in sorted(watch_targets(stage)):
         steps.append({"kind": "restart", "target": target,
                       "label": f"{target} 재시작 감지"})
@@ -1016,15 +1034,15 @@ def setup_stage(stage, log=print):
 
     반환: {"allowed_pids": set, "started_at": {target: str}}
     """
-    targets = {"primary"}
-    for step in stage.get("setup") or []:
-        targets.add(step.get("on", "primary"))
+    targets = watch_targets(stage)
 
     # 1. 이전 판의 잔재 정리 + 플레이어 명령 로그 초기화 (엔진 공통 동작)
+    #    로그는 서버마다 따로 있으므로 감시할 서버를 모두 비운다 — 하나라도
+    #    남겨두면 지난 판의 명령이 이번 판의 위반으로 둔갑한다.
     for t in sorted(targets):
         log(f"[setup] {t}: 이전 세션 정리")
         kill_app_sessions(t)
-    reset_player_log("primary")
+        reset_player_log(t)
 
     # 2. 스테이지가 선언한 단계 실행
     allowed = set()
@@ -1047,7 +1065,8 @@ def setup_stage(stage, log=print):
         spawned = _wait_for_new_sessions(target, before, count)
         if step.get("culprit"):
             # 범인 세션의 pid를 기억해둔다 — 나중에 "범인 외 KILL"을 가려낸다.
-            allowed |= spawned
+            # 어느 서버의 pid인지까지 함께 남긴다(서버마다 pid가 겹친다).
+            allowed |= {(target, pid) for pid in spawned}
 
     # 3. 장애가 실제로 걸린 것을 확인한 뒤 출발한다.
     #    세션이 뜬 직후엔 아직 잠금을 잡으러 가기 전이라 상태가 잠깐 정상으로
@@ -1090,10 +1109,7 @@ def _wait_for_incident(stage, timeout=30):
 
 def teardown_stage(stage):
     """플레이 종료 후 주입한 세션을 정리한다."""
-    targets = {"primary"}
-    for step in stage.get("setup") or []:
-        targets.add(step.get("on", "primary"))
-    for t in sorted(targets):
+    for t in sorted(watch_targets(stage)):
         try:
             kill_app_sessions(t)
         except LabError:
@@ -1138,14 +1154,23 @@ def run_watch_step(step, stage, session, baseline):
 
         elif kind == "commands":
             # 로그는 읽으면서 비워지므로 '새 것'만 온다 → 누적은 여기서.
-            fresh = read_player_commands("primary")
+            target = step["target"]
+            fresh = read_player_commands(target)
             session["commands"].extend(fresh)
+            # KILL은 서버별로 귀속해둔다 — pid는 서버마다 따로 매겨진다.
+            session["kills"].extend((target, pid)
+                                    for pid in parse_kill_targets(fresh))
             # 시각은 폴링 도착 시각(±2초)을 쓴다. general_log의 event_time을
             # 끌어오면 read_player_commands의 반환 형태가 바뀌어 판정 경로
             # (parse_kill_targets)와 그 테스트까지 건드려야 한다.
             # 포스트모템 타임라인은 분 단위면 충분하다.
+            multi = len(watch_targets(stage)) > 1
             for sql in fresh:
-                record_event(session, "command", sql, elapsed_of(session))
+                # 서버가 둘 이상이면 "어느 서버에서 쳤는가"가 회고의 핵심 정보다.
+                # 하나뿐이면 접두어가 잡음이므로 붙이지 않는다.
+                record_event(session, "command",
+                             f"[{target}] {sql}" if multi else sql,
+                             elapsed_of(session))
             recompute_violations(stage, session, baseline)
 
         elif kind == "restart":
@@ -1167,7 +1192,7 @@ def run_watch_step(step, stage, session, baseline):
 def recompute_violations(stage, session, baseline):
     """지금까지 모은 감시 재료로 금지 행동을 다시 판정한다."""
     ctx = {
-        "kill_targets": parse_kill_targets(session.get("commands")),
+        "kill_targets": session.get("kills") or [],
         "allowed_pids": baseline.get("allowed_pids", set()),
         "restarted": session.get("restarted", False),
     }
@@ -1230,6 +1255,9 @@ def init_session(stage, rng=None):
         "hints_used": 0,
         "violations": [],
         "commands": [],
+        # KILL 대상은 `(대상 서버, pid)` 쌍으로 쌓는다 — pid만으로는 서버가
+        # 다른 동명이인을 구분할 수 없다.
+        "kills": [],
         "restarted": False,
         "watch_error": None,
         "finished": False,
