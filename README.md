@@ -164,7 +164,17 @@ DB 접근은 **`c` 키**로 한다 — 게임이 잠시 물러나고 **진짜 `m
 
 - 스테이지는 `shooting/stages/*.json`에 선언적으로 정의한다. 새 스테이지 작성 규약은 [`docs/shooting-game.md`](docs/shooting-game.md)를 참고한다.
 
-> 현재 제공되는 스테이지: **1-3 락 지옥**(커밋되지 않은 트랜잭션이 만든 잠금 대기 사슬). 관련 챕터는 [중급 01. 트랜잭션과 잠금](02-intermediate/01-transaction-and-locking.md), [고급 09. 장애 대응과 포스트모템](03-advanced/09-incident-response-and-postmortem.md)이다.
+현재 제공되는 스테이지는 다음과 같다. 🔥는 장애 대응, 🔧는 구축 과제다. 모든 스테이지가 [고급 09. 장애 대응과 포스트모템](03-advanced/09-incident-response-and-postmortem.md)의 회고 루프와 이어진다.
+
+| 스테이지 | 무엇을 겪는가 | 관련 챕터 |
+|---|---|---|
+| 🔥 **1-3 락 지옥** | 커밋되지 않은 트랜잭션이 만든 잠금 대기 사슬. 사슬의 뿌리 하나만 정확히 끊어야 한다 | [중급 01. 트랜잭션과 잠금](02-intermediate/01-transaction-and-locking.md) |
+| 🔥 **1-4 멈춘 배포** | `ALTER TABLE`이 멈췄는데 잠금 대기 화면은 비어 있다. 행 잠금이 아니라 **메타데이터 잠금**이다 | [중급 01. 트랜잭션과 잠금](02-intermediate/01-transaction-and-locking.md), [중급 06. 스키마 변경 관리](02-intermediate/06-schema-change-management.md) |
+| 🔧 **2-1 리포팅 서버 붙이기** | 복제가 배선되지 않은 replica를 GTID 기반으로 직접 붙인다. 왜 빈 상태에서 출발해야 하는지도 함께 | [중급 05. 복제 기초](02-intermediate/05-replication-basics.md) |
+| 🔥 **2-2 멈춘 리포트** | 복제 연결은 멀쩡한데 데이터만 뒤처진다. **범인은 replica에 있다** — 읽기 전용은 안전과 다르다 | [중급 05. 복제 기초](02-intermediate/05-replication-basics.md), [고급 02. 고가용성과 장애조치](03-advanced/02-high-availability-and-failover.md) |
+| 🔥 **4-1 느린 화면** | 인덱스 없는 조회가 만든 적체. **범인이 없고 `KILL`로도 풀리지 않는** 첫 스테이지 | [중급 02. 인덱싱과 쿼리 튜닝](02-intermediate/02-indexing-and-query-tuning.md), [고급 01. 고급 성능 튜닝](03-advanced/01-advanced-performance-tuning.md) |
+
+> 스테이지는 앞의 것을 푼 사람의 반사를 일부러 배신하도록 배치돼 있다. 1-3에서 배운 `data_lock_waits`는 1-4에서 빈 화면을 돌려주고, 1-3·1-4에서 통했던 `KILL`은 4-1에서 오히려 감점 대상이다.
 
 ## 이 학습서를 읽는 법
 

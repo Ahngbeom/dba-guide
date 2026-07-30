@@ -241,10 +241,17 @@ mysql.general_log`). 한 접속 안에서 순서가 맞아떨어진다:
 |---|---|---|
 | `dba@%` | 플레이어 | 엔진은 `general_log`에서 이 사용자의 명령만 감시 |
 | `app@%` | 엔진이 띄우는 범인/피해 세션 | 앱 트래픽처럼 보이되 플레이어 로그를 오염시키지 않음 |
+| `repl@%` | replica가 binlog를 받아갈 때 쓰는 계정 | 사람의 명령이 아니라 판정에 잡히지 않음 |
 | `root@localhost` | 엔진 자신 (docker exec 소켓) | `user_host`가 달라 자연히 걸러짐 |
 
 `dba`에게 `SHUTDOWN` 권한은 일부러 주지 않는다 — SQL `RESTART`를 막고, "그냥 껐다
 켜기" 반사는 `docker restart` 감지로 잡는다.
+
+**명령 로그는 서버마다 따로 있다.** 엔진은 감시 대상 컨테이너를 모두 읽고,
+`KILL` 대상과 범인 pid를 `(서버, pid)` 쌍으로 다룬다. pid는 서버마다 따로
+매겨지므로, 서버를 함께 보지 않으면 replica의 범인 12번을 근거로 primary의
+무고한 12번을 죽인 것이 무사통과한다. 감시 대상은 `setup`과 `objectives`의
+`on` 값에서 모은다 — 장애를 넣은 서버와 플레이어가 손대야 할 서버가 다를 수 있다.
 
 > **알려진 한계.** `dba`에게는 이후 튜닝 스테이지를 위해 `SYSTEM_VARIABLES_ADMIN`이
 > 있고, 그 권한이면 엔진과 같은 방법(`SET SESSION sql_log_off = 1`)으로 자기 명령을
@@ -291,9 +298,39 @@ mysql.general_log`). 한 접속 안에서 순서가 맞아떨어진다:
 | `sql` | `on` 컨테이너에서 root로 실행. **데이터 복원은 여기서 한다** |
 | `session` | 분리 세션 1개 기동 |
 | `sessions` | 분리 세션 `count`개 기동 |
+| `wait_gtid_sync` | `on`이 `source`를 따라잡을 때까지 대기(아래) |
 
 세션 단계의 필드: `on`(기본 `primary`), `user`/`password`(기본 `app`/`app`),
 `name`(로그 표시용), `count`(`sessions`만), `culprit`.
+
+`wait_gtid_sync`의 필드: `on`(따라잡아야 하는 쪽), `source`(기본 `primary`),
+`timeout_seconds`(기본 60). 이 단계만 `sql`이 없다 — 대기 자체가 내용이다.
+엔진이 자동으로 해주는 3번(모든 `state` 목표가 미충족이 될 때까지 대기)과 다르다.
+그 대기는 **장애가 걸렸는지**를 보지만, 이건 장애를 걸기 **전에** 끝나 있어야 하는
+초기 동기화다. 없으면 "초기 20만 행이 아직 흐르는 중"과 "장애로 밀렸다"가 섞여
+플레이어가 자기가 만들지 않은 지연을 진단하게 된다. 따라잡지 못하면 조용히
+넘어가지 않고 setup을 실패시킨다.
+
+### 멱등성을 지키는 관용구
+
+**있을 때만 지우기.** `DROP INDEX`/`DROP COLUMN`은 대상이 없으면 에러라
+`IF EXISTS`가 없는 자리에서는 가드가 필요하다. 플레이어가 붙인 이름을 미리 알 수
+없으므로 **이름이 아니라 조건으로** 찾아 지우는 편이 안전하다.
+
+```sql
+SET @drops := (SELECT GROUP_CONCAT(CONCAT('DROP INDEX `', index_name, '`') SEPARATOR ', ')
+  FROM (SELECT DISTINCT index_name FROM information_schema.statistics
+        WHERE table_schema='shop' AND table_name='orders'
+          AND index_name NOT IN ('PRIMARY','idx_status','idx_customer')) i);
+SET @s := IF(@drops IS NULL, 'DO 0', CONCAT('ALTER TABLE shop.orders ', @drops));
+PREPARE st FROM @s; EXECUTE st; DEALLOCATE PREPARE st;
+```
+
+**바뀌지 않는 UPDATE는 복제되지 않는다.** ROW 포맷에서는 값이 실제로 달라져야
+행 이벤트가 생긴다. `SET status='PICKED'`가 이미 `'PICKED'`인 행에 걸리면 아무
+이벤트도 남지 않아, 그 이벤트에 기대던 장애가 두 번째 판부터 걸리지 않는다.
+복제 스테이지에서 특정 행의 변경을 장애의 방아쇠로 쓴다면 **먼저 다른 값으로
+되돌려 두어라**(2-2가 `id=42`를 `'NEW'`로 되돌리는 이유).
 
 **`culprit: true`가 결정적이다.** 이 단계로 뜬 세션의 pid를 엔진이 기억해두고,
 나중에 "범인 외 세션을 KILL했는가"를 가려낸다. 표시하지 않으면 `kill_precision`
@@ -311,6 +348,13 @@ mysql.general_log`). 한 접속 안에서 순서가 맞아떨어진다:
 | `query` | **단일 스칼라를 돌려주는** SQL. 첫 행 첫 컬럼만 본다 |
 | `expect` | `{"op": ..., "value": ...}` |
 | `hold_seconds` | 이 시간만큼 **연속으로** 유지돼야 인정 |
+| `tolerate_error` | 조회 실패를 '고장'이 아니라 '미충족'으로 읽는다 |
+
+`tolerate_error`는 **조회 대상이 아직 존재하지 않는 것이 정상인 목표**에만 쓴다.
+복제를 붙이기 전의 빈 replica에서 `shop.orders`를 세면 당연히 에러인데, 감시는
+오류를 삼키지 않는 것이 원칙이라 빨간 `⚠ 감시 오류`가 뜬다. 고장이 아니라 아직
+도달하지 않은 상태이므로 오인이다. 기본값은 꺼져 있고, 켜지 않은 목표의 조회
+실패는 지금처럼 그대로 드러난다 — 진짜 고장을 숨기지 않기 위해서다.
 
 연산자: `eq` `ne` `lt` `lte` `gt` `gte` `contains` `in`.
 `mysql -N -B` 출력은 전부 문자열이지만 엔진이 숫자로 바꿔 비교하므로
@@ -374,6 +418,26 @@ mysql.general_log`). 한 접속 안에서 순서가 맞아떨어진다:
 옵션 우선순위는 **명령줄 > 옵션 파일 > 환경변수**라서, 컨테이너 안
 `/root/.my.cnf`의 root 비밀번호가 `MYSQL_PWD`를 이겨버린다. `--no-defaults`가
 없으면 `app` 계정 인증이 조용히 실패하고 장애가 주입되지 않는다.
+
+**`DEFINER` 프로시저는 `app` 세션을 숨긴다.** 스토어드 프로시저는 기본이
+`SQL SECURITY DEFINER`인데, 그 안을 실행하는 동안 `information_schema.processlist`의
+`user`가 **정의자(root)** 로 보고된다. 엔진은 `user='app'`으로 세션을 추적하므로,
+부하 생성용 프로시저를 그냥 만들면 세션이 잡히지 않아 기동 대기가 20초를 헛돌고
+판이 끝나도 정리되지 않아 다음 판까지 살아남는다. 부하 프로시저는 반드시
+**`SQL SECURITY INVOKER`** 로 만든다.
+
+**`DELIMITER`는 줄 단위 명령이다.** `sql` 단계는 `mysql -e`로 실행되는데,
+`DELIMITER`는 클라이언트가 줄 단위로 해석한다. 프로시저를 만들 때 한 줄로 붙이면
+`;`에서 잘려 문법 오류가 난다. JSON 문자열 안에 `\n`을 넣어 `DELIMITER //`와
+`DELIMITER ;`가 각각 자기 줄을 갖게 해야 한다.
+
+**엔진의 장부질은 binlog에 남기지 않는다.** 명령 로그를 비우는
+`TRUNCATE TABLE mysql.general_log`는 그냥 두면 binlog에 실려 **replica에서도
+실행된다.** 감시는 primary 로그를 먼저 읽고(=비우고) replica를 나중에 읽으므로,
+그 사이 복제가 전달한 TRUNCATE가 replica의 로그를 지워 플레이어가 거기서 친
+명령이 매 주기 증발한다. 그래서 `NO_BINLOG`(`SET SESSION sql_log_bin = 0`)를
+앞에 붙인다. 반대로 **스테이지의 `sql` 단계는 복제되어야 한다** — 2-2의 센티널
+행이 replica에 도달하는 것이 판정의 근거이기 때문이다.
 
 ## 다른 DBMS 추가
 
