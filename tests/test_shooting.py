@@ -1301,6 +1301,50 @@ class SkippedQuizTest(unittest.TestCase):
         self.assertNotIn("상황 식별", well)
 
 
+class StreamingOutputTest(unittest.TestCase):
+    """비대화형 라인 모드가 '감시 창'으로 쓸모 있으려면 출력이 흘러야 한다.
+
+    stdout이 tty가 아니면 Python은 라인 버퍼링이 아니라 블록 버퍼링을 쓴다.
+    그대로 두면 판이 끝날 때까지 한 글자도 나오지 않는다.
+    """
+
+    class _Stream:
+        def __init__(self, tty):
+            self._tty = tty
+            self.reconfigured = []
+
+        def isatty(self):
+            return self._tty
+
+        def reconfigure(self, **kw):
+            self.reconfigured.append(kw)
+
+    def test_pipe_switches_to_line_buffering(self):
+        s = self._Stream(tty=False)
+        self.assertTrue(shooting.ensure_streaming_output(s))
+        self.assertEqual(s.reconfigured, [{"line_buffering": True}])
+
+    def test_terminal_is_left_alone(self):
+        # tty는 이미 라인 버퍼링이다 — 건드릴 이유가 없다.
+        s = self._Stream(tty=True)
+        self.assertFalse(shooting.ensure_streaming_output(s))
+        self.assertEqual(s.reconfigured, [])
+
+    def test_stream_without_reconfigure_is_not_fatal(self):
+        # 테스트가 stdout을 StringIO로 바꿔치기하는 경우가 있다.
+        self.assertFalse(shooting.ensure_streaming_output(io.StringIO()))
+
+    def test_stream_that_refuses_is_not_fatal(self):
+        class Stubborn:
+            def isatty(self):
+                return False
+
+            def reconfigure(self, **_kw):
+                raise ValueError("지원하지 않음")
+
+        self.assertFalse(shooting.ensure_streaming_output(Stubborn()))
+
+
 class BestRanksTest(unittest.TestCase):
     """지난 최고 등급 — S랭크 재도전이라는 동기가 여기서 나온다."""
 
