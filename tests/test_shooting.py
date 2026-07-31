@@ -1301,6 +1301,61 @@ class SkippedQuizTest(unittest.TestCase):
         self.assertNotIn("상황 식별", well)
 
 
+class BestRanksTest(unittest.TestCase):
+    """지난 최고 등급 — S랭크 재도전이라는 동기가 여기서 나온다."""
+
+    def _lines(self, records):
+        return "\n".join(json.dumps(r, ensure_ascii=False) for r in records)
+
+    def test_keeps_the_best_not_the_latest(self):
+        # 나중에 C를 받았다고 예전 S가 지워지면 안 된다.
+        got = shooting.best_ranks(self._lines([
+            {"stage": "1-3", "rank": "S"},
+            {"stage": "1-3", "rank": "C"},
+        ]))
+        self.assertEqual(got, {"1-3": "S"})
+
+    def test_ranks_compare_by_order_not_alphabet(self):
+        # 문자열 비교로는 "S" > "C" 가 우연히 맞지만 "B" > "A" 도 참이 된다.
+        got = shooting.best_ranks(self._lines([
+            {"stage": "x", "rank": "B"},
+            {"stage": "x", "rank": "A"},
+        ]))
+        self.assertEqual(got, {"x": "A"})
+
+    def test_tracks_each_stage_separately(self):
+        got = shooting.best_ranks(self._lines([
+            {"stage": "1-3", "rank": "A"},
+            {"stage": "2-2", "rank": "C"},
+        ]))
+        self.assertEqual(got, {"1-3": "A", "2-2": "C"})
+
+    def test_broken_lines_are_skipped_not_fatal(self):
+        # 기록 파일이 깨졌다고 플레이를 막으면 안 된다.
+        text = ('{"stage": "1-3", "rank": "A"}\n'
+                'this is not json\n'
+                '\n'
+                '{"stage": "1-3"}\n'              # rank 없음
+                '{"rank": "S"}\n'                 # stage 없음
+                '{"stage": "1-3", "rank": "??"}\n'  # 알 수 없는 등급
+                '{"stage": "2-2", "rank": "S"}\n')
+        self.assertEqual(shooting.best_ranks(text), {"1-3": "A", "2-2": "S"})
+
+    def test_empty_input(self):
+        self.assertEqual(shooting.best_ranks(""), {})
+        self.assertEqual(shooting.best_ranks(None), {})
+
+    def test_missing_file_reads_as_empty(self):
+        # 한 판도 안 한 상태 — 조용히 비어야 한다.
+        self.assertEqual(
+            shooting.read_progress(Path("/nonexistent/results.jsonl")), "")
+
+    def test_label_shows_rank_only_when_cleared(self):
+        best = {"1-3": "S"}
+        self.assertIn("S", shooting.stage_rank_badge("1-3", best))
+        self.assertEqual(shooting.stage_rank_badge("2-2", best), "")
+
+
 class DrawPlayCostTest(unittest.TestCase):
     """플레이 화면은 매 프레임(80ms) 다시 그려진다 — 여기서 I/O를 하면 안 된다."""
 
