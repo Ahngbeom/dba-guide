@@ -1356,6 +1356,41 @@ class BestRanksTest(unittest.TestCase):
         self.assertEqual(shooting.stage_rank_badge("2-2", best), "")
 
 
+class StageMenuTest(unittest.TestCase):
+    """스테이지 선택 목록의 한 줄."""
+
+    def setUp(self):
+        self.path = (REPO_ROOT / "shooting" / "stages"
+                     / "1-3-lock-contention.json")
+        self.stage = shooting.load_stage(self.path)
+
+    def test_label_carries_id_title_and_kind(self):
+        label = shooting.stage_menu_label(self.path, self.stage, {})
+        self.assertIn("1-3-lock-contention", label)
+        self.assertIn("락 지옥", label)
+        self.assertIn("🔥", label)              # kind: incident
+
+    def test_build_stage_kind_uses_the_other_icon(self):
+        build = dict(self.stage, kind="build")
+        self.assertIn("🔧", shooting.stage_menu_label(self.path, build, {}))
+
+    def test_label_shows_the_best_rank(self):
+        label = shooting.stage_menu_label(
+            self.path, self.stage, {"1-3-lock-contention": "A"})
+        self.assertIn("[A]", label)
+
+    def test_unplayed_stage_has_no_badge(self):
+        label = shooting.stage_menu_label(self.path, self.stage, {})
+        self.assertIsNone(re.search(r"\[[SABC]\]", label))
+
+    def test_broken_definition_stays_in_the_list(self):
+        # 목록에서 빼면 파일이 있는데 안 보이는 상태가 된다 — 오류로 보여준다.
+        label = shooting.stage_menu_label(Path("stages/9-9-broken.json"),
+                                          None, {})
+        self.assertIn("오류", label)
+        self.assertIn("9-9-broken", label)
+
+
 class DrawPlayCostTest(unittest.TestCase):
     """플레이 화면은 매 프레임(80ms) 다시 그려진다 — 여기서 I/O를 하면 안 된다."""
 
