@@ -1308,6 +1308,52 @@ def _objective_by_id(stage, oid):
 # --------------------------------------------------------------------------- #
 # 진행 기록 (비커밋)
 # --------------------------------------------------------------------------- #
+def read_progress(path=None):
+    """results.jsonl 원문. 없거나 읽을 수 없으면 빈 문자열.
+
+    파싱은 `best_ranks`가 한다 — 파일 접근과 해석을 나눠야 해석 쪽을 테스트할 수
+    있다(exam.py의 `read_results`와 같은 구조).
+    """
+    try:
+        return Path(path or PROGRESS_FILE).read_text(encoding="utf-8")
+    except OSError:
+        return ""
+
+
+def best_ranks(text):
+    """스테이지별 최고 등급 → {스테이지 id: 등급}.
+
+    손상된 줄은 건너뛴다 — 개인 학습 기록이 깨졌다고 플레이를 막을 이유가 없다.
+
+    등급 비교는 반드시 `RANK_ORDER`로 한다. 문자열 비교로는 "S" > "C"가 우연히
+    맞아떨어져 넘어가지만 "B" > "A"도 참이 되어 조용히 틀린다.
+    """
+    best = {}
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(rec, dict):
+            continue
+        stage_id, rank = rec.get("stage"), rec.get("rank")
+        if not stage_id or rank not in RANK_ORDER:
+            continue
+        prev = best.get(stage_id)
+        if prev is None or RANK_ORDER.index(rank) > RANK_ORDER.index(prev):
+            best[stage_id] = rank
+    return best
+
+
+def stage_rank_badge(stage_id, best):
+    """목록에 붙일 최고 등급 표시. 클리어한 적 없으면 빈 문자열."""
+    rank = (best or {}).get(stage_id)
+    return f"[{rank}]" if rank else ""
+
+
 def save_progress(stage, rank, score, elapsed, hints_used, violations):
     try:
         PROGRESS_DIR.mkdir(parents=True, exist_ok=True)
@@ -2032,6 +2078,7 @@ def cmd_list():
     if not stages:
         print("스테이지가 없습니다.")
         return 1
+    best = best_ranks(read_progress())
     print("\n사용 가능한 스테이지\n")
     for path in stages:
         try:
@@ -2040,7 +2087,9 @@ def cmd_list():
             print(f"  [오류] {path.name}: {e}")
             continue
         kind = "🔥" if stage.get("kind") == "incident" else "🔧"
-        print(f"  {kind} {stage.get('id'):<24} {stage.get('title')}")
+        badge = stage_rank_badge(stage.get("id"), best)
+        print(f"  {kind} {stage.get('id'):<24} {stage.get('title')}"
+              f"{'  ' + badge if badge else ''}")
         print(f"     {stage.get('brief', '')[:70]}")
     print()
     return 0
@@ -2123,11 +2172,14 @@ def choose_stage(stages):
     """스테이지가 여러 개면 번호로 고르게 한다."""
     if len(stages) == 1:
         return stages[0]
+    best = best_ranks(read_progress())
     print("\n스테이지를 고르세요\n")
     for i, path in enumerate(stages, 1):
         try:
             stage = load_stage(path)
-            print(f"  {i}) {stage.get('id')}  {stage.get('title')}")
+            badge = stage_rank_badge(stage.get("id"), best)
+            print(f"  {i}) {stage.get('id')}  {stage.get('title')}"
+                  f"{'  ' + badge if badge else ''}")
         except (ValueError, json.JSONDecodeError):
             print(f"  {i}) [오류] {path.name}")
     print()
