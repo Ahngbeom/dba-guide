@@ -17,7 +17,11 @@ services:
       MYSQL_ROOT_PASSWORD: dbshoot-root
       MYSQL_ROOT_HOST: "%"
     ports:
-      - "3306:3306"
+      # 루프백에만 노출한다. 랩의 root/dba/app 비밀번호는 고정 문자열이고
+      # MYSQL_ROOT_HOST가 '%'라, 0.0.0.0에 열면 같은 네트워크의 다른 장비가
+      # root로 붙을 수 있다(공용 와이파이에서 특히). 복제는 컨테이너 네트워크의
+      # primary:3306으로 붙으므로 이 제한에 영향받지 않는다.
+      - "127.0.0.1:3306:3306"
     volumes:
       - primary-data:/var/lib/mysql
       - ./conf/primary.cnf:/etc/mysql/conf.d/zz-dbshoot.cnf:ro
@@ -39,7 +43,7 @@ services:
       MYSQL_ROOT_PASSWORD: dbshoot-root
       MYSQL_ROOT_HOST: "%"
     ports:
-      - "3307:3306"
+      - "127.0.0.1:3307:3306"
     volumes:
       - replica-data:/var/lib/mysql
       - ./conf/replica.cnf:/etc/mysql/conf.d/zz-dbshoot.cnf:ro
