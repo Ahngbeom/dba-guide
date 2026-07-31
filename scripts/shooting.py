@@ -58,7 +58,9 @@ PLAYER_USER = "dba"
 PLAYER_PASSWORD = "shoot"
 PLAYER_DB = "shop"
 PLAYER_HOST = "127.0.0.1"
-PLAYER_PORT = "3306"
+# 서버별 게시 포트. compose.yaml의 ports와 맞춰야 한다 — 어긋나면 조용히 엉뚱한
+# 서버에 붙는다(테스트가 두 파일을 대조한다).
+PLAYER_PORTS = {"primary": "3306", "replica": "3307"}
 # -S 긴 줄 자르기 / -F 한 화면이면 즉시 종료 / -X 나갈 때 화면 지우지 않기
 CLIENT_PAGER = "less -SFX"
 OBJECTIVE_TYPES = ("state", "quiz")
@@ -416,21 +418,38 @@ def debrief_section(stage):
         "", ""])
 
 
-def mysql_client_command(stage, pager=None):
+def client_targets(stage):
+    """`c` 키로 붙을 수 있는 서버 목록. primary가 먼저 온다.
+
+    스테이지가 실제로 건드리는 서버만 내놓는다 — 락 스테이지에서 replica를
+    제시하면 갈 이유 없는 선택지가 하나 늘 뿐이다.
+    """
+    targets = watch_targets(stage)
+    return ["primary"] + sorted(t for t in targets if t != "primary")
+
+
+def mysql_client_command(stage, pager=None, target="primary"):
     """대화형 mysql 클라이언트 인자 목록.
 
     직접 만든 콘솔을 대체한다. readline·히스토리·컬럼 완성·페이저·자동 세로
     출력을 전부 클라이언트가 제공하므로 우리가 다시 만들 이유가 없다.
 
     `--auto-rehash`(스키마·테이블·컬럼 완성)는 기본값이라 주지 않는다.
+
+    `target`은 붙을 서버다. 복제 스테이지에서는 범인이 replica에 있을 수 있어
+    primary만으로는 현장에 갈 수 없다. 판정은 달라지지 않는다 — 어느 포트로 붙든
+    `dba` 계정이므로 `general_log` 귀속이 같고, 명령 로그는 이미 서버별로 읽는다.
     """
+    # 서버가 하나뿐인 스테이지에서는 대상 표기가 잡음이므로 붙이지 않는다.
+    label = (f"{stage.get('id', 'shoot')}@{target}"
+             if len(client_targets(stage)) > 1 else stage.get("id", "shoot"))
     cmd = [
         "mysql",
-        f"-h{PLAYER_HOST}", f"-P{PLAYER_PORT}",
+        f"-h{PLAYER_HOST}", f"-P{PLAYER_PORTS.get(target, PLAYER_PORTS['primary'])}",
         f"-u{PLAYER_USER}", f"-D{PLAYER_DB}",
         # 행이 터미널보다 넓으면 알아서 \G 세로 출력으로 바꾼다.
         "--auto-vertical-output",
-        f"--prompt=[{stage.get('id', 'shoot')}] mysql> ",
+        f"--prompt=[{label}] mysql> ",
     ]
     if pager:
         cmd.append(f"--pager={pager}")
@@ -784,33 +803,36 @@ def run_in_terminal(stdscr, curses, cmd, env=None, on_error=None, banner=None):
     return rc
 
 
-def client_banner(stage, session):
+def client_banner(stage, session, target="primary"):
     """mysql 프롬프트 위에 남길 문맥 요약(순수 함수).
 
     클라이언트로 넘어가도 "지금 뭘 고쳐야 하는지"를 잃지 않게 하는 것이 목적이라
     남은 목표만 나열한다. 출력은 호출자가 endwin() 뒤에 한다.
     """
+    where = (f"  →  {target} :{PLAYER_PORTS.get(target, '?')}"
+             if len(client_targets(stage)) > 1 else "")
     lines = ["", "─" * 60,
              f" {stage.get('id')}  {stage.get('title')}   "
              f"{fmt_mmss(elapsed_of(session))}   "
-             f"{objective_marks(stage, session)}"]
+             f"{objective_marks(stage, session)}{where}"]
     lines += [f"   [ ] {o.get('label', o['id'])}" for o in stage["objectives"]
               if not session["states"][o["id"]]["done"]]
     lines += [" 게임 화면으로 돌아가려면  exit  (또는 \\q)", "─" * 60, ""]
     return "\n".join(lines)
 
 
-def open_mysql_client(stdscr, curses, stage, session):
+def open_mysql_client(stdscr, curses, stage, session, target="primary"):
     """진짜 mysql 클라이언트를 띄운다.
 
     판정은 그대로다 — 클라이언트도 dba 계정으로 접속하므로 general_log 귀속이
     외부 터미널과 동일하다. 지속 세션이라 트랜잭션·SET SESSION도 살아있다.
+    어느 서버로 붙든 마찬가지다: 명령 로그는 이미 서버별로 읽는다.
     """
     pager = CLIENT_PAGER if shutil.which("less") else None
     return run_in_terminal(
-        stdscr, curses, mysql_client_command(stage, pager),
+        stdscr, curses, mysql_client_command(stage, pager, target),
         env={**os.environ, "MYSQL_PWD": PLAYER_PASSWORD},
-        banner=client_banner(stage, session),
+        banner=client_banner(stage, session, target),
         on_error=("접속에 실패했습니다. ~/.my.cnf 에 password= 설정이 있으면\n"
                   "MYSQL_PWD 보다 우선해 인증을 가로챌 수 있습니다\n"
                   "(MySQL 옵션 우선순위: 명령줄 > 옵션 파일 > 환경변수)."))
@@ -1450,10 +1472,17 @@ def summarize(stage, session):
 # --------------------------------------------------------------------------- #
 def _connect_hint(stage):
     """수동 접속 명령. 접속 정보의 단일 출처는 위 PLAYER_* 상수다."""
-    return stage.get(
-        "connect_hint",
-        f"MYSQL_PWD={PLAYER_PASSWORD} mysql -h{PLAYER_HOST} "
-        f"-P{PLAYER_PORT} -u{PLAYER_USER} -D{PLAYER_DB}")
+    hint = stage.get("connect_hint")
+    if hint:
+        return hint
+    hint = (f"MYSQL_PWD={PLAYER_PASSWORD} mysql -h{PLAYER_HOST} "
+            f"-P{PLAYER_PORTS['primary']} -u{PLAYER_USER} -D{PLAYER_DB}")
+    others = [t for t in client_targets(stage) if t != "primary"]
+    if others:
+        # 범인이 replica에 있는 스테이지에서 primary 명령만 띄우면 현장을 놓친다.
+        hint += "   (" + ", ".join(
+            f"{t}는 -P{PLAYER_PORTS[t]}" for t in others) + ")"
+    return hint
 
 
 def run_line(stage, session, baseline):
@@ -1621,9 +1650,11 @@ def run_curses(stage, session, baseline):
                     _notice(stdscr, curses, "답할 상황 보고가 남아있지 않습니다.")
                     stdscr.timeout(KEY_TIMEOUT_MS)
             elif ch == "c":
-                open_mysql_client(stdscr, curses, stage, session)
-                # 클라이언트 안에서 고쳤을 수 있다 — 복귀 즉시 폴링되도록 리셋.
-                watch = init_watch(stage)
+                target = _pick_client_target(stdscr, curses, stage)
+                if target:
+                    open_mysql_client(stdscr, curses, stage, session, target)
+                    # 클라이언트 안에서 고쳤을 수 있다 — 복귀 즉시 폴링되도록 리셋.
+                    watch = init_watch(stage)
                 stdscr.timeout(KEY_TIMEOUT_MS)
             elif ch == "n":
                 notes = collect_notes(NOTES_DIR, stage.get("id"))
@@ -1656,6 +1687,53 @@ def _init_screen(curses):
         curses.set_escdelay(25)
     except (AttributeError, curses.error):
         pass                         # Python 3.9 미만이거나 터미널이 거부하는 경우
+
+
+def _pick_client_target(stdscr, curses, stage):
+    """`c` 키로 붙을 서버를 고른다 → 대상 이름(취소면 None).
+
+    서버가 하나뿐인 스테이지에서는 화면을 띄우지 않고 바로 돌려준다 — 선택지가
+    하나인 질문은 물어볼 이유가 없다.
+    """
+    targets = client_targets(stage)
+    if len(targets) == 1:
+        return targets[0]
+
+    cur = 0
+    while True:
+        stdscr.erase()
+        h, w = stdscr.getmaxyx()
+        bar(stdscr, curses, 0, w, " 어느 서버에 접속할까요 ")
+        row = 2
+        for i, t in enumerate(targets):
+            sel = (i == cur)
+            put(stdscr, curses, row, 2, "▶" if sel else " ", 2,
+                curses.color_pair(4))
+            put(stdscr, curses, row, 4,
+                f"{i + 1}) {t}  ({PLAYER_HOST}:{PLAYER_PORTS[t]})", w - 6,
+                curses.A_REVERSE if sel else 0)
+            row += 1
+        bar(stdscr, curses, h - 1, w,
+            " ↑↓ 또는 숫자 선택   Enter 접속   Esc 취소 ")
+        stdscr.refresh()
+
+        stdscr.timeout(-1)
+        kind, key = read_key(stdscr, curses)
+        if kind == "esc":
+            return None
+        if kind != "key" or key is None:
+            continue
+        if is_enter(key):
+            return targets[cur]
+        ch = (key_char(key) or "").lower()
+        if key == curses.KEY_UP or ch == "k":
+            cur = (cur - 1) % len(targets)
+        elif key == curses.KEY_DOWN or ch == "j":
+            cur = (cur + 1) % len(targets)
+        elif ch.isdigit() and 1 <= int(ch) <= len(targets):
+            return targets[int(ch) - 1]
+        elif ch == "q":
+            return None
 
 
 def _due_quiz(stage, session):

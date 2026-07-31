@@ -11,6 +11,7 @@ import builtins
 import contextlib
 import io
 import json
+import re
 import shutil
 import sys
 import types
@@ -517,6 +518,9 @@ class _FakeCurses:
     """_confirm_quit 같은 화면 함수를 돌리기 위한 최소 curses 대역."""
     error = type("error", (Exception,), {})
     A_REVERSE = A_BOLD = A_DIM = 0
+    # 실제 ncurses 값과 같게 둔다 — 화면 코드가 정수 상수로 먼저 판별하기 때문에
+    # 여기서 어긋나면 방향키가 일반 문자로 잘못 해석된다.
+    KEY_UP, KEY_DOWN = 259, 258
 
     @staticmethod
     def color_pair(_n):
@@ -524,7 +528,11 @@ class _FakeCurses:
 
 
 class _FakeScreen:
-    """미리 정해둔 키를 한 번 돌려주는 화면 대역. 그린 텍스트를 모아둔다."""
+    """미리 정해둔 키를 한 번 돌려주는 화면 대역. 그린 텍스트를 모아둔다.
+
+    같은 키를 계속 돌려주므로, 화면 함수가 그 키를 처리하지 못하고 루프를 돌면
+    테스트가 끝나지 않는다 — 처리 누락이 곧 드러난다.
+    """
 
     def __init__(self, key):
         self._key = key
@@ -584,6 +592,79 @@ class ConfirmQuitTest(unittest.TestCase):
         self.assertIn("해설", text)
 
 
+class ClientTargetTest(unittest.TestCase):
+    """`c` 키가 어느 서버로 붙는가.
+
+    범인이 replica에 있는 스테이지(2-2)에서 primary로만 붙을 수 있으면
+    게임 안에서는 현장에 갈 수 없다.
+    """
+
+    def setUp(self):
+        self.single = shooting.load_stage(
+            REPO_ROOT / "shooting" / "stages" / "1-3-lock-contention.json")
+        self.multi = shooting.load_stage(
+            REPO_ROOT / "shooting" / "stages" / "2-2-replication-lag.json")
+
+    def test_single_server_stage_offers_only_primary(self):
+        self.assertEqual(shooting.client_targets(self.single), ["primary"])
+
+    def test_replication_stage_offers_both_servers(self):
+        self.assertEqual(shooting.client_targets(self.multi),
+                         ["primary", "replica"])
+
+    def test_command_targets_the_requested_server(self):
+        cmd = shooting.mysql_client_command(self.multi, target="replica")
+        self.assertIn(f"-P{shooting.PLAYER_PORTS['replica']}", cmd)
+        self.assertNotIn(f"-P{shooting.PLAYER_PORTS['primary']}", cmd)
+
+    def test_prompt_names_the_server_when_there_is_a_choice(self):
+        prompt = [a for a in shooting.mysql_client_command(
+            self.multi, target="replica") if a.startswith("--prompt=")][0]
+        self.assertIn("replica", prompt)
+
+    def test_prompt_stays_clean_on_single_server_stages(self):
+        # 서버가 하나뿐이면 대상 표기는 잡음이다.
+        prompt = [a for a in shooting.mysql_client_command(self.single)
+                  if a.startswith("--prompt=")][0]
+        self.assertNotIn("primary", prompt)
+
+    def test_ports_match_the_compose_file(self):
+        # 포트의 단일 출처가 어긋나면 조용히 엉뚱한 서버에 붙는다.
+        compose = (REPO_ROOT / "shooting" / "lab" / "compose.yaml").read_text(
+            encoding="utf-8")
+        published = re.findall(r'"127\.0\.0\.1:(\d+):3306"', compose)
+        self.assertEqual(published,
+                         [shooting.PLAYER_PORTS["primary"],
+                          shooting.PLAYER_PORTS["replica"]])
+
+    def test_connect_hint_mentions_the_replica_port(self):
+        # 2-2는 connect_hint를 직접 주므로 그 값이 replica를 안내해야 한다.
+        self.assertIn(shooting.PLAYER_PORTS["replica"],
+                      shooting._connect_hint(self.multi))
+
+    def test_banner_says_which_server(self):
+        session = shooting.init_session(self.multi)
+        banner = shooting.client_banner(self.multi, session, target="replica")
+        self.assertIn("replica", banner)
+
+    def _pick(self, stage, key):
+        screen = _FakeScreen(key)
+        return shooting._pick_client_target(screen, _FakeCurses(), stage), screen
+
+    def test_single_server_stage_skips_the_picker(self):
+        # 선택지가 하나인 질문은 물어볼 이유가 없다 — 화면도 그리지 않는다.
+        target, screen = self._pick(self.single, ord("1"))
+        self.assertEqual(target, "primary")
+        self.assertEqual(screen.drawn, [])
+
+    def test_number_key_picks_the_server(self):
+        self.assertEqual(self._pick(self.multi, ord("1"))[0], "primary")
+        self.assertEqual(self._pick(self.multi, ord("2"))[0], "replica")
+
+    def test_quit_cancels(self):
+        self.assertIsNone(self._pick(self.multi, ord("q"))[0])
+
+
 class ClientHandoffTest(unittest.TestCase):
     """진짜 mysql 클라이언트로 넘기는 경로."""
 
@@ -610,7 +691,7 @@ class ClientHandoffTest(unittest.TestCase):
         self.assertIn(f"-u{shooting.PLAYER_USER}", cmd)
         self.assertIn(f"-D{shooting.PLAYER_DB}", cmd)
         self.assertIn(f"-h{shooting.PLAYER_HOST}", cmd)
-        self.assertIn(f"-P{shooting.PLAYER_PORT}", cmd)
+        self.assertIn(f"-P{shooting.PLAYER_PORTS['primary']}", cmd)
 
     def test_wide_rows_switch_to_vertical(self):
         # data_locks 는 한 줄이 254칸이다 — 이 옵션이 빠지면 화면에서 잘린다.
@@ -645,7 +726,7 @@ class ClientHandoffTest(unittest.TestCase):
 
     def test_connect_hint_derives_from_the_same_constants(self):
         hint = shooting._connect_hint({})
-        for part in (shooting.PLAYER_HOST, shooting.PLAYER_PORT,
+        for part in (shooting.PLAYER_HOST, shooting.PLAYER_PORTS["primary"],
                      shooting.PLAYER_USER, shooting.PLAYER_DB):
             self.assertIn(part, hint)
 
