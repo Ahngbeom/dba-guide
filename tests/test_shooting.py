@@ -1073,6 +1073,153 @@ class DoctorTest(unittest.TestCase):
             self.assertIsNone(shooting.container_started_at("primary"))
 
 
+class LineQuizScheduleTest(unittest.TestCase):
+    """라인 모드에서 '언제 문항을 띄우는가'.
+
+    예전에는 폴링 주기(2초)마다 미응답 문항 전부를 물어봤다. trigger가 무시돼
+    상황을 보기도 전에 문항이 튀어나왔고, 답하지 않으면 2초마다 다시 물었다.
+    """
+
+    def setUp(self):
+        # diagnose-symptom(trigger 25s) / diagnose-view(trigger 없음) /
+        # unblock(state) / orders-flow(state)
+        self.stage = shooting.load_stage(
+            REPO_ROOT / "shooting" / "stages" / "1-3-lock-contention.json")
+        self.session = shooting.init_session(self.stage)
+
+    def _ask(self, elapsed, interactive=True):
+        return [o["id"] for o in shooting.line_quizzes_to_ask(
+            self.stage, self.session, elapsed, interactive)]
+
+    def _finish_states(self):
+        for obj in self.stage["objectives"]:
+            if obj["type"] == "state":
+                self.session["states"][obj["id"]]["done"] = True
+
+    def test_nothing_before_the_trigger_fires(self):
+        self.assertEqual(self._ask(elapsed=5), [])
+
+    def test_triggered_quiz_appears_after_its_delay(self):
+        self.assertEqual(self._ask(elapsed=30), ["diagnose-symptom"])
+
+    def test_untriggered_quiz_waits_for_the_state_objectives(self):
+        # trigger가 없는 문항은 상황을 다 정리한 뒤에 묻는다. 먼저 물으면
+        # '상황 보고'가 아니라 그냥 퀴즈가 된다.
+        self.assertNotIn("diagnose-view", self._ask(elapsed=30))
+        self._finish_states()
+        self.assertIn("diagnose-view", self._ask(elapsed=30))
+
+    def test_answered_quiz_is_not_asked_again(self):
+        self._finish_states()
+        for oid in ("diagnose-symptom", "diagnose-view"):
+            self.session["states"][oid]["done"] = True
+        self.assertEqual(self._ask(elapsed=30), [])
+
+    def test_nothing_is_asked_without_a_terminal(self):
+        self._finish_states()
+        self.assertEqual(self._ask(elapsed=30, interactive=False), [])
+
+
+class LineAskTest(unittest.TestCase):
+    """문항 한 건을 묻는 부분 — 재질문은 이 안에서 끝나야 한다."""
+
+    def setUp(self):
+        self.stage = shooting.load_stage(
+            REPO_ROOT / "shooting" / "stages" / "1-3-lock-contention.json")
+        self.session = shooting.init_session(self.stage)
+        self.mcq = self.stage["objectives"][0]        # diagnose-symptom
+        self.short = self.stage["objectives"][1]      # diagnose-view
+
+    def _ask(self, obj, answers):
+        """answers를 차례로 돌려주는 가짜 input으로 물어본다."""
+        fed = iter(answers)
+
+        def prompt(_label):
+            try:
+                return next(fed)
+            except StopIteration:
+                raise EOFError
+        st = self.session["states"][obj["id"]]
+        with contextlib.redirect_stdout(io.StringIO()) as buf:
+            ok = shooting._line_ask(obj, st, prompt=prompt)
+        return ok, st, buf.getvalue()
+
+    def test_bad_input_is_retried_in_place(self):
+        # 예전에는 잘못된 입력이면 그냥 돌아가 바깥 루프가 2초 뒤 다시 물었다.
+        ok, st, out = self._ask(self.mcq, ["아무거나", "0", "99", "1"])
+        self.assertTrue(ok)
+        self.assertTrue(st["done"])
+        self.assertIn("사이의 번호를 입력하세요", out)
+
+    def test_answer_is_graded(self):
+        # 섞인 표시 순서가 아니라 원본 순서이므로 1번이 정답이다.
+        _, st, _ = self._ask(self.mcq, ["1"])
+        self.assertTrue(st["correct"])
+        _, st2, _ = self._ask(self.mcq, ["2"])
+        self.assertFalse(st2["correct"])
+
+    def test_short_answer_accepts_the_documented_forms(self):
+        _, st, _ = self._ask(self.short, ["data_lock_waits"])
+        self.assertTrue(st["correct"])
+
+    def test_eof_reports_instead_of_raising(self):
+        ok, st, _ = self._ask(self.short, [])
+        self.assertFalse(ok)
+        self.assertFalse(st["done"])   # 닫는 것은 호출부(skip_quiz)의 몫
+
+
+class SkippedQuizTest(unittest.TestCase):
+    """물어볼 수 없었던 문항은 '틀림'이 아니라 '건너뜀'이다.
+
+    비대화형(파이프) 실행에서는 input()을 쓸 수 없다. 그렇다고 문항을 미완료로
+    두면 all_done이 영원히 거짓이라 루프가 끝나지 않는다.
+    """
+
+    def setUp(self):
+        self.stage = shooting.load_stage(
+            REPO_ROOT / "shooting" / "stages" / "1-3-lock-contention.json")
+        self.session = shooting.init_session(self.stage)
+
+    def test_skipping_completes_the_objective(self):
+        shooting.skip_quiz(self.session, "diagnose-symptom")
+        st = self.session["states"]["diagnose-symptom"]
+        self.assertTrue(st["done"])
+        self.assertTrue(st["skipped"])
+        self.assertIsNone(st["correct"])
+
+    def test_skipped_quizzes_leave_the_run_finishable(self):
+        for oid in ("diagnose-symptom", "diagnose-view"):
+            shooting.skip_quiz(self.session, oid)
+        for obj in self.stage["objectives"]:
+            if obj["type"] == "state":
+                self.session["states"][obj["id"]]["done"] = True
+        self.assertTrue(shooting.all_done(self.stage, self.session))
+
+    def test_skipped_quizzes_do_not_count_as_wrong(self):
+        # 감점하지 않는다 — target_seconds가 없을 때 시간으로 감점하지 않는 것과
+        # 같은 원칙(기준이 없으면 감점하지 않는다).
+        for oid in ("diagnose-symptom", "diagnose-view"):
+            shooting.skip_quiz(self.session, oid)
+        self.assertEqual(shooting.quiz_totals(self.stage, self.session), (0, 0))
+        _, score, rank = shooting.rank_breakdown(10, 300, 0, 0, 0, 0)
+        self.assertEqual((score, rank), (4, "S"))
+
+    def test_snapshot_marks_skipped_quizzes(self):
+        # 답한 문항과 똑같이 [x]로만 보이면 나중에 회고할 때 오해한다.
+        shooting.skip_quiz(self.session, "diagnose-symptom")
+        snap = shooting._line_snapshot(self.stage, self.session)
+        self.assertIn("건너뜀", snap)
+
+    def test_skipped_quiz_is_not_praised_in_the_note(self):
+        # 답하지 않은 문항이 '잘된 점'에 올라오면 회고가 거짓말을 한다.
+        shooting.skip_quiz(self.session, "diagnose-symptom")
+        note = shooting.build_note(
+            self.stage, self.session,
+            shooting.summarize(self.stage, self.session), "2026-07-31")
+        well = note.split("## 잘된 점")[1].split("## 아쉬운 점")[0]
+        self.assertNotIn("상황 식별", well)
+
+
 class DrawPlayCostTest(unittest.TestCase):
     """플레이 화면은 매 프레임(80ms) 다시 그려진다 — 여기서 I/O를 하면 안 된다."""
 
