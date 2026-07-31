@@ -497,6 +497,77 @@ class WatchPlanTest(unittest.TestCase):
         self.assertIsNone(step)
 
 
+class _FakeCurses:
+    """_confirm_quit 같은 화면 함수를 돌리기 위한 최소 curses 대역."""
+    error = type("error", (Exception,), {})
+    A_REVERSE = A_BOLD = A_DIM = 0
+
+    @staticmethod
+    def color_pair(_n):
+        return 0
+
+
+class _FakeScreen:
+    """미리 정해둔 키를 한 번 돌려주는 화면 대역. 그린 텍스트를 모아둔다."""
+
+    def __init__(self, key):
+        self._key = key
+        self.drawn = []
+
+    def erase(self):
+        pass
+
+    def refresh(self):
+        pass
+
+    def timeout(self, _ms):
+        pass
+
+    def nodelay(self, _flag):
+        pass
+
+    def getmaxyx(self):
+        return 24, 80
+
+    def addstr(self, _y, _x, text, _attr=0):
+        self.drawn.append(text)
+
+    def getch(self):
+        return self._key
+
+
+class ConfirmQuitTest(unittest.TestCase):
+    """포기 확인 화면 — 문항 화면의 q(닫기) 손버릇이 판을 날리지 않게 한다."""
+
+    def setUp(self):
+        self.stage = shooting.load_stage(
+            REPO_ROOT / "shooting" / "stages" / "1-3-lock-contention.json")
+        self.session = shooting.init_session(self.stage)
+
+    def _confirm(self, key):
+        screen = _FakeScreen(key)
+        ok = shooting._confirm_quit(screen, _FakeCurses(), self.stage,
+                                    self.session)
+        return ok, "".join(screen.drawn)
+
+    def test_y_confirms(self):
+        for key in (ord("y"), ord("Y")):
+            ok, _ = self._confirm(key)
+            self.assertTrue(ok, key)
+
+    def test_everything_else_cancels(self):
+        # Enter조차 승낙이 아니다 — 화면을 안 읽고 누른 키가 곧 포기가 되면
+        # 확인 단계를 넣은 의미가 없다.
+        for key in (ord("n"), ord("q"), 10, 27, -1):
+            ok, _ = self._confirm(key)
+            self.assertFalse(ok, key)
+
+    def test_screen_states_the_cost(self):
+        # 포기의 비용(해설이 붙지 않음)이 화면에 적혀 있어야 한다.
+        _, text = self._confirm(ord("n"))
+        self.assertIn("해설", text)
+
+
 class ClientHandoffTest(unittest.TestCase):
     """진짜 mysql 클라이언트로 넘기는 경로."""
 
