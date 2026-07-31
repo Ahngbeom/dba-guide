@@ -1531,8 +1531,30 @@ def _connect_hint(stage):
     return hint
 
 
+def ensure_streaming_output(stream=None):
+    """비대화형 출력을 라인 버퍼링으로 바꾼다 → 실제로 바꿨는지.
+
+    stdout이 tty가 아니면 Python은 블록 버퍼링을 쓴다. 라인 모드는 "이 창은
+    상태만 표시합니다"라고 안내하는 **감시 창**인데, 파이프나 로그 파일로 넘기는
+    순간 버퍼가 찰 때까지 한 글자도 나오지 않아 그 목적이 사라진다. 진행이 멈춘
+    것인지 출력이 안 나오는 것인지도 구분할 수 없다.
+
+    스트림이 `reconfigure`를 지원하지 않거나 거부해도 조용히 넘어간다 — 출력이
+    덜 매끄러운 것이 판을 못 하게 만들 이유는 아니다.
+    """
+    stream = sys.stdout if stream is None else stream
+    try:
+        if stream.isatty():
+            return False                # tty는 이미 라인 버퍼링이다
+        stream.reconfigure(line_buffering=True)
+        return True
+    except (AttributeError, ValueError, OSError):
+        return False
+
+
 def run_line(stage, session, baseline):
     """tty가 아니거나 curses가 없을 때의 단순 진행 화면."""
+    ensure_streaming_output()
     print(f"\n== {stage.get('title')} ({stage.get('id')}) ==")
     print(f"\n{stage.get('brief', '')}\n")
     print(f"접속: {_connect_hint(stage)}\n")
