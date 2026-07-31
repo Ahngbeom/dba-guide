@@ -43,8 +43,8 @@ NOTES_DIR = PROGRESS_DIR / "notes"                # 포스트모템 노트(비�
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from tui import (  # noqa: E402
-    bar, cwidth, is_affirmative, is_backspace, is_enter, is_idle, key_char, put,
-    read_key, wrap,
+    bar, cwidth, is_affirmative, is_backspace, is_enter, is_idle, key_char, pick,
+    put, read_key, wrap,
 )
 from exam import grade_mcq, grade_short, shuffle_choices  # noqa: E402
 
@@ -1699,41 +1699,10 @@ def _pick_client_target(stdscr, curses, stage):
     if len(targets) == 1:
         return targets[0]
 
-    cur = 0
-    while True:
-        stdscr.erase()
-        h, w = stdscr.getmaxyx()
-        bar(stdscr, curses, 0, w, " 어느 서버에 접속할까요 ")
-        row = 2
-        for i, t in enumerate(targets):
-            sel = (i == cur)
-            put(stdscr, curses, row, 2, "▶" if sel else " ", 2,
-                curses.color_pair(4))
-            put(stdscr, curses, row, 4,
-                f"{i + 1}) {t}  ({PLAYER_HOST}:{PLAYER_PORTS[t]})", w - 6,
-                curses.A_REVERSE if sel else 0)
-            row += 1
-        bar(stdscr, curses, h - 1, w,
-            " ↑↓ 또는 숫자 선택   Enter 접속   Esc 취소 ")
-        stdscr.refresh()
-
-        stdscr.timeout(-1)
-        kind, key = read_key(stdscr, curses)
-        if kind == "esc":
-            return None
-        if kind != "key" or key is None:
-            continue
-        if is_enter(key):
-            return targets[cur]
-        ch = (key_char(key) or "").lower()
-        if key == curses.KEY_UP or ch == "k":
-            cur = (cur - 1) % len(targets)
-        elif key == curses.KEY_DOWN or ch == "j":
-            cur = (cur + 1) % len(targets)
-        elif ch.isdigit() and 1 <= int(ch) <= len(targets):
-            return targets[int(ch) - 1]
-        elif ch == "q":
-            return None
+    idx = pick(stdscr, curses, "어느 서버에 접속할까요",
+               [f"{t}  ({PLAYER_HOST}:{PLAYER_PORTS[t]})" for t in targets],
+               footer=" ↑↓ 또는 숫자 선택   Enter 접속   Esc/q 취소 ")
+    return None if idx is None else targets[idx]
 
 
 def _due_quiz(stage, session):

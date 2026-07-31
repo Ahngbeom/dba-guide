@@ -190,5 +190,122 @@ class KeyNormalizationTest(unittest.TestCase):
             self.assertFalse(tui.is_affirmative(k), k)
 
 
+class _PickCurses:
+    """pick()을 돌리기 위한 최소 curses 대역."""
+    error = type("error", (Exception,), {})
+    A_REVERSE = A_BOLD = A_DIM = A_NORMAL = 0
+    # 실제 ncurses 값과 같게 둔다 — 화면 코드가 정수 상수로 먼저 판별한다.
+    KEY_UP, KEY_DOWN = 259, 258
+
+    @staticmethod
+    def color_pair(_n):
+        return 0
+
+
+class _PickScreen:
+    """키를 순서대로 돌려주는 화면 대역. 그린 텍스트를 모아둔다."""
+
+    def __init__(self, keys, size=(24, 80)):
+        self._keys = list(keys)
+        self._size = size
+        self.drawn = []
+
+    def erase(self):
+        self.drawn.append("\f")      # 프레임 경계
+
+    def clear(self):
+        self.erase()
+
+    def refresh(self):
+        pass
+
+    def timeout(self, _ms):
+        pass
+
+    def nodelay(self, _flag):
+        pass
+
+    def getmaxyx(self):
+        return self._size
+
+    def addstr(self, _y, _x, text, _attr=0):
+        self.drawn.append(text)
+
+    def getch(self):
+        # 키가 떨어지면 계속 마지막 키를 준다 — 처리 못 하면 테스트가 멈춰
+        # 누락이 곧 드러난다.
+        return self._keys.pop(0) if self._keys else ord("q")
+
+    @property
+    def frames(self):
+        return "".join(self.drawn).split("\f")
+
+
+class PickTest(unittest.TestCase):
+    """세로 목록 선택기 — exam.py와 shooting.py에 흩어져 있던 것을 모은 것."""
+
+    LABELS = ["primary", "replica", "arbiter"]
+
+    def _pick(self, keys, labels=None, **kw):
+        screen = _PickScreen(keys)
+        idx = tui.pick(screen, _PickCurses(), "고르세요",
+                       labels if labels is not None else self.LABELS, **kw)
+        return idx, screen
+
+    def test_enter_takes_the_highlighted_row(self):
+        self.assertEqual(self._pick([10])[0], 0)
+
+    def test_arrows_move(self):
+        self.assertEqual(self._pick([_PickCurses.KEY_DOWN, 10])[0], 1)
+        self.assertEqual(
+            self._pick([_PickCurses.KEY_DOWN, _PickCurses.KEY_DOWN, 10])[0], 2)
+
+    def test_vi_keys_move(self):
+        self.assertEqual(self._pick([ord("j"), 10])[0], 1)
+        self.assertEqual(self._pick([ord("j"), ord("k"), 10])[0], 0)
+
+    def test_movement_wraps_around(self):
+        # 첫 줄에서 위로 가면 마지막 줄로.
+        self.assertEqual(self._pick([ord("k"), 10])[0], len(self.LABELS) - 1)
+
+    def test_number_keys_select_directly(self):
+        self.assertEqual(self._pick([ord("2")])[0], 1)
+        self.assertEqual(self._pick([ord("3")])[0], 2)
+
+    def test_out_of_range_number_is_ignored(self):
+        # 항목이 3개인데 9를 눌러도 아무 일도 없어야 한다.
+        self.assertEqual(self._pick([ord("9"), 10])[0], 0)
+
+    def test_cancel_keys(self):
+        self.assertIsNone(self._pick([ord("q")])[0])
+        self.assertIsNone(self._pick([27])[0])
+
+    def test_cancel_can_be_disabled(self):
+        # 취소를 막으면 q는 무시되고 계속 고르게 된다.
+        idx, _ = self._pick([ord("q"), 10], allow_cancel=False)
+        self.assertEqual(idx, 0)
+
+    def test_single_key_representations_agree(self):
+        # read_key(wide=False)는 정수를 준다. 문자열 표현으로 와도 같아야 한다.
+        self.assertEqual(self._pick(["j", "\n"])[0], 1)
+
+    def test_labels_are_drawn(self):
+        _, screen = self._pick([10])
+        self.assertTrue(any("primary" in f for f in screen.frames))
+        self.assertTrue(any("replica" in f for f in screen.frames))
+
+    def test_long_list_scrolls_instead_of_overflowing(self):
+        # 화면보다 긴 목록에서 마지막 항목을 고를 수 있어야 한다.
+        labels = [f"항목 {i}" for i in range(40)]
+        screen = _PickScreen([_PickCurses.KEY_UP, 10], size=(10, 80))
+        idx = tui.pick(screen, _PickCurses(), "고르세요", labels)
+        self.assertEqual(idx, len(labels) - 1)
+        # 마지막 프레임에 그 항목이 실제로 그려져 있어야 한다(잘리면 안 된다).
+        self.assertIn("항목 39", screen.frames[-1])
+
+    def test_empty_list_returns_none(self):
+        self.assertIsNone(tui.pick(_PickScreen([]), _PickCurses(), "제목", []))
+
+
 if __name__ == "__main__":
     unittest.main()

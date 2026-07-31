@@ -334,6 +334,66 @@ def is_affirmative(key):
 
 
 # --------------------------------------------------------------------------- #
+# 세로 목록 선택기
+# --------------------------------------------------------------------------- #
+def pick(stdscr, curses, title, labels, footer=None, allow_cancel=True):
+    """세로 목록에서 하나 고른다 → 고른 인덱스(취소면 None).
+
+    '↑↓로 옮기고 Enter로 고른다'가 이 저장소 여러 화면에 흩어져 따로 구현돼
+    있었다. 키 비교 함정(`read_key`가 모드에 따라 정수/문자열을 준다)이
+    구현마다 따로 관리되는 것이 특히 위험해서 여기로 모았다.
+
+    목록이 화면보다 길면 선택 위치를 따라 스크롤한다 — 자르면 마지막 항목을
+    영영 고를 수 없다.
+    """
+    if not labels:
+        return None
+
+    sel = 0
+    while True:
+        stdscr.erase()
+        h, w = stdscr.getmaxyx()
+        bar(stdscr, curses, 0, w, f" {title} ")
+
+        # 제목 줄(0)과 하단 바(h-1), 그리고 목록 위 여백 한 줄을 뺀 나머지.
+        room = max(1, h - 3)
+        # 선택 항목이 보이는 창으로 오도록 시작점을 민다.
+        top = min(max(0, sel - room + 1), max(0, len(labels) - room))
+        for row, i in enumerate(range(top, min(len(labels), top + room))):
+            selected = (i == sel)
+            put(stdscr, curses, 2 + row, 1, "▶" if selected else " ", 2,
+                curses.color_pair(4))
+            put(stdscr, curses, 2 + row, 3, f"{i + 1}) {labels[i]}", w - 4,
+                curses.A_REVERSE if selected else 0)
+
+        hint = footer or (" ↑↓ 또는 숫자 선택   Enter 확정" +
+                          ("   Esc/q 취소 " if allow_cancel else " "))
+        bar(stdscr, curses, h - 1, w, hint)
+        stdscr.refresh()
+
+        stdscr.timeout(-1)
+        kind, key = read_key(stdscr, curses)
+        if kind == "esc":
+            if allow_cancel:
+                return None
+            continue
+        if kind != "key" or key is None:
+            continue
+        if is_enter(key):
+            return sel
+
+        ch = (key_char(key) or "").lower()
+        if key == curses.KEY_UP or ch == "k":
+            sel = (sel - 1) % len(labels)
+        elif key == curses.KEY_DOWN or ch == "j":
+            sel = (sel + 1) % len(labels)
+        elif ch.isdigit() and 1 <= int(ch) <= len(labels):
+            return int(ch) - 1
+        elif ch == "q" and allow_cancel:
+            return None
+
+
+# --------------------------------------------------------------------------- #
 # 키 진단 표시 (--keydebug 용)
 # --------------------------------------------------------------------------- #
 def describe_raw(curses, v):
