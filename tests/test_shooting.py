@@ -1073,5 +1073,53 @@ class DoctorTest(unittest.TestCase):
             self.assertIsNone(shooting.container_started_at("primary"))
 
 
+class DrawPlayCostTest(unittest.TestCase):
+    """플레이 화면은 매 프레임(80ms) 다시 그려진다 — 여기서 I/O를 하면 안 된다."""
+
+    def setUp(self):
+        self.stage = shooting.load_stage(
+            REPO_ROOT / "shooting" / "stages" / "1-3-lock-contention.json")
+
+    def test_session_carries_the_notes_count(self):
+        # 노트는 스테이지가 끝난 뒤에만 생기므로 플레이 중에는 변하지 않는다.
+        session = shooting.init_session(self.stage)
+        self.assertEqual(session["notes_count"], 0)
+
+    def test_draw_does_not_touch_the_filesystem(self):
+        class Curses:
+            error = type("error", (Exception,), {})
+            A_REVERSE = A_BOLD = A_DIM = 0
+
+            @staticmethod
+            def color_pair(_n):
+                return 0
+
+        class Screen:
+            def erase(self):
+                pass
+
+            def refresh(self):
+                pass
+
+            def getmaxyx(self):
+                return 24, 80
+
+            def addstr(self, _y, _x, _text, _attr=0):
+                pass
+
+        session = shooting.init_session(self.stage)
+        session["notes_count"] = 7
+        calls = []
+        real = shooting.collect_notes
+        shooting.collect_notes = lambda *a, **k: calls.append(a) or []
+        try:
+            for _ in range(5):
+                shooting._draw_play(Screen(), Curses(), self.stage, session,
+                                    shooting.init_watch(self.stage))
+        finally:
+            shooting.collect_notes = real
+        self.assertEqual(calls, [], "그리기 경로에서 노트 디렉터리를 훑고 있다")
+
+
 if __name__ == "__main__":
     unittest.main()

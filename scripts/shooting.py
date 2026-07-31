@@ -1334,6 +1334,10 @@ def init_session(stage, rng=None):
         "restarted": False,
         "watch_error": None,
         "finished": False,
+        # 하단 바에 띄울 지난 노트 개수. 노트는 스테이지가 끝난 뒤에만 생기므로
+        # 플레이 중에는 변하지 않는다 — 그래서 매 프레임 세지 않고 여기 담아둔다.
+        # 실제 값은 화면을 띄우는 쪽(run_curses)이 시작 시 한 번 채운다.
+        "notes_count": 0,
         # 포스트모템 타임라인의 재료. 첫 줄은 장애 발생 시점이다.
         "events": [{"at": 0.0, "kind": "incident", "text": "장애 발생"}],
     }
@@ -1477,6 +1481,9 @@ def run_curses(stage, session, baseline):
         _init_screen(curses)
         stdscr.timeout(KEY_TIMEOUT_MS)
         watch = init_watch(stage)
+        # 한 번만 센다 — 이 값은 플레이 중 변하지 않는데, 매 프레임(80ms) 세면
+        # 초당 12번 디렉터리를 훑게 된다.
+        session["notes_count"] = len(collect_notes(NOTES_DIR, stage.get("id")))
 
         while True:
             now = time.monotonic()
@@ -1668,7 +1675,7 @@ def _draw_play(stdscr, curses, stage, session, watch=None):
                 f" · {watch.get('current') or ''}", w - 2, curses.A_DIM)
 
     hints = stage.get("hints") or []
-    notes = len(collect_notes(NOTES_DIR, stage.get("id")))
+    notes = session.get("notes_count", 0)
     bar(stdscr, curses, h - 1, w,
         f" c mysql 접속   r 상황 보고   n 지난 기록({notes})   "
         f"h 힌트({session['hints_used']}/{len(hints)})   q 포기 ")
