@@ -253,9 +253,25 @@ class RankTest(unittest.TestCase):
         _, _, rank = shooting.rank_breakdown(120, 300, 0, 0, 0, 0)
         self.assertEqual(rank, "S")
 
-    def test_missing_target_seconds_loses_time_bonus(self):
-        _, score, _ = shooting.rank_breakdown(10, None, 0, 0, 0, 0)
-        self.assertEqual(score, 3)
+    def test_missing_target_seconds_gives_the_bonus(self):
+        """기준이 없으면 감점하지 않는다 — 문항 없는 스테이지와 같은 원칙.
+
+        예전에는 시간 보너스가 항상 실패해 시간 무제한 스테이지에서 S가
+        구조적으로 불가능했다.
+        """
+        items, score, rank = shooting.rank_breakdown(10, None, 0, 0, 0, 0)
+        self.assertEqual((score, rank), (4, "S"))
+        self.assertTrue(items[0][2])                    # 시간 항목이 보너스
+
+    def test_missing_target_seconds_shows_no_limit_label(self):
+        items, _, _ = shooting.rank_breakdown(10, None, 0, 0, 0, 0)
+        self.assertIn("목표 없음", items[0][1])
+        self.assertNotIn("00:00", items[0][1])          # 목표 00:00로 보이면 오해
+
+    def test_target_seconds_zero_is_also_no_limit(self):
+        # 0은 "0초 안에 끝내라"가 아니라 값이 없는 것과 같이 읽는다.
+        _, score, _ = shooting.rank_breakdown(10, 0, 0, 0, 0, 0)
+        self.assertEqual(score, 4)
 
 
 class FmtTest(unittest.TestCase):
@@ -761,6 +777,16 @@ class BuildNoteTest(unittest.TestCase):
 
     def test_debrief_answer_is_not_leaked(self):
         self.assertNotIn(self.stage["debrief"].split("\n")[0], self.note)
+
+    def test_summary_says_no_limit_when_stage_is_untimed(self):
+        # "(목표 00:00)"으로 보이면 0초 안에 끝냈어야 한다는 오해를 준다.
+        stage = dict(self.stage)
+        stage.pop("target_seconds", None)
+        note = shooting.build_note(
+            stage, self.session, shooting.summarize(stage, self.session),
+            "2026-07-29")
+        self.assertIn("(목표 없음)", note)
+        self.assertNotIn("(목표 00:00)", note)
 
     def test_timeline_is_sorted_and_marked(self):
         lines = [ln for ln in self.note.splitlines()
