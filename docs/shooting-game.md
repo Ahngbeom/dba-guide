@@ -396,6 +396,11 @@ PREPARE st FROM @s; EXECUTE st; DEALLOCATE PREPARE st;
 
 **제한 시간은 하드 리밋이 아니다.** 초과해도 계속 플레이할 수 있고 등급만 내려간다.
 
+**기준이 없는 항목은 감점하지 않는다.** `target_seconds`를 두지 않으면 1번을,
+`quiz` 목표가 없으면 4번을 그냥 준다. 시간 제한 없는 스테이지(구축형 등)를 만들 수
+있어야 하는데, 없다고 해서 S가 구조적으로 불가능해지면 그 선택지가 사라진다.
+같은 이유로 `validate_stage`도 `target_seconds`를 필수로 막지 않는다.
+
 ## 새 스테이지를 추가할 때
 
 1. `shooting/stages/<world>-<n>-<slug>.json` 작성

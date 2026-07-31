@@ -326,9 +326,10 @@ def build_note(stage, session, result, today):
     out = [f"# 포스트모템: {today} {stage.get('title', '')}"
            f" ({stage.get('id', '')})", ""]
 
+    target = stage.get("target_seconds")
     out += ["## 요약",
             f"- 영향: {fmt_mmss(result['elapsed'])} 동안 대응 "
-            f"(목표 {fmt_mmss(stage.get('target_seconds'))})",
+            + (f"(목표 {fmt_mmss(target)})" if target else "(목표 없음)"),
             f"- 등급: {result['rank']} ({result['score']}/4)",
             "- 근본 원인: <!-- 직접 채우세요 -->", ""]
 
@@ -556,10 +557,19 @@ def rank_breakdown(elapsed, target_seconds, hints_used, violations,
     """등급 산출 근거를 표시용 항목으로 함께 돌려준다.
 
     반환: (항목 리스트[(라벨, 값, 보너스여부)], 점수, 등급)
+
+    **기준이 없는 항목은 감점하지 않는다.** `target_seconds`가 없으면 시간
+    보너스를, 문항이 없으면 진단 보너스를 그냥 준다. 시간 제한을 두지 않는
+    스테이지(구축형 등)를 만들 수 있어야 하는데, 없다고 해서 S가 구조적으로
+    불가능해지면 그 선택지가 사라진다. `validate_stage`에서 필수로 막지 않는
+    것도 같은 이유다.
     """
+    timed = bool(target_seconds)
     items = [
-        ("소요 시간", f"{fmt_mmss(elapsed)} (목표 {fmt_mmss(target_seconds)})",
-         bool(target_seconds) and elapsed <= target_seconds),
+        ("소요 시간",
+         f"{fmt_mmss(elapsed)} (목표 {fmt_mmss(target_seconds)})" if timed
+         else f"{fmt_mmss(elapsed)} (목표 없음)",
+         not timed or elapsed <= target_seconds),
         ("힌트 사용", f"{hints_used}회", hints_used == 0),
         ("금지 행동", f"{violations}건", violations == 0),
         ("진단 정확도", f"{quiz_correct}/{quiz_total}",
