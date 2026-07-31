@@ -347,7 +347,8 @@ def build_note(stage, session, result, today):
     for o in stage["objectives"]:
         st = session["states"][o["id"]]
         # 틀린 진단은 '달성'했어도 잘된 점이 아니다 — 아래 '아쉬운 점'으로 간다.
-        if st["done"] and st.get("correct") is not False:
+        # 물어보지 못하고 건너뛴 문항도 마찬가지다(회고가 거짓말을 하면 안 된다).
+        if st["done"] and st.get("correct") is not False and not st.get("skipped"):
             out.append(f"- {o.get('label', o['id'])}")
     if stage.get("target_seconds") and result["elapsed"] <= stage["target_seconds"]:
         out.append("- 목표 시간 안에 복구했다")
@@ -1312,7 +1313,9 @@ def init_session(stage, rng=None):
     states = {}
     for obj in stage["objectives"]:
         st = {"done": False, "hold": {"since": None}, "value": None,
-              "error": None, "correct": None, "prompted": False}
+              "error": None, "correct": None, "prompted": False,
+              # 물어보지 못하고 닫힌 문항. 오답과 구분해야 채점에서 뺄 수 있다.
+              "skipped": False}
         if obj["type"] == "quiz" and obj["question"].get("type") == "mcq":
             q = obj["question"]
             if rng is not None:
@@ -1344,15 +1347,73 @@ def init_session(stage, rng=None):
 
 
 def quiz_totals(stage, session):
-    """진단 문항 (정답 수, 전체 수)."""
+    """진단 문항 (정답 수, 전체 수).
+
+    물어보지 못한 문항(`skipped`)은 세지 않는다 — 답할 기회가 없었던 것을 오답으로
+    깎으면 안 된다. `target_seconds`가 없을 때 시간으로 감점하지 않는 것과 같은
+    원칙이다(기준이 없으면 감점하지 않는다).
+    """
     total = correct = 0
     for obj in stage["objectives"]:
         if obj["type"] != "quiz":
             continue
+        st = session["states"][obj["id"]]
+        if st.get("skipped"):
+            continue
         total += 1
-        if session["states"][obj["id"]].get("correct"):
+        if st.get("correct"):
             correct += 1
     return correct, total
+
+
+def skip_quiz(session, objective_id):
+    """문항을 '건너뜀'으로 닫는다.
+
+    비대화형 실행(파이프)에서는 `input()`을 쓸 수 없는데, 그렇다고 미완료로 두면
+    `all_done`이 영원히 거짓이라 라인 모드 루프가 끝나지 않는다. 완료로 닫되
+    정답/오답 어느 쪽도 아니라고 표시해 채점에서 빠지게 한다.
+    """
+    st = session["states"][objective_id]
+    st["done"] = True
+    st["skipped"] = True
+    st["correct"] = None
+    return st
+
+
+def _state_objectives_done(stage, session):
+    """모든 `state` 목표가 충족됐는가(문항 제외)."""
+    return all(session["states"][o["id"]]["done"]
+               for o in stage["objectives"] if o["type"] == "state")
+
+
+def line_quizzes_to_ask(stage, session, elapsed, interactive=True):
+    """라인 모드에서 **지금** 물어볼 문항 목록.
+
+    curses 모드에는 `r` 키가 있어 플레이어가 원할 때 문항을 연다. 라인 모드에는
+    그런 입력 통로가 없으므로 엔진이 시점을 정해야 하는데, 예전에는 폴링 주기마다
+    미응답 문항을 전부 물어봤다 — `trigger`가 무시돼 상황을 보기도 전에 문항이
+    뜨고, 답하지 않으면 2초마다 다시 물었다.
+
+    두 시점에만 묻는다.
+      1. `trigger.after_seconds`가 지난 문항 (curses의 자동 발동과 같은 규칙)
+      2. `state` 목표를 모두 끝낸 뒤 남은 문항 — 답하지 않으면 판이 끝나지 않으므로
+         이때는 물어야 한다
+
+    대화형 터미널이 아니면 아무것도 묻지 않는다(호출부가 `skip_quiz`로 닫는다).
+    """
+    if not interactive:
+        return []
+    endgame = _state_objectives_done(stage, session)
+    out = []
+    for obj in stage["objectives"]:
+        if obj["type"] != "quiz":
+            continue
+        if session["states"][obj["id"]]["done"]:
+            continue
+        after = (obj.get("trigger") or {}).get("after_seconds")
+        if endgame or (after is not None and elapsed >= after):
+            out.append(obj)
+    return out
 
 
 def all_done(stage, session):
@@ -1403,15 +1464,28 @@ def run_line(stage, session, baseline):
     print("다른 터미널에서 위 명령으로 접속해 대응하세요.")
     print("이 창은 상태만 표시합니다. Ctrl+C로 중단.\n")
 
+    interactive = sys.stdin.isatty()
+    if not interactive:
+        print("(대화형 터미널이 아니라 상황 보고 문항은 건너뜁니다.)\n")
+
     last = None
     try:
         while not all_done(stage, session):
             refresh(stage, session, baseline)
-            for obj in stage["objectives"]:
-                if obj["type"] == "quiz":
-                    st = session["states"][obj["id"]]
-                    if not st["done"]:
-                        _line_ask(obj, st)
+
+            elapsed = time.monotonic() - session["started"]
+            for obj in line_quizzes_to_ask(stage, session, elapsed, interactive):
+                session["states"][obj["id"]]["prompted"] = True
+                if not _line_ask(obj, session["states"][obj["id"]]):
+                    # 입력이 끊겼다(EOF). 더 물어봐야 남은 문항도 마찬가지이므로
+                    # 전부 닫고 상태 감시만 이어간다.
+                    interactive = False
+                    break
+            if not interactive:
+                for o in stage["objectives"]:
+                    if o["type"] == "quiz" and not session["states"][o["id"]]["done"]:
+                        skip_quiz(session, o["id"])
+
             snapshot = _line_snapshot(stage, session)
             if snapshot != last:
                 print(snapshot)
@@ -1438,6 +1512,9 @@ def _line_snapshot(stage, session):
             hold = obj.get("hold_seconds", 0)
             if hold and st["hold"].get("since") is not None:
                 extra += f" (유지까지 {hold_remaining(st['hold'], now, hold):.0f}s)"
+        elif st.get("skipped"):
+            # 답한 것과 똑같이 [x]로 보이면 회고할 때 오해한다.
+            extra = "  (건너뜀 — 채점 제외)"
         lines.append(f"  [{mark}] {obj.get('label', obj['id'])}{extra}")
     for v in session["violations"]:
         lines.append(f"  ! 금지 행동: {v['label']} — {v['detail']}")
@@ -1446,25 +1523,41 @@ def _line_snapshot(stage, session):
     return "\n".join(lines)
 
 
-def _line_ask(obj, st):
+def _line_ask(obj, st, prompt=input):
+    """라인 모드 문항 하나를 묻는다 → 답을 받았는가(False면 입력이 끊긴 것).
+
+    잘못된 입력은 **이 안에서** 다시 묻는다. 예전에는 그냥 돌아가버려서 바깥
+    폴링 루프가 2초 뒤 같은 문항을 또 띄웠다 — 무한 재촉이 된다.
+    """
     q = obj["question"]
     print(f"\n>> 상황 보고: {q['q']}")
-    if q["type"] == "mcq":
-        order = st.get("order") or list(range(len(q["choices"])))
+    is_mcq = q["type"] == "mcq"
+    order = st.get("order") or list(range(len(q.get("choices") or [])))
+    if is_mcq:
         for i, idx in enumerate(order, 1):
             print(f"   {i}) {q['choices'][idx]}")
-        raw = input("   번호 입력: ").strip()
-        if not raw.isdigit() or not (1 <= int(raw) <= len(order)):
-            print("   잘못된 입력입니다.")
-            return
-        st["correct"] = grade_mcq(int(raw) - 1, st.get("answer", q["answer"]))
-    else:
-        raw = input("   답 입력: ").strip()
-        st["correct"] = grade_short(raw, q.get("accept") or [])
+
+    while True:
+        try:
+            raw = prompt("   번호 입력: " if is_mcq else "   답 입력: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            # 파이프로 실행됐거나 입력이 닫혔다. 여기서 예외를 올리면 판이
+            # 트레이스백으로 죽는다 — 감시는 계속할 수 있으므로 신호만 돌려준다.
+            print("\n   (입력을 받을 수 없어 건너뜁니다.)")
+            return False
+        if not is_mcq:
+            st["correct"] = grade_short(raw, q.get("accept") or [])
+            break
+        if raw.isdigit() and 1 <= int(raw) <= len(order):
+            st["correct"] = grade_mcq(int(raw) - 1, st.get("answer", q["answer"]))
+            break
+        print(f"   1~{len(order)} 사이의 번호를 입력하세요.")
+
     st["done"] = True
     print("   → " + ("정답" if st["correct"] else "오답"))
     if q.get("explain"):
         print(f"   {q['explain']}")
+    return True
 
 
 # --------------------------------------------------------------------------- #
