@@ -2168,28 +2168,73 @@ def cmd_doctor():
     return 0 if ok else 1
 
 
-def choose_stage(stages):
-    """스테이지가 여러 개면 번호로 고르게 한다."""
-    if len(stages) == 1:
-        return stages[0]
-    best = best_ranks(read_progress())
+def stage_menu_label(path, stage, best):
+    """선택 목록에 뿌릴 한 줄. `stage`가 None이면 정의 오류로 표시한다.
+
+    깨진 파일을 목록에서 빼면 "파일은 있는데 목록에 없다"가 되어 더 헷갈린다.
+    """
+    if not stage:
+        return f"[오류] {Path(path).stem}  (정의를 읽을 수 없습니다)"
+    kind = "🔥" if stage.get("kind") == "incident" else "🔧"
+    badge = stage_rank_badge(stage.get("id"), best)
+    line = f"{kind} {stage.get('id', ''):<24} {stage.get('title', '')}"
+    return f"{line}  {badge}" if badge else line
+
+
+def _safe_load(path):
+    """정의를 읽되 실패는 None으로. 목록을 그리다 죽지 않게 한다."""
+    try:
+        return load_stage(path)
+    except (ValueError, json.JSONDecodeError, OSError):
+        return None
+
+
+def _choose_stage_curses(labels):
+    """curses 선택 화면 → 고른 인덱스(취소면 None)."""
+    import curses
+
+    def _driver(stdscr):
+        _init_screen(curses)
+        return pick(stdscr, curses, "스테이지를 고르세요", labels,
+                    footer=" ↑↓ 또는 숫자 선택   Enter 시작   Esc/q 종료 ")
+
+    return curses.wrapper(_driver)
+
+
+def _choose_stage_line(stages, labels):
+    """평문 폴백. tty가 아니거나 curses를 쓸 수 없을 때."""
     print("\n스테이지를 고르세요\n")
-    for i, path in enumerate(stages, 1):
-        try:
-            stage = load_stage(path)
-            badge = stage_rank_badge(stage.get("id"), best)
-            print(f"  {i}) {stage.get('id')}  {stage.get('title')}"
-                  f"{'  ' + badge if badge else ''}")
-        except (ValueError, json.JSONDecodeError):
-            print(f"  {i}) [오류] {path.name}")
+    for i, label in enumerate(labels, 1):
+        print(f"  {i}) {label}")
     print()
     while True:
-        raw = input("번호 (q=종료): ").strip()
+        try:
+            raw = input("번호 (q=종료): ").strip()
+        except (EOFError, KeyboardInterrupt):
+            return None
         if raw in ("q", "Q"):
             return None
         if raw.isdigit() and 1 <= int(raw) <= len(stages):
             return stages[int(raw) - 1]
         print("잘못된 입력입니다.")
+
+
+def choose_stage(stages):
+    """스테이지가 여러 개면 골라서 하나를 돌려준다(종료면 None)."""
+    if len(stages) == 1:
+        return stages[0]
+    best = best_ranks(read_progress())
+    labels = [stage_menu_label(p, _safe_load(p), best) for p in stages]
+
+    if sys.stdin.isatty() and sys.stdout.isatty():
+        try:
+            idx = _choose_stage_curses(labels)
+            return None if idx is None else stages[idx]
+        except Exception:
+            # 조용히 넘기지 않는다 — 이 폴백이 화면 코드의 버그를 감춘 적이 있다.
+            traceback.print_exc()
+            print("\n선택 화면에서 오류가 발생해 목록 입력으로 전환합니다.\n")
+    return _choose_stage_line(stages, labels)
 
 
 def cmd_play(target=None, force_line=False):
