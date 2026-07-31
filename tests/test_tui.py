@@ -180,6 +180,15 @@ class KeyNormalizationTest(unittest.TestCase):
         self.assertFalse(tui.is_idle("key", ord("q")))
         self.assertFalse(tui.is_idle("esc", None))   # Esc는 유휴가 아니다
 
+    def test_affirmative_both_representations(self):
+        for k in (ord("y"), "y", ord("Y"), "Y"):
+            self.assertTrue(tui.is_affirmative(k), k)
+
+    def test_affirmative_defaults_to_no(self):
+        """y 외에는 전부 '아니오'다 — 되돌릴 수 없는 동작의 기본값."""
+        for k in (ord("n"), "n", ord("q"), "q", 10, "\n", 27, -1, None):
+            self.assertFalse(tui.is_affirmative(k), k)
+
 
 if __name__ == "__main__":
     unittest.main()

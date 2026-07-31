@@ -43,7 +43,8 @@ NOTES_DIR = PROGRESS_DIR / "notes"                # 포스트모템 노트(비�
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from tui import (  # noqa: E402
-    bar, cwidth, is_backspace, is_enter, is_idle, key_char, put, read_key, wrap,
+    bar, cwidth, is_affirmative, is_backspace, is_enter, is_idle, key_char, put,
+    read_key, wrap,
 )
 from exam import grade_mcq, grade_short, shuffle_choices  # noqa: E402
 
@@ -1497,7 +1498,10 @@ def run_curses(stage, session, baseline):
             # read_key는 wide=False면 정수를 준다 — 반드시 key_char로 정규화한다.
             ch = (key_char(key) or "").lower()
             if ch == "q":
-                return None
+                if _confirm_quit(stdscr, curses, stage, session):
+                    return None
+                stdscr.timeout(KEY_TIMEOUT_MS)
+                continue
             if ch == "r":
                 nxt = _next_unanswered_quiz(stage, session)
                 if nxt:
@@ -1674,6 +1678,39 @@ def _notice(stdscr, curses, text):
     stdscr.refresh()
     stdscr.timeout(-1)
     read_key(stdscr, curses)
+
+
+def _confirm_quit(stdscr, curses, stage, session):
+    """포기 전 확인 화면 → 정말 포기하는가.
+
+    문항 화면에서는 q가 '제출 없이 닫기'라, 그 손버릇이 플레이 화면에서 판을
+    통째로 날릴 수 있다. 포기한 판에는 해설이 붙지 않으므로(의도된 설계) 실수
+    비용이 크다 — 그 비용을 화면에 적어두고 y를 받을 때만 진행한다.
+    """
+    stdscr.erase()
+    h, w = stdscr.getmaxyx()
+    bar(stdscr, curses, 0, w, " 스테이지 포기 ")
+
+    row = 2
+    put(stdscr, curses, row, 2, "정말 포기하시겠습니까?", w - 4,
+        curses.color_pair(3) | curses.A_BOLD)
+    row += 2
+    put(stdscr, curses, row, 2,
+        f"지금까지 {fmt_mmss(elapsed_of(session))}  "
+        f"{objective_marks(stage, session)}", w - 4)
+    row += 2
+    for line in ("포기한 판에는 스테이지 해설이 붙지 않습니다.",
+                 "(회고 노트는 포기해도 쓸 수 있습니다 — 오히려 그때가 더 필요합니다.)",
+                 "스테이지는 언제든 다시 플레이할 수 있습니다."):
+        for wrapped in wrap(line, w - 4):
+            put(stdscr, curses, row, 2, wrapped, w - 4, curses.A_DIM)
+            row += 1
+
+    bar(stdscr, curses, h - 1, w, " y 포기   그 외 아무 키나 계속 플레이 ")
+    stdscr.refresh()
+    stdscr.timeout(-1)
+    _, key = read_key(stdscr, curses)
+    return is_affirmative(key)
 
 
 def _answer_quiz(stdscr, curses, obj, session):
