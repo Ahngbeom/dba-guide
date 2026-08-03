@@ -1623,6 +1623,35 @@ def best_ranks(text):
     return best
 
 
+def last_seed(text, stage_id=None):
+    """마지막으로 플레이한 (스테이지 id, 시드). 없으면 None.
+
+    `stage_id`를 주면 그 스테이지의 마지막 판을 찾는다.
+
+    시각(`at`)이 아니라 **파일 순서**를 따른다 — 기록은 append-only라 그게 곧
+    시간 순서이고, 시각 문자열로 정렬하면 시계가 되돌아간 기계에서 엉뚱한 판이
+    나온다. 시드가 없는 옛 기록(#36 이전)은 건너뛴다.
+    """
+    found = None
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(rec, dict):
+            continue
+        sid, seed = rec.get("stage"), rec.get("seed")
+        if not sid or not isinstance(seed, int):
+            continue
+        if stage_id and sid != stage_id:
+            continue
+        found = (sid, seed)
+    return found
+
+
 def stage_rank_badge(stage_id, best):
     """목록에 붙일 최고 등급 표시. 클리어한 적 없으면 빈 문자열."""
     rank = (best or {}).get(stage_id)
@@ -2417,6 +2446,24 @@ def cmd_notes(stage_id=None):
     return 0
 
 
+def cmd_replay(stage_id=None):
+    """지난 판을 같은 시드로 다시 연다.
+
+    시드는 기록과 노트에 남지만, 지금까지는 파일을 열어 찾아 손으로 옮겨 쳐야
+    했다. 회고를 쓰다 "그때 그 판을 다시"가 되는 순간 그 사이가 끊긴다.
+    """
+    found = last_seed(read_progress(), stage_id)
+    if not found:
+        where = f"'{stage_id}'의 " if stage_id else ""
+        print(f"\n{where}지난 기록을 찾을 수 없습니다.")
+        print("한 판 끝내면 시드가 기록되어 다시 열 수 있습니다.")
+        print("(시드는 변주가 있는 스테이지에만 의미가 있습니다.)\n")
+        return 1
+    sid, seed = found
+    print(f"\n지난 판을 다시 엽니다 — {sid}  (시드 {seed})")
+    return cmd_play(sid, seed=seed)
+
+
 def cmd_doctor():
     ok = True
     # 경고는 실패와 구분한다 — 실행을 막지는 않지만 알고 있어야 하는 것들.
@@ -2745,7 +2792,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(
         prog="shoot", description="DB 장애 대응 게임")
     parser.add_argument("command", nargs="?", default="play",
-                        help="play(기본) | up | down | doctor | notes")
+                        help="play(기본) | replay | up | down | doctor | notes")
     parser.add_argument("stage", nargs="?",
                         help="스테이지 id 또는 JSON 경로")
     parser.add_argument("--list", action="store_true", help="스테이지 목록")
@@ -2763,13 +2810,15 @@ def main(argv=None):
     cmd = args.command
     stage_arg = args.stage
     # `./shoot 1-3-lock-contention` 처럼 스테이지를 바로 준 경우
-    if cmd not in ("play", "up", "down", "doctor", "notes"):
+    if cmd not in ("play", "up", "down", "doctor", "notes", "replay"):
         stage_arg, cmd = cmd, "play"
 
     if cmd == "doctor":
         return cmd_doctor()
     if cmd == "notes":
         return cmd_notes(stage_arg)
+    if cmd == "replay":
+        return cmd_replay(stage_arg)
     if cmd == "up":
         try:
             lab_up()

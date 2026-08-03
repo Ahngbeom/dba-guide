@@ -143,6 +143,7 @@
 ./shoot doctor    # 사전 점검 (docker / 포트 / mysql 클라이언트)
 ./shoot up        # 랩 기동 (최초 1회는 이미지 내려받기로 몇 분)
 ./shoot           # 스테이지를 골라 플레이
+./shoot replay    # 지난 판을 같은 시드로 다시
 ./shoot down      # 정리
 ```
 

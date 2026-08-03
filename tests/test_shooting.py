@@ -1534,6 +1534,52 @@ class GtidCountTest(unittest.TestCase):
         self.assertGreater(shooting.BINLOG_WARN_GTIDS, 1000)
 
 
+class LastSeedTest(unittest.TestCase):
+    """'그때 그 판을 다시' — 회고와 재도전 사이를 잇는다."""
+
+    def _lines(self, records):
+        return "\n".join(json.dumps(r, ensure_ascii=False) for r in records)
+
+    RECORDS = [
+        {"stage": "1-2-deadlock", "seed": 5, "at": "2026-08-03T10:00:00"},
+        {"stage": "1-1-runaway-query", "seed": 42, "at": "2026-08-03T11:00:00"},
+        {"stage": "1-2-deadlock", "seed": 9, "at": "2026-08-03T12:00:00"},
+    ]
+
+    def test_without_a_stage_takes_the_most_recent_play(self):
+        self.assertEqual(shooting.last_seed(self._lines(self.RECORDS)),
+                         ("1-2-deadlock", 9))
+
+    def test_with_a_stage_takes_that_stage_s_last_seed(self):
+        self.assertEqual(
+            shooting.last_seed(self._lines(self.RECORDS), "1-1-runaway-query"),
+            ("1-1-runaway-query", 42))
+
+    def test_records_without_a_seed_are_skipped(self):
+        # #36 이전 기록에는 seed가 없다.
+        text = self._lines([
+            {"stage": "x", "seed": 3, "at": "2026-08-03T09:00:00"},
+            {"stage": "x", "at": "2026-08-03T10:00:00"},
+        ])
+        self.assertEqual(shooting.last_seed(text), ("x", 3))
+
+    def test_order_follows_the_file_not_the_timestamp(self):
+        # 기록은 append-only라 파일 순서가 곧 시간 순서다. 시각 문자열로 정렬하면
+        # 시계가 되돌아간 기계에서 엉뚱한 판이 나온다.
+        text = self._lines([
+            {"stage": "a", "seed": 1, "at": "2099-01-01T00:00:00"},
+            {"stage": "b", "seed": 2, "at": "2000-01-01T00:00:00"},
+        ])
+        self.assertEqual(shooting.last_seed(text), ("b", 2))
+
+    def test_missing_or_broken_input(self):
+        for text in ("", None, "not json\n{", '{"stage": "x"}'):
+            self.assertIsNone(shooting.last_seed(text), repr(text))
+
+    def test_unknown_stage_returns_nothing(self):
+        self.assertIsNone(shooting.last_seed(self._lines(self.RECORDS), "9-9-x"))
+
+
 class PlayerLogQueryTest(unittest.TestCase):
     """감시가 무엇을 읽는가. 여기서 놓치면 판정이 조용히 헐거워진다."""
 
