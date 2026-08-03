@@ -754,16 +754,34 @@ def mysql(target, sql, timeout=30, log_off=True):
     return parse_tsv(p.stdout)
 
 
-def mysql_spawn(target, user, password, sql):
-    """장애 주입용 분리(detached) 세션을 띄운다.
+def spawn_command(user, sql, idle_seconds=0):
+    """장애 주입 세션을 띄울 컨테이너 안 명령(순수 함수).
 
     `--no-defaults`가 꼭 필요하다 — MySQL 클라이언트의 옵션 우선순위는
     명령줄 > 옵션 파일 > 환경변수라서, /root/.my.cnf 의 root 비밀번호가
     MYSQL_PWD를 이겨버린다. 그러면 app 계정 인증이 조용히 실패한다.
+
+    `idle_seconds`를 주면 sql을 실행한 뒤 그만큼 **접속만 붙잡고 논다**
+    (`Command=Sleep`). 커넥션 풀 누수를 재현하려면 이게 필요하다 —
+    `mysql -e`는 질의가 끝나면 바로 끊고, `SELECT SLEEP()`은 `Command=Query`로
+    잡혀 진짜 유휴 커넥션과 구분되지 않는다. 파이프가 열려 있는 동안 클라이언트가
+    stdin을 기다리므로 서버 쪽에서 유휴로 보인다.
     """
+    base = ["mysql", "--no-defaults", "-u", user]
+    if not idle_seconds:
+        return base + ["-e", sql]
+    # 스테이지 SQL에는 따옴표가 흔하다 — 셸에 그대로 넘기면 깨진다.
+    script = (f"{{ printf '%s;\\n' {shlex.quote(sql)}; "
+              f"sleep {int(idle_seconds)}; }} | "
+              + " ".join(base) + f" -D {PLAYER_DB}")
+    return ["sh", "-c", script]
+
+
+def mysql_spawn(target, user, password, sql, idle_seconds=0):
+    """장애 주입용 분리(detached) 세션을 띄운다."""
     container = CONTAINERS.get(target, target)
     _docker("exec", "-d", "-e", f"MYSQL_PWD={password}", container,
-            "mysql", "--no-defaults", "-u", user, "-e", sql)
+            *spawn_command(user, sql, idle_seconds))
 
 
 def run_in_terminal(stdscr, curses, cmd, env=None, on_error=None, banner=None):
@@ -1148,7 +1166,8 @@ def setup_stage(stage, log=print):
         log(f"[setup] {target}: '{name}' 세션 {count}개 기동")
         for _ in range(count):
             mysql_spawn(target, step.get("user", "app"),
-                        step.get("password", "app"), sql)
+                        step.get("password", "app"), sql,
+                        step.get("idle_seconds", 0))
         spawned = _wait_for_new_sessions(target, before, count)
         if step.get("culprit"):
             # 범인 세션의 pid를 기억해둔다 — 나중에 "범인 외 KILL"을 가려낸다.
