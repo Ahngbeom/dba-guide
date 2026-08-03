@@ -1,0 +1,115 @@
+{
+  "id": "1-2-deadlock",
+  "world": 1,
+  "stage": 2,
+  "kind": "incident",
+  "dbms": "mysql",
+  "title": "서로를 기다리다",
+  "brief": "정산 배치가 자꾸 실패한다. 앱 로그에 'Deadlock found when trying to get lock; try restarting transaction'이 몇 초에 한 번씩 찍히고, 재시도하면 될 때도 있고 또 실패할 때도 있다. 그런데 DB에는 멈춰 있는 세션이 없고 조회도 평소처럼 잘 된다.",
+  "target_seconds": 300,
+  "chapters": [
+    "02-intermediate/01-transaction-and-locking.md"
+  ],
+  "connect_hint": "MYSQL_PWD=shoot mysql -h127.0.0.1 -P3306 -udba",
+  "vars": {
+    "pair": {
+      "type": "span",
+      "min": 1000,
+      "max": 100000,
+      "length": 2
+    },
+    "rounds": {
+      "type": "int",
+      "min": 40000,
+      "max": 60000
+    }
+  },
+  "setup": [
+    {
+      "type": "sql",
+      "on": "primary",
+      "_comment": "deadlock_log를 매번 다시 만드는 것이 중요하다. 지난 판의 기록이 남아 있으면 이번 판이 아직 데드락을 내지 않은 시점에 '마지막 데드락이 오래 전'으로 읽혀 목표가 시작부터 충족된다. 프로시저는 SQL SECURITY INVOKER(DEFINER 함정), DELIMITER 앞 개행도 필요하다. 핸들러가 데드락(1213)을 삼키므로 루프가 계속 돈다 — 실측으로 확인했다.",
+      "sql": "GRANT EXECUTE ON shop.* TO 'app'@'%';\nDROP TABLE IF EXISTS shop.deadlock_log;\nCREATE TABLE shop.deadlock_log (id INT AUTO_INCREMENT PRIMARY KEY, at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP) ENGINE=InnoDB;\nDROP PROCEDURE IF EXISTS shop.deadlock_worker;\nDELIMITER //\nCREATE PROCEDURE shop.deadlock_worker(a BIGINT, b BIGINT, n INT) SQL SECURITY INVOKER\nBEGIN\n  DECLARE i INT DEFAULT 0;\n  DECLARE CONTINUE HANDLER FOR SQLEXCEPTION\n  BEGIN\n    ROLLBACK;\n    INSERT INTO shop.deadlock_log () VALUES ();\n  END;\n  WHILE i < n DO\n    START TRANSACTION;\n    UPDATE shop.orders SET amount = amount + 1 WHERE id = a;\n    DO SLEEP(0.05);\n    UPDATE shop.orders SET amount = amount + 1 WHERE id = b;\n    COMMIT;\n    SET i = i + 1;\n  END WHILE;\nEND//\nDELIMITER ;"
+    },
+    {
+      "type": "session",
+      "on": "primary",
+      "name": "batch-ascending",
+      "user": "app",
+      "password": "app",
+      "_comment": "관례를 지키는 쪽. 작은 id → 큰 id 순으로 잠근다.",
+      "sql": "CALL shop.deadlock_worker({{pair.from}}, {{pair.to}}, {{rounds}})"
+    },
+    {
+      "type": "session",
+      "on": "primary",
+      "name": "batch-descending",
+      "user": "app",
+      "password": "app",
+      "_comment": "관례를 어기는 쪽. 순서가 반대라 서로를 기다리게 된다. 데드락은 둘이 있어야 성립하지만 고쳐야 할 것은 이쪽이다. 다만 1-2에서는 어느 쪽을 끊어도 데드락이 멎으므로 kill_precision을 걸지 않는다 — '정확히 누구를'은 1-3의 과제다.",
+      "sql": "CALL shop.deadlock_worker({{pair.to}}, {{pair.from}}, {{rounds}})"
+    }
+  ],
+  "objectives": [
+    {
+      "id": "diagnose-symptom",
+      "type": "quiz",
+      "label": "상황 식별",
+      "trigger": {
+        "after_seconds": 35
+      },
+      "question": {
+        "type": "mcq",
+        "q": "트랜잭션이 간헐적으로 실패하는데 멈춰 있는 세션은 없다. 가장 정확한 설명은?",
+        "choices": [
+          "두 트랜잭션이 같은 행들을 서로 반대 순서로 잠가 교착에 빠졌고, InnoDB가 한쪽을 골라 롤백시키고 있다",
+          "커밋하지 않은 트랜잭션이 잠금을 쥔 채 남아 뒤따르는 세션이 계속 대기 중이다",
+          "쿼리 하나가 너무 오래 돌면서 자원을 붙잡고 있다",
+          "커넥션이 부족해 일부 요청이 접속하지 못하고 있다"
+        ],
+        "answer": 0,
+        "explain": "데드락은 잠금 대기와 다르다. 대기는 누군가 풀어줄 때까지 **계속 멈춰 있지만**, 데드락은 아무도 진행할 수 없는 순환이라 DBMS가 감지해 **한쪽을 강제 롤백**시킨다. 그래서 화면에는 멈춘 세션이 없고 대신 애플리케이션이 오류를 받는다. '재시도하면 될 때도 있다'는 것도 롤백된 쪽만 실패했다는 신호다."
+      }
+    },
+    {
+      "id": "diagnose-view",
+      "type": "quiz",
+      "label": "확인 경로 파악",
+      "question": {
+        "type": "short",
+        "q": "가장 최근 데드락의 상세(두 트랜잭션이 각각 무엇을 쥐고 무엇을 기다렸는지)를 보여주는 MySQL 명령은?",
+        "accept": [
+          "SHOW ENGINE INNODB STATUS",
+          "show engine innodb status"
+        ],
+        "explain": "SHOW ENGINE INNODB STATUS 의 LATEST DETECTED DEADLOCK 절에 두 트랜잭션의 질의와 각각이 쥔 잠금·기다린 잠금이 함께 나온다. 데드락은 이미 끝난 사건이라 performance_schema.data_lock_waits 같은 '지금 대기 중' 화면에는 남지 않는다 — 그래서 지나간 기록을 봐야 한다. 상시 수집이 필요하면 innodb_print_all_deadlocks 를 켜 오류 로그에 쌓는다."
+      }
+    },
+    {
+      "id": "deadlocks-stopped",
+      "type": "state",
+      "label": "데드락 멎음",
+      "on": "primary",
+      "_comment": "'마지막 데드락 이후 몇 초가 지났는가'로 잰다. 데드락은 순간적으로 일어나고 스스로 풀리므로 '지금 대기 중'으로는 잴 수 없다. 초당 25회씩 나던 것이 멎으면 이 값이 자란다. 기록이 비어 있으면 NULL이라 충족되지 않는다 — setup이 실패해 데드락이 아예 없었다는 뜻이므로 그 편이 옳다.",
+      "query": "SELECT TIMESTAMPDIFF(SECOND, MAX(at), NOW()) FROM shop.deadlock_log",
+      "expect": {
+        "op": "gte",
+        "value": 15
+      },
+      "hold_seconds": 10
+    }
+  ],
+  "constraints": [
+    {
+      "id": "no-restart",
+      "label": "DB 재시작 금지",
+      "detect": "container_restart"
+    }
+  ],
+  "hints": [
+    "멈춘 세션이 없는데 트랜잭션이 실패한다면 '대기'가 아니라 '교착'이다. 데드락은 이미 끝난 사건이라 '지금 대기 중'을 보는 화면(performance_schema.data_lock_waits)에는 남지 않는다.",
+    "지나간 기록을 봐야 한다. SHOW ENGINE INNODB STATUS 의 LATEST DETECTED DEADLOCK 절에 두 트랜잭션이 각각 무엇을 쥐고 무엇을 기다렸는지가 나온다.",
+    "두 배치가 같은 두 행을 **서로 반대 순서로** 잠그고 있다. 데드락은 둘이 있어야 성립하므로, 한쪽을 멈추면 즉시 멎는다."
+  ],
+  "debrief": "범인은 잠금 순서가 어긋난 두 배치였다.\n같은 두 행을 한쪽은 작은 id → 큰 id 로, 다른 쪽은 그 반대로 잠갔다.\n각자 첫 행을 쥔 채 상대가 쥔 행을 기다리게 되면 아무도 진행할 수 없다.\n\n**데드락은 잠금 대기와 다르다.** 이 구분이 이 스테이지의 전부다.\n\n  잠금 대기(1-3)  : 누군가 풀어줄 때까지 **계속 멈춰 있다.** 사람이 개입해야 한다.\n  데드락(1-2)     : 아무도 진행할 수 없는 순환이라 **InnoDB가 감지해 한쪽을 롤백한다.**\n                    DB는 스스로 회복하고, 대신 애플리케이션이 오류를 받는다.\n\n그래서 진단하는 곳도 다르다. 데드락은 이미 끝난 사건이라\nperformance_schema.data_lock_waits 같은 '지금 대기 중' 화면에는 남지 않는다.\n\n  SHOW ENGINE INNODB STATUS;   -- LATEST DETECTED DEADLOCK 절\n\n여기에 두 트랜잭션의 질의와 각각이 쥔 잠금·기다린 잠금이 함께 나온다.\n다만 **가장 최근 한 건만** 보관된다. 상시로 모으려면\ninnodb_print_all_deadlocks 를 켜서 오류 로그에 쌓아야 한다.\n\n급한 불은 한쪽을 멈추면 꺼진다 — 데드락은 둘이 있어야 성립하기 때문이다.\n하지만 **그건 복구가 아니라 중단이다.** 진짜 고칠 것은 잠금 순서다.\n\n  여러 자원을 잠글 때는 **항상 같은 순서로** 접근한다(예: id 오름차순).\n  이 관례 하나면 이 종류의 데드락은 구조적으로 일어나지 않는다.\n\n이번 판에서 관례를 지킨 쪽은 작은 id 부터 잠근 배치였고, 어긴 쪽은 그 반대였다.\n\n재발 방지: 트랜잭션 안에서 자원을 정해진 순서로 잠그기, 트랜잭션을 짧게 유지하고\n사용자 입력을 기다리는 동안 열어두지 않기, 애플리케이션에 데드락 재시도 로직 두기\n(데드락은 완전히 없앨 수 없으므로 재시도는 정상적인 대응이다),\ninnodb_print_all_deadlocks 로 발생 빈도를 상시 감시하기."
+}
