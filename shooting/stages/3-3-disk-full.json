@@ -7,6 +7,10 @@
   "title": "쌓아둔 것의 값",
   "brief": "야간 감사 적재 배치가 어젯밤부터 실패하고 있다. 배치 로그에 'The table is full'이 찍힌다. 그런데 주문·결제 등 다른 처리는 전부 정상이고, 서버 전체 디스크에는 아직 여유가 많다고 나온다. 건건이 들어오는 감사 기록은 아직 들어가는 것 같기도 하다.",
   "target_seconds": 360,
+  "chapters": [
+    "01-beginner/06-basic-monitoring.md",
+    "02-intermediate/03-performance-monitoring.md"
+  ],
   "connect_hint": "MYSQL_PWD=shoot mysql -h127.0.0.1 -P3306 -udba",
   "vars": {
     "archive": {

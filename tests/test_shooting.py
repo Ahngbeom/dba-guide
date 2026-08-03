@@ -1722,6 +1722,86 @@ class WorldGroupingTest(unittest.TestCase):
         self.assertEqual(len(groups[0][1]), 1)
 
 
+class ChapterLinkTest(unittest.TestCase):
+    """스테이지 → 챕터 연결. 읽기·확인·겪기 세 축을 잇는 마지막 고리다."""
+
+    BASE = {"id": "x", "title": "t",
+            "objectives": [{"id": "o", "type": "state", "query": "SELECT 1",
+                            "expect": {"op": "eq", "value": 1}}]}
+
+    def test_chapters_must_be_a_list_of_markdown_paths(self):
+        for bad in ("02-intermediate/01-transaction-and-locking.md",
+                    [123], ["notes.txt"]):
+            errs = shooting.validate_stage({**self.BASE, "chapters": bad})
+            self.assertTrue(any("chapters" in e for e in errs), (bad, errs))
+
+    def test_absolute_and_escaping_paths_are_rejected(self):
+        # 저장소 밖을 가리키면 다른 사람 기계에서 깨진다.
+        for bad in ["/etc/passwd.md", "../secrets.md"]:
+            errs = shooting.validate_stage({**self.BASE, "chapters": [bad]})
+            self.assertTrue(any("chapters" in e for e in errs), (bad, errs))
+
+    def test_missing_file_is_caught_when_a_root_is_given(self):
+        errs = shooting.validate_stage(
+            {**self.BASE, "chapters": ["02-intermediate/없는챕터.md"]},
+            repo_root=REPO_ROOT)
+        self.assertTrue(any("없는챕터" in e for e in errs), errs)
+
+    def test_existing_file_passes(self):
+        errs = shooting.validate_stage(
+            {**self.BASE,
+             "chapters": ["02-intermediate/01-transaction-and-locking.md"]},
+            repo_root=REPO_ROOT)
+        self.assertEqual(errs, [])
+
+    def test_format_check_runs_without_a_root(self):
+        # 파일 접근 없이도 형식은 검사한다(순수 테스트가 계속 돌아야 한다).
+        self.assertEqual(
+            shooting.validate_stage(
+                {**self.BASE, "chapters": ["02-intermediate/아무거나.md"]}), [])
+
+    def test_every_shipped_stage_points_at_real_chapters(self):
+        # 링크가 조용히 썩는 것을 막는다 — 챕터 파일명이 바뀌면 여기서 걸린다.
+        for path in shooting.discover_stages():
+            stage = shooting.load_stage(path)
+            self.assertTrue(stage.get("chapters"), f"{path.name}: chapters 없음")
+            for rel in stage["chapters"]:
+                self.assertTrue((REPO_ROOT / rel).is_file(),
+                                f"{path.name} → {rel}")
+
+    def test_readme_lists_every_stage(self):
+        # 월드 3 스테이지 3개를 추가하면서 README 표를 갱신하지 않았다.
+        # 사람이 기억하는 대신 여기서 걸리게 한다.
+        readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+        for path in shooting.discover_stages():
+            stage = shooting.load_stage(path)
+            world, num = stage.get("world"), stage.get("stage")
+            self.assertIn(f"**{world}-{num} {stage['title']}**", readme,
+                          f"README 표에 {stage['id']}가 없습니다")
+
+    def test_readme_and_stage_agree_on_chapters(self):
+        # 두 곳에 적힌 링크가 서로 어긋나면 어느 쪽이 맞는지 알 수 없다.
+        readme = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+        for path in shooting.discover_stages():
+            stage = shooting.load_stage(path)
+            row = next((ln for ln in readme.splitlines()
+                        if f"**{stage.get('world')}-{stage.get('stage')} "
+                           f"{stage['title']}**" in ln), None)
+            self.assertIsNotNone(row, stage["id"])
+            for rel in stage["chapters"]:
+                self.assertIn(rel, row,
+                              f"{stage['id']}: README 행에 {rel} 링크가 없습니다")
+
+    def test_reading_list_is_rendered_for_humans(self):
+        text = shooting.chapter_reading_list(
+            {"chapters": ["02-intermediate/01-transaction-and-locking.md"]})
+        self.assertIn("트랜잭션", text)          # 파일명이 아니라 제목이 보인다
+        self.assertIn("02-intermediate", text)   # 경로도 함께
+
+    def test_no_chapters_means_no_section(self):
+        self.assertIsNone(shooting.chapter_reading_list({}))
+
+
 class StageMenuTest(unittest.TestCase):
     """스테이지 선택 목록의 한 줄."""
 

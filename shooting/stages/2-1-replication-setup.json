@@ -7,8 +7,10 @@
   "title": "리포팅 서버 붙이기",
   "brief": "리포팅 전용으로 쓸 두 번째 서버(replica, 127.0.0.1:3307)가 떠 있지만 primary와 아무 관계가 없다. 데이터베이스조차 비어 있다. 복제를 구성해 primary의 데이터가 흘러가게 하고, 리포팅 서버답게 쓰기를 막아라. 복제 전용 계정 repl / repl 은 primary에 이미 만들어 두었다.",
   "target_seconds": 300,
+  "chapters": [
+    "02-intermediate/05-replication-basics.md"
+  ],
   "connect_hint": "MYSQL_PWD=shoot mysql -h127.0.0.1 -P3307 -udba   (replica / 리포팅 서버)",
-
   "setup": [
     {
       "type": "sql",
@@ -26,7 +28,6 @@
       "sql": "STOP REPLICA; RESET REPLICA ALL; DROP DATABASE IF EXISTS shop; RESET BINARY LOGS AND GTIDS; SET GLOBAL read_only = OFF"
     }
   ],
-
   "objectives": [
     {
       "id": "io-connected",
@@ -34,7 +35,10 @@
       "label": "복제 연결 수립",
       "on": "replica",
       "query": "SELECT SERVICE_STATE FROM performance_schema.replication_connection_status",
-      "expect": { "op": "eq", "value": "ON" },
+      "expect": {
+        "op": "eq",
+        "value": "ON"
+      },
       "hold_seconds": 5
     },
     {
@@ -43,7 +47,10 @@
       "label": "복제 적용 동작",
       "on": "replica",
       "query": "SELECT SERVICE_STATE FROM performance_schema.replication_applier_status",
-      "expect": { "op": "eq", "value": "ON" },
+      "expect": {
+        "op": "eq",
+        "value": "ON"
+      },
       "hold_seconds": 5
     },
     {
@@ -52,7 +59,10 @@
       "label": "초기 데이터 동기화 완료",
       "on": "replica",
       "query": "SELECT COUNT(*) FROM shop.orders",
-      "expect": { "op": "gte", "value": 200000 },
+      "expect": {
+        "op": "gte",
+        "value": 200000
+      },
       "hold_seconds": 5,
       "tolerate_error": true
     },
@@ -62,7 +72,10 @@
       "label": "리포팅 서버 쓰기 차단",
       "on": "replica",
       "query": "SELECT @@read_only",
-      "expect": { "op": "eq", "value": 1 },
+      "expect": {
+        "op": "eq",
+        "value": 1
+      },
       "hold_seconds": 5
     },
     {
@@ -99,13 +112,11 @@
       }
     }
   ],
-
   "hints": [
     "replica에서 CHANGE REPLICATION SOURCE TO 로 접속 정보를 지정하고 START REPLICA 로 시작한다. 컨테이너 사이에서는 서비스 이름으로 서로를 찾으므로 SOURCE_HOST는 'primary'다.",
     "GTID가 이미 켜져 있으므로 binlog 파일명과 위치를 계산할 필요가 없다 — SOURCE_AUTO_POSITION=1을 쓴다. 진행 상황과 오류는 SHOW REPLICA STATUS 로 확인한다.",
     "인증 오류로 IO 스레드가 붙지 못한다면 계정 문제가 아니다. 이 랩은 caching_sha2_password를 쓰는데 복제 연결은 TLS가 아니라, 서버의 공개키를 받아올 수 있게 GET_SOURCE_PUBLIC_KEY=1 을 함께 지정해야 한다.",
     "리포팅 서버는 쓰기를 받으면 안 된다. SET GLOBAL read_only = ON 을 잊지 마라 — 복제는 이 설정의 영향을 받지 않으므로 데이터는 계속 들어온다."
   ],
-
   "debrief": "복제 배선의 표준 절차를 한 번 밟았다.\n\n  CHANGE REPLICATION SOURCE TO\n    SOURCE_HOST = 'primary', SOURCE_PORT = 3306,\n    SOURCE_USER = 'repl',    SOURCE_PASSWORD = 'repl',\n    SOURCE_AUTO_POSITION = 1, GET_SOURCE_PUBLIC_KEY = 1;\n  START REPLICA;\n  SET GLOBAL read_only = ON;\n\nSOURCE_AUTO_POSITION = 1이 핵심이다. replica가 자기 gtid_executed를 source에\n알리면 source는 그 집합에 없는 트랜잭션만 보낸다. binlog 파일명과 위치를\n사람이 계산하지 않으므로, 나중에 장애조치로 source가 바뀌어도 같은 명령으로\n다시 붙일 수 있다.\n\nGET_SOURCE_PUBLIC_KEY = 1은 이 랩의 사정이다. 서버가 caching_sha2_password를\n쓰는데 복제 연결이 TLS가 아니어서, 비밀번호를 안전하게 보내려면 서버의\n공개키를 먼저 받아와야 한다. 실무에서는 이 대신 복제 연결에 TLS를 쓰는 편이 낫다.\n\n**왜 setup이 replica의 데이터베이스를 통째로 지웠는지**가 이 스테이지의 숨은\n교훈이다. 이 랩의 replica는 처음 뜰 때 primary와 별개로 같은 시드 SQL을\n혼자 실행했다. 데이터는 똑같아 보여도 그 트랜잭션들은 replica 자신의 UUID로\nGTID가 매겨져 있다 — source에는 존재하지 않는 이력, 즉 errant transaction이다.\n\n그 상태로 auto-position 복제를 붙이면 source가 자기 UUID의 트랜잭션을 처음부터\n보내오고, replica는 이미 있는 테이블을 다시 CREATE 하려다 즉시 멈춘다.\n'데이터가 같으니 괜찮겠지'가 통하지 않는 이유다. 새 replica는 반드시\n**source에서 뜬 백업**이나 완전히 빈 상태에서 출발해야 한다.\n\nread_only는 복제 적용 스레드를 막지 않는다. 그래서 '사람의 쓰기는 막고 복제는\n흐르게 한다'가 성립한다. 다만 read_only는 CONNECTION_ADMIN을 가진 계정의\n쓰기는 허용하므로, 관리자의 실수까지 막으려면 super_read_only를 쓴다.\n\n확인 경로: SHOW REPLICA STATUS, performance_schema.replication_connection_status\n(수신 스레드), performance_schema.replication_applier_status(적용 스레드).\n앞의 하나는 사람이 읽기 좋고, 뒤의 둘은 감시 도구가 읽기 좋다."
 }

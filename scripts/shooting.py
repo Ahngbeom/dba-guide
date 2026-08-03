@@ -747,7 +747,60 @@ def _validate_vars(stage):
     return errs
 
 
-def validate_stage(stage):
+def chapter_title(repo_root, rel):
+    """챕터 파일의 첫 제목(`# …`). 못 읽으면 None.
+
+    파일명이 아니라 제목을 보여줘야 '무엇을 더 읽으라는 것인지'가 전달된다.
+    """
+    try:
+        with open(Path(repo_root) / rel, encoding="utf-8") as f:
+            for line in f:
+                if line.startswith("# "):
+                    return line[2:].strip()
+    except OSError:
+        pass
+    return None
+
+
+def chapter_reading_list(stage, repo_root=None):
+    """클리어 후 보여줄 '더 읽을 곳'. `chapters`가 없으면 None.
+
+    읽기(챕터) → 확인(`./exam`) → 겪기(`./shoot`)에서 마지막 축만 앞의 둘과
+    끊겨 있었다. 장애를 막 겪은 직후가 그 주제를 읽기에 가장 좋은 때다.
+    """
+    chapters = stage.get("chapters") or []
+    if not chapters:
+        return None
+    root = repo_root or REPO_ROOT
+    lines = []
+    for rel in chapters:
+        title = chapter_title(root, rel)
+        lines.append(f"    - {title} ({rel})" if title else f"    - {rel}")
+    return "\n".join(lines)
+
+
+def _validate_chapters(stage, repo_root):
+    """`chapters` 형식과(루트를 주면) 존재 여부."""
+    chapters = stage.get("chapters")
+    if chapters is None:
+        return []
+    if not isinstance(chapters, list):
+        return ["chapters: 목록이어야 합니다"]
+    errs = []
+    for rel in chapters:
+        if not isinstance(rel, str) or not rel.endswith(".md"):
+            errs.append(f"chapters: 마크다운 경로가 아닙니다 ({rel!r})")
+            continue
+        # 저장소 밖을 가리키면 다른 사람 기계에서 깨진다.
+        if rel.startswith("/") or ".." in Path(rel).parts:
+            errs.append(f"chapters: 저장소 안의 상대 경로여야 합니다 ({rel})")
+            continue
+        if repo_root and not (Path(repo_root) / rel).is_file():
+            errs.append(f"chapters: 없는 파일입니다 ({rel})")
+    return errs
+
+
+def validate_stage(stage, repo_root=None):
     """스테이지 정의의 형식 오류 목록. 정상이면 빈 리스트.
 
     exam.py의 validate_bank와 같은 역할 — 콘텐츠 작성 실수를 실행 전에 잡는다.
@@ -809,6 +862,7 @@ def validate_stage(stage):
             errs.append(f"constraint '{c.get('id')}': 알 수 없는 detect")
 
     errs.extend(_validate_vars(stage))
+    errs.extend(_validate_chapters(stage, repo_root))
     return errs
 
 
@@ -846,7 +900,8 @@ def load_stage(path):
     """스테이지 JSON을 읽고 검증한다."""
     with open(path, encoding="utf-8") as f:
         stage = json.load(f)
-    errs = validate_stage(stage)
+    # 챕터 링크는 실제 파일을 확인한다 — 챕터 파일명이 바뀌면 조용히 썩기 때문이다.
+    errs = validate_stage(stage, repo_root=REPO_ROOT)
     if errs:
         raise ValueError(f"{path}: " + "; ".join(errs))
     return stage
@@ -2269,12 +2324,17 @@ def print_result(stage, result):
 
 
 def print_debrief(stage):
-    if not stage.get("debrief"):
-        return
-    print(f"\n  후일담\n")
-    for line in stage["debrief"].split("\n"):
-        print(f"    {line}")
-    print()
+    if stage.get("debrief"):
+        print(f"\n  후일담\n")
+        for line in stage["debrief"].split("\n"):
+            print(f"    {line}")
+        print()
+    # 장애를 막 겪은 직후가 그 주제를 읽기에 가장 좋은 때다.
+    reading = chapter_reading_list(stage)
+    if reading:
+        print("  더 읽을 곳\n")
+        print(reading)
+        print()
 
 
 # --------------------------------------------------------------------------- #

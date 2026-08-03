@@ -7,6 +7,10 @@
   "title": "멈춘 배포",
   "brief": "배포 스크립트가 걸어둔 ALTER TABLE이 몇 분째 끝나지 않는다. 컬럼 하나 추가하는 작업이고 테이블도 크지 않은데 진행이 없다. CPU는 한가하고, 잠금 대기 화면을 봐도 비어 있다.",
   "target_seconds": 240,
+  "chapters": [
+    "02-intermediate/01-transaction-and-locking.md",
+    "02-intermediate/06-schema-change-management.md"
+  ],
   "connect_hint": "MYSQL_PWD=shoot mysql -h127.0.0.1 -P3306 -udba",
   "vars": {
     "probe": {

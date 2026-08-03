@@ -7,6 +7,9 @@
   "title": "락 지옥",
   "brief": "주문 처리가 멈췄다. 앱 서버 스레드가 쌓이고 결제 완료 처리가 하나도 넘어가지 않는다. DB는 살아있고 CPU도 한가한데 아무것도 진행되지 않는다.",
   "target_seconds": 300,
+  "chapters": [
+    "02-intermediate/01-transaction-and-locking.md"
+  ],
   "connect_hint": "MYSQL_PWD=shoot mysql -h127.0.0.1 -P3306 -udba",
   "vars": {
     "lock": {

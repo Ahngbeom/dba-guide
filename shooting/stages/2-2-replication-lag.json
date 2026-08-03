@@ -7,6 +7,10 @@
   "title": "멈춘 리포트",
   "brief": "리포팅 대시보드의 숫자가 몇 분째 그대로다. primary는 멀쩡하고 주문도 정상 처리되고 있는데, 리포팅 서버(replica, 127.0.0.1:3307)에서는 최신 주문이 보이지 않는다. 복제 연결이 끊긴 것 같지도 않다.",
   "target_seconds": 300,
+  "chapters": [
+    "02-intermediate/05-replication-basics.md",
+    "03-advanced/02-high-availability-and-failover.md"
+  ],
   "connect_hint": "MYSQL_PWD=shoot mysql -h127.0.0.1 -P3306 -udba   (replica는 -P3307)",
   "vars": {
     "row": {
