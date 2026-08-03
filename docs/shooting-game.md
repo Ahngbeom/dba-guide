@@ -757,8 +757,42 @@ primary의 binlog를 함부로 비울 수는 없다 — replica가 그것으로 
 
 ## 다른 DBMS 추가
 
-스테이지 JSON에 `dbms` 필드가 이미 있다. PostgreSQL·Oracle 버전을 넣을 때는
-스테이지 파일을 벤더별로 나누고, `shooting/lab`에 해당 서비스를 추가한 뒤
-`scripts/shooting.py`의 `CONTAINERS`와 `mysql()` 상당 함수를 벤더별로 분기한다.
-`mysql.general_log`에 해당하는 감시 소스(PostgreSQL은 `log_statement = 'all'`)를
-먼저 확인할 것 — 판정 구조 전체가 거기에 얹혀 있다.
+스테이지 JSON에 `dbms` 필드가 있고, PostgreSQL 랩이 **compose 프로파일 뒤에**
+준비돼 있다. 기본 `./shoot up`은 지금까지와 똑같이 MySQL만 띄운다 — MySQL
+스테이지만 하는 사람이 이미지 내려받기와 기동 시간을 치를 이유가 없다.
+
+```bash
+./shoot up --with-postgresql     # PostgreSQL 랩까지 함께
+```
+
+`./shoot doctor`가 `psql` 클라이언트와 PostgreSQL 랩 상태를 함께 알려준다.
+둘 다 **없어도 점검은 실패하지 않는다** — MySQL 스테이지를 막을 이유가 없다.
+
+### 감시 소스 — 판정 구조가 그대로 옮겨온다
+
+판정 전체가 "명령 이력을 SQL로 조회하고 사용자로 가른다"에 얹혀 있다.
+PostgreSQL은 명령 이력을 테이블이 아니라 로그 파일로 남기므로, contrib 모듈
+**`file_fdw`로 CSV 로그를 외부 테이블처럼 읽는다**(`pg-seed/03-logview.sql`의
+`command_log`).
+
+| MySQL | PostgreSQL |
+|---|---|
+| `mysql.general_log` (CSV 엔진) | CSV 로그 + `file_fdw` 외부 테이블 `command_log` |
+| `user_host LIKE 'dba%'` | `user_name = 'dba'` |
+| `command_type IN ('Query','Execute')` | `message LIKE 'statement:%'` |
+| `TRUNCATE TABLE mysql.general_log` | `truncate -s 0 <로그파일>` (docker exec) |
+| `SET SESSION sql_log_off = 1` | **불필요** — 엔진은 `postgres`로 접속하므로 `user_name` 필터에 자연히 걸러진다 |
+
+마지막 줄이 MySQL보다 단순한 부분이다. MySQL에서는 엔진이 자기 흔적으로 자기가
+읽을 로그를 오염시켜서 `sql_log_off`가 필요했지만, PostgreSQL은 사용자 이름만으로
+갈린다.
+
+**로그 파일명 함정**: `log_filename`을 `pg`로 줘도 `csvlog`가 `.csv`를 덧붙여
+실제 파일은 `pg.csv`가 된다. 외부 테이블의 `filename`이 어긋나면 감시가 조용히
+아무것도 읽지 못한다(테스트가 이 경로를 대조한다).
+
+### 남은 배선
+
+랩은 섰지만 엔진은 아직 MySQL만 안다. `CONTAINERS`·`mysql()`·`mysql_spawn()`·
+`PLAYER_LOG_SQL`·`reset_player_log()`를 스테이지의 `dbms`에 따라 분기해야 하고,
+선택 화면에도 `exam`처럼 DBMS 단계가 붙어야 한다.

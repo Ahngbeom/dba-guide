@@ -1534,6 +1534,47 @@ class GtidCountTest(unittest.TestCase):
         self.assertGreater(shooting.BINLOG_WARN_GTIDS, 1000)
 
 
+class PostgresLabTest(unittest.TestCase):
+    """PostgreSQL 랩은 프로파일 뒤에 있다 — MySQL만 하는 사람이 비용을 치르지 않게."""
+
+    def setUp(self):
+        self.compose = (REPO_ROOT / "shooting" / "lab"
+                        / "compose.yaml").read_text(encoding="utf-8")
+
+    def test_service_is_behind_a_profile(self):
+        # 프로파일이 빠지면 ./shoot up 이 조용히 무거워진다.
+        self.assertIn('profiles: ["postgresql"]', self.compose)
+
+    def test_logging_is_configured_for_the_watcher(self):
+        # 판정 구조 전체가 이 로그에 얹혀 있다.
+        for opt in ("logging_collector=on", "log_destination=csvlog",
+                    "log_statement=all"):
+            self.assertIn(opt, self.compose, opt)
+
+    def test_port_is_loopback_only(self):
+        self.assertIn('"127.0.0.1:5432:5432"', self.compose)
+
+    def test_seed_sets_up_the_log_view(self):
+        seed = (REPO_ROOT / "shooting" / "lab" / "pg-seed"
+                / "03-logview.sql").read_text(encoding="utf-8")
+        self.assertIn("file_fdw", seed)
+        # log_filename 이 'pg' 여도 csvlog 가 .csv 를 덧붙인다 — 여기가 어긋나면
+        # 외부 테이블이 빈 파일을 가리켜 감시가 조용히 아무것도 못 읽는다.
+        self.assertIn("/var/lib/postgresql/data/log/pg.csv", seed)
+
+    def test_seed_separates_the_same_three_roles(self):
+        seed = (REPO_ROOT / "shooting" / "lab" / "pg-seed"
+                / "02-users.sql").read_text(encoding="utf-8")
+        for role in ("dba", "app"):
+            self.assertIn(f"CREATE ROLE {role} LOGIN", seed)
+        # 남의 질의문을 볼 수 없으면 진단이 성립하지 않는다.
+        self.assertIn("pg_monitor", seed)
+        self.assertIn("pg_signal_backend", seed)
+
+    def test_profile_name_matches_what_the_runner_passes(self):
+        self.assertIn(shooting.POSTGRES_PROFILE, self.compose)
+
+
 class ForbiddenCommandTest(unittest.TestCase):
     """'이 명령으로 때우는 것은 복구가 아니다'를 산문이 아니라 판정으로."""
 

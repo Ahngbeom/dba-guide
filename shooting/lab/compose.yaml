@@ -64,6 +64,41 @@ services:
       retries: 30
       start_period: 40s
 
+  postgres:
+    image: postgres:16
+    container_name: dbshoot-postgres
+    # 프로파일에 넣어 **기본으로는 뜨지 않는다.** MySQL 스테이지만 하는 사람이
+    # 이미지 내려받기와 기동 시간을 치를 이유가 없다.
+    #   ./shoot up --with-postgresql   으로 함께 띄운다.
+    profiles: ["postgresql"]
+    environment:
+      POSTGRES_PASSWORD: dbshoot-root
+    command:
+      # 명령 이력을 CSV 로그로 남긴다 — 판정이 이것을 file_fdw 외부 테이블로 읽는다
+      # (pg-seed/03-logview.sql). 회전을 끄는 이유는 감시가 파일 하나만 보기 때문이고,
+      # 크기는 엔진이 주기적으로 비워서 관리한다.
+      # log_filename 이 'pg' 여도 csvlog 가 '.csv' 를 덧붙여 pg.csv 가 된다.
+      - "-clogging_collector=on"
+      - "-clog_destination=csvlog"
+      - "-clog_statement=all"
+      - "-clog_directory=log"
+      - "-clog_filename=pg"
+      - "-clog_rotation_size=0"
+      - "-clog_rotation_age=0"
+    ports:
+      # MySQL 쪽과 같은 이유로 루프백에만 노출한다.
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./pg-seed:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
 volumes:
   primary-data:
   replica-data:
+  postgres-data:
