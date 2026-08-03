@@ -1503,6 +1503,35 @@ class ValidateVarsTest(unittest.TestCase):
         self.assertEqual(errs, [])
 
 
+class PlayerLogQueryTest(unittest.TestCase):
+    """감시가 무엇을 읽는가. 여기서 놓치면 판정이 조용히 헐거워진다."""
+
+    def test_reads_execute_rows_too(self):
+        # 준비된 구문은 실제 실행된 문장을 Execute 행에만 남긴다.
+        self.assertIn("command_type IN ('Query', 'Execute')",
+                      shooting.PLAYER_LOG_SQL)
+
+    def test_does_not_read_prepare_rows(self):
+        # Prepare 행은 파라미터가 치환되기 전(`KILL ?`)이라 쓸모가 없다.
+        self.assertNotIn("'Prepare'", shooting.PLAYER_LOG_SQL)
+
+    def test_still_drops_the_client_banner(self):
+        self.assertIn("select @@version_comment", shooting.PLAYER_LOG_SQL)
+
+    def test_still_clears_the_log_without_replicating(self):
+        # 비우지 않으면 CSV 전체 스캔이 세션 길이에 비례해 무거워지고,
+        # binlog에 실리면 replica의 로그까지 지운다.
+        self.assertIn("TRUNCATE TABLE mysql.general_log",
+                      shooting.PLAYER_LOG_SQL)
+        self.assertTrue(shooting.PLAYER_LOG_SQL.startswith(shooting.NO_BINLOG))
+
+    def test_kill_via_prepared_statement_is_now_parsed(self):
+        # Execute 행이 들어오면 이 형태가 되고, 그러면 정밀도 판정이 성립한다.
+        rows = ["PREPARE k FROM ...", "SET @pid := 42",
+                "EXECUTE k USING @pid", "KILL 42"]
+        self.assertEqual(shooting.parse_kill_targets(rows), [42])
+
+
 class DockerDecodingTest(unittest.TestCase):
     """감시는 플레이어가 친 명령을 그대로 읽어온다 — 바이트를 통제할 수 없다."""
 
