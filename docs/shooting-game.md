@@ -791,8 +791,77 @@ PostgreSQL은 명령 이력을 테이블이 아니라 로그 파일로 남기므
 실제 파일은 `pg.csv`가 된다. 외부 테이블의 `filename`이 어긋나면 감시가 조용히
 아무것도 읽지 못한다(테스트가 이 경로를 대조한다).
 
-### 남은 배선
+### 엔진은 target 하나로 갈린다
 
-랩은 섰지만 엔진은 아직 MySQL만 안다. `CONTAINERS`·`mysql()`·`mysql_spawn()`·
-`PLAYER_LOG_SQL`·`reset_player_log()`를 스테이지의 `dbms`에 따라 분기해야 하고,
-선택 화면에도 `exam`처럼 DBMS 단계가 붙어야 한다.
+**컨테이너가 곧 벤더다.** `primary`/`replica`는 MySQL, `postgres`는 PostgreSQL이므로
+`target` 이름만으로 어느 DBMS인지 정해진다(`TARGET_VENDOR`). 덕분에 엔진의 I/O
+함수들은 **시그니처를 바꾸지 않고** 내부에서만 갈라지고, 호출부는 자기가 어느
+DBMS를 상대하는지 알 필요가 없다.
+
+스테이지는 `dbms`만 적으면 된다. 생략한 `on`/`source`는 **불러올 때 한 번**
+`normalize_targets()`가 채운다(`default_target()`). 기본값을 읽는 쪽마다 풀면
+`.get("on", "primary")`가 흩어져 한 군데만 놓쳐도 조용히 MySQL primary로 간다.
+`validate_stage()`가 `dbms`와 대상 서버가 어긋나는 스테이지를 거른다.
+
+PostgreSQL 스테이지를 고르면 랩이 떠 있는지 먼저 확인하고
+`./shoot up --with-postgresql` 을 안내한다 — 걸러 주지 않으면 setup이
+docker exec 실패로 무너지고 원인이 드러나지 않는다.
+
+### MySQL과 달라지는 것들 (전부 실측)
+
+| | MySQL | PostgreSQL |
+|---|---|---|
+| 엔진 질의 | `mysql -N -B -e` | `psql -X -qtA -F'\t' -v ON_ERROR_STOP=1 -c` |
+| 세션 종료 | `KILL <pid>` (문장) | `pg_terminate_backend(<pid>)` (**함수**) |
+| 세션 목록 | `information_schema.processlist` | `pg_stat_activity` |
+| 주입 세션 비밀번호 | `MYSQL_PWD` | `PGPASSWORD` |
+| 로그 비우기 | `TRUNCATE TABLE` | 파일 `truncate -s 0` |
+
+**psql은 한 `-c` 안의 여러 문장을 하나의 트랜잭션으로 묶는다**(MySQL은 문장마다
+자동 커밋). 문장별 커밋이나 트랜잭션 블록에서 못 도는 명령이 필요하면 `setup`의
+`sql` 단계를 나눠라 — 엔진이 이미 지원하는 표현이라 별도 장치가 없다.
+
+**주입 세션은 `-h 127.0.0.1`로 TCP를 강제한다.** 유닉스 소켓으로 가면 로컬 신뢰
+인증에 걸려 **PGPASSWORD 없이도 붙어버리고**, 계정을 틀려도 알아채지 못한다.
+MySQL 쪽 `--no-defaults`와 같은 자리의 함정이다.
+
+**읽기와 비우기를 한 번의 `docker exec`로 묶는다.** 두 번으로 나누면 그 사이에
+들어온 플레이어 명령이 통째로 사라진다(MySQL 쪽은 두 문장이 한 접속 안에서
+이어져 창이 훨씬 좁다).
+
+### 판정의 두 구멍 (PostgreSQL에만 있다)
+
+MySQL에서는 생기지 않던 것이라 스테이지를 쓸 때 알고 있어야 한다.
+
+**1. 파싱 오류는 감시에 남지 않는다.** `general_log`는 클라이언트가 보낸 것을
+무조건 남기지만 PostgreSQL은 그렇지 않다. 실측 결과 정확히 **파싱 오류만**
+빠진다:
+
+| 플레이어가 친 것 | 잡히는가 |
+|---|---|
+| `SELECT 1` | 잡힘 |
+| `SELECT * FROM nope` (없는 테이블) | 잡힘 |
+| `ALTER SYSTEM ...` (권한 오류) | 잡힘 |
+| `KILL 999999` (PG 문법이 아님) | **놓침** |
+
+**2. pid를 적지 않는 쓸기가 보이지 않는다.**
+
+```sql
+SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE ...
+```
+
+`parse_kill_targets()`가 뽑는 것은 문장에 적힌 숫자뿐이라 이 형태는 잡히지
+않는다. MySQL에는 pid를 적지 않고 쓸어버리는 문법이 없어 생기지 않던 구멍이다.
+이걸 감점 대상으로 삼으려면 스테이지에서 `forbidden_command`로 그 모양을 직접
+막아라 — `kill_precision`은 "범인만 골라 죽였는가"를 보는 도구지 쓸기
+탐지기가 아니다.
+
+### 랩 구조의 비대칭 하나
+
+MySQL 랩은 `shop` 데이터베이스를 쓰지만 PostgreSQL 랩은 기본 `postgres`
+데이터베이스의 `public` 스키마를 쓴다(`PG_PLAYER_DB`). 스테이지 SQL을 두 벤더로
+옮길 때 이 이름 차이를 그대로 두면 된다.
+
+### 남은 단계
+
+선택 화면의 DBMS 단계와 첫 PostgreSQL 스테이지.
