@@ -392,13 +392,13 @@ class TolerateErrorTest(unittest.TestCase):
     """
 
     def setUp(self):
-        self._real_mysql = shooting.mysql
+        self._real_db_query = shooting.db_query
 
         def boom(*a, **kw):
             raise shooting.LabError("Unknown database 'shop'")
 
-        shooting.mysql = boom
-        self.addCleanup(setattr, shooting, "mysql", self._real_mysql)
+        shooting.db_query = boom
+        self.addCleanup(setattr, shooting, "mysql", self._real_db_query)
 
     def _run(self, **extra):
         obj = {"id": "o1", "type": "state", "on": "replica",
@@ -616,18 +616,18 @@ class ClientTargetTest(unittest.TestCase):
                          ["primary", "replica"])
 
     def test_command_targets_the_requested_server(self):
-        cmd = shooting.mysql_client_command(self.multi, target="replica")
+        cmd = shooting.client_command(self.multi, target="replica")
         self.assertIn(f"-P{shooting.PLAYER_PORTS['replica']}", cmd)
         self.assertNotIn(f"-P{shooting.PLAYER_PORTS['primary']}", cmd)
 
     def test_prompt_names_the_server_when_there_is_a_choice(self):
-        prompt = [a for a in shooting.mysql_client_command(
+        prompt = [a for a in shooting.client_command(
             self.multi, target="replica") if a.startswith("--prompt=")][0]
         self.assertIn("replica", prompt)
 
     def test_prompt_stays_clean_on_single_server_stages(self):
         # 서버가 하나뿐이면 대상 표기는 잡음이다.
-        prompt = [a for a in shooting.mysql_client_command(self.single)
+        prompt = [a for a in shooting.client_command(self.single)
                   if a.startswith("--prompt=")][0]
         self.assertNotIn("primary", prompt)
 
@@ -689,7 +689,7 @@ class ClientHandoffTest(unittest.TestCase):
                          "[?][?][ ][ ]")
 
     def test_command_uses_player_credentials(self):
-        cmd = shooting.mysql_client_command(self.stage)
+        cmd = shooting.client_command(self.stage)
         self.assertEqual(cmd[0], "mysql")
         self.assertIn(f"-u{shooting.PLAYER_USER}", cmd)
         self.assertIn(f"-D{shooting.PLAYER_DB}", cmd)
@@ -699,23 +699,23 @@ class ClientHandoffTest(unittest.TestCase):
     def test_wide_rows_switch_to_vertical(self):
         # data_locks 는 한 줄이 254칸이다 — 이 옵션이 빠지면 화면에서 잘린다.
         self.assertIn("--auto-vertical-output",
-                      shooting.mysql_client_command(self.stage))
+                      shooting.client_command(self.stage))
 
     def test_prompt_carries_stage_context(self):
-        cmd = shooting.mysql_client_command(self.stage)
+        cmd = shooting.client_command(self.stage)
         prompt = [a for a in cmd if a.startswith("--prompt=")]
         self.assertEqual(len(prompt), 1)
         self.assertIn(self.stage["id"], prompt[0])
 
     def test_pager_only_when_available(self):
-        without = shooting.mysql_client_command(self.stage)
+        without = shooting.client_command(self.stage)
         self.assertFalse([a for a in without if a.startswith("--pager=")])
-        withp = shooting.mysql_client_command(self.stage, pager="less -SFX")
+        withp = shooting.client_command(self.stage, pager="less -SFX")
         self.assertIn("--pager=less -SFX", withp)
 
     def test_password_never_on_the_command_line(self):
         # 비밀번호는 MYSQL_PWD 환경변수로 넘긴다 — ps 에 노출되면 안 된다.
-        cmd = shooting.mysql_client_command(self.stage, pager="less")
+        cmd = shooting.client_command(self.stage, pager="less")
         self.assertFalse([a for a in cmd
                           if shooting.PLAYER_PASSWORD in a and a != "mysql"])
 
@@ -2099,3 +2099,250 @@ class DrawPlayCostTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class VendorDispatchTest(unittest.TestCase):
+    """엔진의 벤더 분기. 컨테이너 이름 하나로 어느 DBMS인지 정해진다."""
+
+    def test_target_decides_vendor(self):
+        self.assertEqual(shooting.vendor_of("primary"), "mysql")
+        self.assertEqual(shooting.vendor_of("replica"), "mysql")
+        self.assertEqual(shooting.vendor_of("postgres"), "postgresql")
+
+    def test_unknown_target_stays_mysql(self):
+        """모르는 이름이 PostgreSQL로 새면 기존 스테이지가 조용히 깨진다."""
+        self.assertEqual(shooting.vendor_of("무엇인가"), "mysql")
+
+    def test_every_container_has_a_vendor(self):
+        for target in shooting.CONTAINERS:
+            self.assertIn(target, shooting.TARGET_VENDOR, target)
+
+    def test_default_target_follows_stage_dbms(self):
+        self.assertEqual(shooting.default_target(_minimal_stage()), "primary")
+        self.assertEqual(
+            shooting.default_target(_minimal_stage(dbms="mysql")), "primary")
+        self.assertEqual(
+            shooting.default_target(_minimal_stage(dbms="postgresql")),
+            "postgres")
+
+    def test_kill_sql_per_vendor(self):
+        self.assertEqual(shooting.kill_session_sql(7), "KILL 7")
+        self.assertEqual(shooting.kill_session_sql(7, "postgresql"),
+                         "SELECT pg_terminate_backend(7)")
+
+
+class NormalizeTargetsTest(unittest.TestCase):
+    """생략된 `on`은 불러올 때 한 번 채운다 — 읽는 쪽마다 풀면 놓친다."""
+
+    def _pg_stage(self):
+        return {
+            "id": "5-1-x", "title": "t", "dbms": "postgresql",
+            "setup": [{"type": "sql", "sql": "SELECT 1"},
+                      {"type": "sql", "on": "postgres", "sql": "SELECT 2"}],
+            "objectives": [
+                {"id": "o1", "type": "state", "query": "SELECT 1",
+                 "expect": {"op": "eq", "value": 1}},
+                {"id": "o2", "type": "quiz", "question": {}},
+            ],
+        }
+
+    def test_fills_missing_on_for_postgresql(self):
+        out = shooting.normalize_targets(self._pg_stage())
+        self.assertEqual([st["on"] for st in out["setup"]],
+                         ["postgres", "postgres"])
+        self.assertEqual(out["objectives"][0]["on"], "postgres")
+
+    def test_leaves_quiz_objectives_alone(self):
+        """퀴즈에는 대상 서버가 없다 — 없는 필드를 만들어 붙이지 않는다."""
+        out = shooting.normalize_targets(self._pg_stage())
+        self.assertNotIn("on", out["objectives"][1])
+
+    def test_mysql_stage_passes_through_untouched(self):
+        """기존 12개 스테이지가 이 함수를 통과해도 달라지는 게 없어야 한다."""
+        for path in shooting.discover_stages():
+            with open(path, encoding="utf-8") as f:
+                raw = json.load(f)
+            if raw.get("dbms") == "postgresql":
+                continue
+            self.assertIs(shooting.normalize_targets(raw), raw, path.name)
+
+    def test_does_not_mutate_the_input(self):
+        stage = self._pg_stage()
+        shooting.normalize_targets(stage)
+        self.assertNotIn("on", stage["setup"][0])
+
+    def test_wait_gtid_sync_source_also_filled(self):
+        out = shooting.normalize_targets({
+            "id": "x", "dbms": "postgresql",
+            "setup": [{"type": "wait_gtid_sync"}]})
+        self.assertEqual(out["setup"][0]["source"], "postgres")
+
+
+class PostgresCommandTest(unittest.TestCase):
+    """컨테이너 안에서 돌릴 psql 명령의 모양."""
+
+    def test_output_is_parseable_by_parse_tsv(self):
+        cmd = shooting.pg_psql_command("SELECT 1")
+        self.assertIn("-qtA", cmd)                 # 헤더·정렬·푸터 없음
+        self.assertEqual(cmd[cmd.index("-F") + 1], "\t")
+
+    def test_ignores_psqlrc(self):
+        """플레이어가 남긴 ~/.psqlrc 가 출력 형식을 바꾸면 파싱이 깨진다."""
+        self.assertIn("-X", shooting.pg_psql_command("SELECT 1"))
+
+    def test_failure_must_reach_the_engine(self):
+        cmd = shooting.pg_psql_command("SELECT 1")
+        self.assertEqual(cmd[cmd.index("-v") + 1], "ON_ERROR_STOP=1")
+
+    def test_sql_goes_last_after_dash_c(self):
+        cmd = shooting.pg_psql_command("SELECT 42")
+        self.assertEqual(cmd[-2:], ["-c", "SELECT 42"])
+
+    def test_spawn_forces_tcp(self):
+        """유닉스 소켓으로 새면 로컬 신뢰 인증에 걸려 계정이 틀려도 붙는다."""
+        cmd = shooting.spawn_command("app", "SELECT 1", vendor="postgresql")
+        self.assertEqual(cmd[:2], ["psql", "-h"])
+        self.assertEqual(cmd[2], "127.0.0.1")
+        self.assertIn("app", cmd)
+
+    def test_spawn_idle_holds_the_connection_open(self):
+        cmd = shooting.spawn_command("app", "SELECT 1", idle_seconds=5,
+                                     vendor="postgresql")
+        self.assertEqual(cmd[0], "sh")
+        self.assertIn("sleep 5", cmd[2])
+        self.assertIn("psql", cmd[2])
+        self.assertNotIn("-D", cmd[2])       # MySQL 전용 플래그가 새면 안 된다
+
+    def test_mysql_spawn_is_unchanged(self):
+        """기존 스테이지의 장애 주입 경로가 그대로여야 한다."""
+        self.assertEqual(shooting.spawn_command("app", "SELECT 1"),
+                         ["mysql", "--no-defaults", "-u", "app",
+                          "-e", "SELECT 1"])
+
+
+class PostgresWatchSqlTest(unittest.TestCase):
+    """감시 SQL이 시드의 외부 테이블과 실제로 맞물리는가."""
+
+    def test_reads_the_seeded_foreign_table(self):
+        seed = (REPO_ROOT / "shooting/lab/pg-seed/03-logview.sql").read_text(
+            encoding="utf-8")
+        self.assertIn("command_log", seed)
+        self.assertIn("FROM command_log", shooting.PG_PLAYER_LOG_SQL)
+
+    def test_watches_only_the_player(self):
+        self.assertIn(f"user_name = '{shooting.PLAYER_USER}'",
+                      shooting.PG_PLAYER_LOG_SQL)
+
+    def test_reads_prepared_statement_execution_too(self):
+        """준비된 구문의 실제 문장은 statement 가 아니라 execute 행에 남는다."""
+        self.assertIn("execute %", shooting.PG_PLAYER_LOG_SQL)
+
+    def test_strips_the_log_prefix(self):
+        """'statement: SELECT 1' 을 그대로 넘기면 판정 정규식이 전부 어긋난다."""
+        self.assertIn("^(statement|execute [^:]*): ",
+                      shooting.PG_PLAYER_LOG_SQL)
+
+    def test_log_path_matches_the_lab(self):
+        seed = (REPO_ROOT / "shooting/lab/pg-seed/03-logview.sql").read_text(
+            encoding="utf-8")
+        self.assertIn(shooting.PG_LOG_FILE, seed)
+
+
+class PostgresClientTest(unittest.TestCase):
+    """플레이어가 `c` 로 여는 클라이언트."""
+
+    def _pg_stage(self):
+        return _minimal_stage(
+            dbms="postgresql",
+            objectives=[{"id": "o1", "type": "state", "on": "postgres",
+                         "query": "SELECT 1",
+                         "expect": {"op": "eq", "value": 1}}])
+
+    def test_opens_psql_on_the_published_port(self):
+        cmd = shooting.client_command(self._pg_stage(), target="postgres")
+        self.assertEqual(cmd[0], "psql")
+        self.assertEqual(cmd[cmd.index("-p") + 1],
+                         shooting.PLAYER_PORTS["postgres"])
+
+    def test_mysql_client_unchanged(self):
+        cmd = shooting.client_command(_minimal_stage(), target="primary")
+        self.assertEqual(cmd[0], "mysql")
+        self.assertIn("--auto-vertical-output", cmd)
+
+    def test_password_never_reaches_the_command_line(self):
+        for target in ("primary", "postgres"):
+            cmd = shooting.client_command(_minimal_stage(), target=target)
+            self.assertNotIn(shooting.PLAYER_PASSWORD, " ".join(cmd), target)
+
+    def test_env_carries_the_right_password_variable(self):
+        self.assertIn("PGPASSWORD", shooting.client_env("postgres"))
+        self.assertIn("MYSQL_PWD", shooting.client_env("primary"))
+        self.assertNotIn("PGPASSWORD", shooting.client_env("primary"))
+
+    def test_postgres_stage_never_offers_mysql_primary(self):
+        stage = self._pg_stage()
+        self.assertNotIn("primary", shooting.watch_targets(stage))
+        self.assertEqual(shooting.client_targets(stage), ["postgres"])
+
+    def test_connect_hint_uses_psql(self):
+        hint = shooting._connect_hint(self._pg_stage())
+        self.assertIn("psql", hint)
+        self.assertIn("PGPASSWORD", hint)
+
+
+class PostgresKillParsingTest(unittest.TestCase):
+    """PostgreSQL은 세션 종료가 문장이 아니라 함수다."""
+
+    def test_reads_terminate_and_cancel(self):
+        self.assertEqual(
+            shooting.parse_kill_targets(["SELECT pg_terminate_backend(12);",
+                                         "select pg_cancel_backend( 34 )"]),
+            [12, 34])
+
+    def test_one_statement_can_kill_several(self):
+        self.assertEqual(
+            shooting.parse_kill_targets(
+                ["SELECT pg_terminate_backend(1), pg_terminate_backend(2)"]),
+            [1, 2])
+
+    def test_mysql_kill_still_read(self):
+        self.assertEqual(shooting.parse_kill_targets(["KILL 5"]), [5])
+
+    def test_blanket_sweep_is_invisible(self):
+        """pid를 적지 않는 쓸기는 여기서 보이지 않는다 — 문서화된 한계다.
+
+        MySQL에는 없던 구멍이라, 감점 대상으로 삼으려면 스테이지가
+        forbidden_command 로 직접 막아야 한다.
+        """
+        self.assertEqual(shooting.parse_kill_targets([
+            "SELECT pg_terminate_backend(pid) FROM pg_stat_activity"]), [])
+
+
+class VendorValidationTest(unittest.TestCase):
+    """dbms 와 대상 서버가 어긋나면 조용히 엉뚱한 서버에 붙는다."""
+
+    def test_rejects_unknown_dbms(self):
+        errs = shooting.validate_stage(_minimal_stage(dbms="cassandra"))
+        self.assertTrue(any("cassandra" in e for e in errs), errs)
+
+    def test_rejects_postgres_stage_pointing_at_mysql(self):
+        errs = shooting.validate_stage(_minimal_stage(dbms="postgresql"))
+        self.assertTrue(any("primary" in e for e in errs), errs)
+
+    def test_rejects_mysql_stage_pointing_at_postgres(self):
+        errs = shooting.validate_stage(_minimal_stage(
+            setup=[{"type": "sql", "on": "postgres", "sql": "SELECT 1"}]))
+        self.assertTrue(any("postgres" in e for e in errs), errs)
+
+    def test_consistent_postgres_stage_passes(self):
+        self.assertEqual(shooting.validate_stage(_minimal_stage(
+            dbms="postgresql",
+            objectives=[{"id": "o1", "type": "state", "on": "postgres",
+                         "query": "SELECT 1",
+                         "expect": {"op": "eq", "value": 1}}])), [])
+
+    def test_every_shipped_stage_still_validates(self):
+        for path in shooting.discover_stages():
+            with open(path, encoding="utf-8") as f:
+                raw = json.load(f)
+            self.assertEqual(shooting.validate_stage(raw), [], path.name)

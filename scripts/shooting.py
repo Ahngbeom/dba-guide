@@ -56,6 +56,13 @@ CONTAINERS = {"primary": "dbshoot-primary", "replica": "dbshoot-replica",
 # 이미지 내려받기와 기동 시간을 치를 이유가 없다.
 POSTGRES_PROFILE = "postgresql"
 
+# 컨테이너가 곧 벤더다 — target 이름 하나로 어느 DBMS인지 정해진다. 덕분에 엔진의
+# I/O 함수들은 **시그니처를 바꾸지 않고** 내부에서만 갈라진다. 호출부 12곳은
+# 자기가 어느 DBMS를 상대하는지 알 필요가 없다.
+TARGET_VENDOR = {"primary": "mysql", "replica": "mysql",
+                 "postgres": "postgresql"}
+VENDORS = ("mysql", "postgresql")
+
 POLL_SECONDS = 2.0        # DB 상태 폴링 주기
 
 # 플레이어 접속 정보. shooting/lab/seed/03-users.sql 및 compose 포트 매핑과 맞춰야 한다.
@@ -65,7 +72,7 @@ PLAYER_DB = "shop"
 PLAYER_HOST = "127.0.0.1"
 # 서버별 게시 포트. compose.yaml의 ports와 맞춰야 한다 — 어긋나면 조용히 엉뚱한
 # 서버에 붙는다(테스트가 두 파일을 대조한다).
-PLAYER_PORTS = {"primary": "3306", "replica": "3307"}
+PLAYER_PORTS = {"primary": "3306", "replica": "3307", "postgres": "5432"}
 # -S 긴 줄 자르기 / -F 한 화면이면 즉시 종료 / -X 나갈 때 화면 지우지 않기
 CLIENT_PAGER = "less -SFX"
 OBJECTIVE_TYPES = ("state", "quiz")
@@ -113,6 +120,32 @@ PLAYER_LOG_SQL = (
     "TRUNCATE TABLE mysql.general_log"
 )
 
+# PostgreSQL 쪽 같은 것. 판정 구조는 그대로 옮겨오지만 두 가지가 다르다.
+#
+# 1. 명령 이력이 **테이블이 아니라 로그 파일**이다. file_fdw 외부 테이블로 읽는다
+#    (pg-seed/03-logview.sql). 그래서 비우기는 SQL이 아니라 파일 truncate 다.
+# 2. `sql_log_off`에 해당하는 것이 **필요 없다.** 엔진은 postgres 계정으로 붙으므로
+#    아래 user_name 필터에 자연히 걸러진다. MySQL에서 자기 오염이 문제였던 건
+#    감시가 계정이 아니라 같은 서버의 로그 테이블을 통째로 읽기 때문이었다.
+PG_LOG_FILE = "/var/lib/postgresql/data/log/pg.csv"
+# 랩이 데이터베이스를 따로 만들지 않아 기본 postgres 안의 public 스키마를 쓴다.
+# MySQL 쪽 PLAYER_DB('shop')와 이름이 다른 이유다.
+PG_PLAYER_DB = "postgres"
+PG_ADMIN_USER = "postgres"
+PG_PLAYER_LOG_SQL = (
+    # 'statement: SELECT 1' 에서 접두사를 떼어 MySQL 쪽과 같은 모양(순수 SQL)으로
+    # 맞춘다 — parse_kill_targets 나 forbidden_command 정규식이 그대로 통한다.
+    "SELECT regexp_replace("
+    "regexp_replace(message, '^(statement|execute [^:]*): ', ''), "
+    "'[\\r\\n\\t]', ' ', 'g') "
+    "FROM command_log "
+    f"WHERE user_name = '{PLAYER_USER}' "
+    # execute 를 함께 읽는 이유는 MySQL 쪽 Execute 와 같다 — 준비된 구문의 실제
+    # 문장은 'execute <name>: ...' 로 남고 statement 행에는 없다.
+    "AND (message LIKE 'statement:%' OR message LIKE 'execute %') "
+    "ORDER BY log_time"
+)
+
 
 class LabError(RuntimeError):
     """랩(도커/MySQL) 조작 실패."""
@@ -121,6 +154,58 @@ class LabError(RuntimeError):
 # --------------------------------------------------------------------------- #
 # 순수 로직 (UI·도커와 분리 — 테스트 대상)
 # --------------------------------------------------------------------------- #
+def vendor_of(target):
+    """target 서버가 어느 DBMS인가. 모르는 이름은 MySQL로 본다(기존 동작 유지)."""
+    return TARGET_VENDOR.get(target, "mysql")
+
+
+def default_target(stage):
+    """스테이지의 기준 서버. `on`을 적지 않은 단계·목표가 여기로 간다.
+
+    MySQL 스테이지는 지금까지처럼 primary 다. PostgreSQL 스테이지에서 이게
+    없으면 `on`을 생략한 순간 조용히 MySQL primary 로 가서, 붙지도 않는 서버에
+    질의를 던지게 된다.
+    """
+    return "postgres" if stage.get("dbms") == "postgresql" else "primary"
+
+
+def normalize_targets(stage):
+    """생략된 `on`/`source`를 스테이지 기준 서버로 채운 사본.
+
+    기본값을 **읽는 쪽마다** 풀면 `.get("on", "primary")`가 흩어져 있어 한 군데만
+    놓쳐도 조용히 엉뚱한 서버로 간다. 불러올 때 한 번 채워 두면 그 아래로는
+    전부 명시값만 보게 된다.
+    """
+    fallback = default_target(stage)
+    if fallback == "primary":
+        return stage           # MySQL 스테이지는 손대지 않는다
+    out = dict(stage)
+    out["setup"] = [dict(st, on=st.get("on", fallback),
+                         **({"source": st.get("source", fallback)}
+                            if st.get("type") == "wait_gtid_sync" else {}))
+                    for st in stage.get("setup") or []]
+    out["objectives"] = [dict(o, on=o.get("on", fallback))
+                         if o.get("type") == "state" else o
+                         for o in stage.get("objectives") or []]
+    return out
+
+
+def pg_psql_command(sql, user=PG_ADMIN_USER, database=PG_PLAYER_DB):
+    """컨테이너 안에서 돌릴 psql 인자 목록(순수 함수).
+
+    -X                  ~/.psqlrc 무시. 플레이어가 남긴 설정이 출력 형식을 바꾸면
+                        parse_tsv 가 조용히 깨진다.
+    -qtA -F'\t'         헤더·정렬·푸터 없이 탭 구분 → `mysql -N -B`와 같은 모양.
+    -v ON_ERROR_STOP=1  한 문장이라도 실패하면 종료 코드가 0이 아니게 → LabError.
+
+    주의: 한 -c 에 여러 문장을 넣으면 psql 규칙상 **하나의 트랜잭션**으로 묶인다
+    (MySQL은 문장마다 자동 커밋이라 여기서 갈린다). 문장별 커밋이나 트랜잭션
+    블록에서 못 도는 명령(VACUUM 등)이 필요하면 setup 의 sql 단계를 나눠라.
+    """
+    return ["psql", "-U", user, "-d", database, "-X", "-qtA", "-F", "\t",
+            "-v", "ON_ERROR_STOP=1", "-c", sql]
+
+
 def parse_tsv(stdout):
     """`mysql -N -B` 출력을 행 목록으로. 빈 줄은 버린다."""
     rows = []
@@ -210,19 +295,39 @@ def hold_remaining(state, now, hold_seconds):
 
 _KILL_RE = re.compile(
     r"^\s*KILL\s+(?:(?:CONNECTION|QUERY)\s+)?(\d+)\s*;?\s*$", re.IGNORECASE)
+# PostgreSQL은 세션 종료가 문장이 아니라 **함수**다. 문장 전체를 대조하는 위 정규식
+# 으로는 잡히지 않고, 한 문장이 여러 세션을 죽일 수도 있어 findall 로 훑는다.
+_PG_KILL_RE = re.compile(
+    r"pg_(?:terminate|cancel)_backend\s*\(\s*(\d+)\s*\)", re.IGNORECASE)
 
 
 def parse_kill_targets(commands):
     """플레이어 명령 목록에서 KILL 대상 스레드 id를 뽑는다.
 
-    `KILL 12` / `KILL CONNECTION 12` / `KILL QUERY 12` 를 모두 인식한다.
+    `KILL 12` / `KILL CONNECTION 12` / `KILL QUERY 12` 를 모두 인식하고,
+    PostgreSQL의 `pg_terminate_backend(12)` / `pg_cancel_backend(12)` 도 읽는다.
+
+    **한계**: PostgreSQL에서는 `SELECT pg_terminate_backend(pid) FROM
+    pg_stat_activity WHERE ...` 처럼 pid를 적지 않고 한 문장으로 쓸어버릴 수
+    있다. 여기서 뽑는 것은 문장에 적힌 숫자뿐이라 그 방식은 보이지 않는다.
+    MySQL에는 그런 형태가 없어 생기지 않던 구멍이다. 그렇게 쓸어버리는 것을
+    감점 대상으로 삼으려면 스테이지에서 `forbidden_command` 로 그 모양을 직접
+    막아라 — 이쪽은 "범인만 골라 죽였는가"를 보는 도구지 쓸기 탐지기가 아니다.
     """
     out = []
     for cmd in commands or []:
         m = _KILL_RE.match(cmd or "")
         if m:
             out.append(int(m.group(1)))
+        out.extend(int(x) for x in _PG_KILL_RE.findall(cmd or ""))
     return out
+
+
+def kill_session_sql(pid, vendor="mysql"):
+    """세션 하나를 끊는 문장(순수 함수)."""
+    if vendor == "postgresql":
+        return f"SELECT pg_terminate_backend({int(pid)})"
+    return f"KILL {int(pid)}"
 
 
 def count_extra_kills(kill_targets, allowed_pids):
@@ -466,11 +571,12 @@ def client_targets(stage):
     제시하면 갈 이유 없는 선택지가 하나 늘 뿐이다.
     """
     targets = watch_targets(stage)
-    return ["primary"] + sorted(t for t in targets if t != "primary")
+    first = default_target(stage)
+    return [first] + sorted(t for t in targets if t != first)
 
 
-def mysql_client_command(stage, pager=None, target="primary"):
-    """대화형 mysql 클라이언트 인자 목록.
+def client_command(stage, pager=None, target="primary"):
+    """대화형 DB 클라이언트 인자 목록. target 에 따라 mysql / psql 이 된다.
 
     직접 만든 콘솔을 대체한다. readline·히스토리·컬럼 완성·페이저·자동 세로
     출력을 전부 클라이언트가 제공하므로 우리가 다시 만들 이유가 없다.
@@ -484,9 +590,20 @@ def mysql_client_command(stage, pager=None, target="primary"):
     # 서버가 하나뿐인 스테이지에서는 대상 표기가 잡음이므로 붙이지 않는다.
     label = (f"{stage.get('id', 'shoot')}@{target}"
              if len(client_targets(stage)) > 1 else stage.get("id", "shoot"))
+    port = PLAYER_PORTS.get(target, PLAYER_PORTS["primary"])
+    if vendor_of(target) == "postgresql":
+        # 페이저는 인자가 아니라 PAGER 환경변수로 준다(client_env 참고).
+        return [
+            "psql", "-h", PLAYER_HOST, "-p", port,
+            "-U", PLAYER_USER, "-d", PG_PLAYER_DB,
+            # 행이 터미널보다 넓으면 알아서 세로로 바꾼다(mysql 의 auto-vertical).
+            "-P", "expanded=auto",
+            "-v", f"PROMPT1=[{label}] psql> ",
+            "-v", f"PROMPT2=[{label}] psql| ",
+        ]
     cmd = [
         "mysql",
-        f"-h{PLAYER_HOST}", f"-P{PLAYER_PORTS.get(target, PLAYER_PORTS['primary'])}",
+        f"-h{PLAYER_HOST}", f"-P{port}",
         f"-u{PLAYER_USER}", f"-D{PLAYER_DB}",
         # 행이 터미널보다 넓으면 알아서 \G 세로 출력으로 바꾼다.
         "--auto-vertical-output",
@@ -495,6 +612,18 @@ def mysql_client_command(stage, pager=None, target="primary"):
     if pager:
         cmd.append(f"--pager={pager}")
     return cmd
+
+
+def client_env(target, pager=None):
+    """클라이언트에 넘길 환경변수. 비밀번호를 명령줄에 노출하지 않는다."""
+    env = dict(os.environ)
+    if vendor_of(target) == "postgresql":
+        env["PGPASSWORD"] = PLAYER_PASSWORD
+        if pager:
+            env["PAGER"] = pager
+    else:
+        env["MYSQL_PWD"] = PLAYER_PASSWORD
+    return env
 
 
 # --------------------------------------------------------------------------- #
@@ -513,12 +642,13 @@ def watch_targets(stage):
     손을 대야 하는 서버가 다를 수 있기 때문이다 — 복제 스테이지가 그렇다.
     여기 빠진 서버는 명령 로그도 재시작도 감시되지 않는다.
     """
-    targets = {"primary"}
+    fallback = default_target(stage)
+    targets = {fallback}
     for step in stage.get("setup") or []:
-        targets.add(step.get("on", "primary"))
+        targets.add(step.get("on", fallback))
     for obj in stage.get("objectives") or []:
         if obj.get("type") == "state":
-            targets.add(obj.get("on", "primary"))
+            targets.add(obj.get("on", fallback))
     return targets
 
 
@@ -846,6 +976,18 @@ def validate_stage(stage, repo_root=None):
         if not stage.get(field):
             errs.append(f"필수 필드 누락: {field}")
 
+    dbms = stage.get("dbms")
+    if dbms and dbms not in VENDORS:
+        errs.append(f"알 수 없는 dbms '{dbms}' (가능: {', '.join(VENDORS)})")
+    else:
+        # 대상 서버가 스테이지의 DBMS와 어긋나면 조용히 엉뚱한 서버에 붙는다.
+        # 스테이지를 쓰다 `on`을 빠뜨리거나 잘못 적기 쉬운 자리라 여기서 막는다.
+        want = "postgresql" if dbms == "postgresql" else "mysql"
+        for t in sorted(watch_targets(stage)):
+            if t in CONTAINERS and vendor_of(t) != want:
+                errs.append(f"dbms가 {want}인데 대상 '{t}'는 "
+                            f"{vendor_of(t)} 서버입니다")
+
     for step in stage.get("setup") or []:
         stype = step.get("type")
         if stype not in SETUP_TYPES:
@@ -949,7 +1091,7 @@ def load_stage(path):
     errs = validate_stage(stage, repo_root=REPO_ROOT)
     if errs:
         raise ValueError(f"{path}: " + "; ".join(errs))
-    return stage
+    return normalize_targets(stage)
 
 
 # --------------------------------------------------------------------------- #
@@ -992,8 +1134,8 @@ def _compose(*args, timeout=600):
         raise LabError(DOCKER_MISSING) from None
 
 
-def mysql(target, sql, timeout=30, log_off=True):
-    """엔진 전용 root 질의 → 행 목록.
+def db_query(target, sql, timeout=30, log_off=True):
+    """엔진 전용 관리자 질의 → 행 목록. target이 어느 DBMS인지는 여기서 갈린다.
 
     자격증명은 컨테이너 안 /root/.my.cnf 에서 읽으므로 명령줄에 비밀번호가
     노출되지 않는다.
@@ -1003,17 +1145,22 @@ def mysql(target, sql, timeout=30, log_off=True):
     CSV 엔진이라 인덱스가 없어 조회할 때마다 전체 스캔인데, 2초마다 도는 폴링
     질의가 계속 쌓이면서 다음 폴링이 점점 느려지는 자기 증폭 구조가 된다.
     """
-    if log_off:
-        sql = "SET SESSION sql_log_off = 1; " + sql
     container = CONTAINERS.get(target, target)
-    p = _docker("exec", container, "mysql", "-N", "-B", "-e", sql,
-                timeout=timeout)
+    if vendor_of(target) == "postgresql":
+        # log_off 는 여기서 의미가 없다 — 엔진이 postgres 계정으로 붙으므로
+        # 감시 질의의 user_name 필터가 이미 걸러낸다(PG_PLAYER_LOG_SQL 참고).
+        p = _docker("exec", container, *pg_psql_command(sql), timeout=timeout)
+    else:
+        if log_off:
+            sql = "SET SESSION sql_log_off = 1; " + sql
+        p = _docker("exec", container, "mysql", "-N", "-B", "-e", sql,
+                    timeout=timeout)
     if p.returncode != 0:
-        raise LabError((p.stderr or "").strip() or f"{container}: mysql 실행 실패")
+        raise LabError((p.stderr or "").strip() or f"{container}: 질의 실패")
     return parse_tsv(p.stdout)
 
 
-def spawn_command(user, sql, idle_seconds=0):
+def spawn_command(user, sql, idle_seconds=0, vendor="mysql"):
     """장애 주입 세션을 띄울 컨테이너 안 명령(순수 함수).
 
     `--no-defaults`가 꼭 필요하다 — MySQL 클라이언트의 옵션 우선순위는
@@ -1026,21 +1173,32 @@ def spawn_command(user, sql, idle_seconds=0):
     잡혀 진짜 유휴 커넥션과 구분되지 않는다. 파이프가 열려 있는 동안 클라이언트가
     stdin을 기다리므로 서버 쪽에서 유휴로 보인다.
     """
-    base = ["mysql", "--no-defaults", "-u", user]
+    if vendor == "postgresql":
+        # -h 로 TCP를 강제한다. 유닉스 소켓으로 가면 로컬 신뢰 인증에 걸려
+        # **PGPASSWORD 없이도 붙어버리고**, 계정을 틀려도 알아채지 못한다.
+        base = ["psql", "-h", "127.0.0.1", "-U", user, "-d", PG_PLAYER_DB,
+                "-X", "-q", "-v", "ON_ERROR_STOP=1"]
+        rest = ["-c", sql]
+    else:
+        base = ["mysql", "--no-defaults", "-u", user]
+        rest = ["-e", sql]
     if not idle_seconds:
-        return base + ["-e", sql]
+        return base + rest
     # 스테이지 SQL에는 따옴표가 흔하다 — 셸에 그대로 넘기면 깨진다.
+    tail = ("" if vendor == "postgresql" else f" -D {PLAYER_DB}")
     script = (f"{{ printf '%s;\\n' {shlex.quote(sql)}; "
               f"sleep {int(idle_seconds)}; }} | "
-              + " ".join(base) + f" -D {PLAYER_DB}")
+              + " ".join(base) + tail)
     return ["sh", "-c", script]
 
 
-def mysql_spawn(target, user, password, sql, idle_seconds=0):
+def db_spawn(target, user, password, sql, idle_seconds=0):
     """장애 주입용 분리(detached) 세션을 띄운다."""
     container = CONTAINERS.get(target, target)
-    _docker("exec", "-d", "-e", f"MYSQL_PWD={password}", container,
-            *spawn_command(user, sql, idle_seconds))
+    vendor = vendor_of(target)
+    env = "PGPASSWORD" if vendor == "postgresql" else "MYSQL_PWD"
+    _docker("exec", "-d", "-e", f"{env}={password}", container,
+            *spawn_command(user, sql, idle_seconds, vendor))
 
 
 def run_in_terminal(stdscr, curses, cmd, env=None, on_error=None, banner=None):
@@ -1098,8 +1256,8 @@ def client_banner(stage, session, target="primary"):
     return "\n".join(lines)
 
 
-def open_mysql_client(stdscr, curses, stage, session, target="primary"):
-    """진짜 mysql 클라이언트를 띄운다.
+def open_db_client(stdscr, curses, stage, session, target="primary"):
+    """진짜 DB 클라이언트(mysql / psql)를 띄운다.
 
     판정은 그대로다 — 클라이언트도 dba 계정으로 접속하므로 general_log 귀속이
     외부 터미널과 동일하다. 지속 세션이라 트랜잭션·SET SESSION도 살아있다.
@@ -1107,8 +1265,8 @@ def open_mysql_client(stdscr, curses, stage, session, target="primary"):
     """
     pager = CLIENT_PAGER if shutil.which("less") else None
     return run_in_terminal(
-        stdscr, curses, mysql_client_command(stage, pager, target),
-        env={**os.environ, "MYSQL_PWD": PLAYER_PASSWORD},
+        stdscr, curses, client_command(stage, pager, target),
+        env=client_env(target, pager),
         banner=client_banner(stage, session, target),
         on_error=("접속에 실패했습니다. ~/.my.cnf 에 password= 설정이 있으면\n"
                   "MYSQL_PWD 보다 우선해 인증을 가로챌 수 있습니다\n"
@@ -1284,8 +1442,8 @@ def binlog_backlog(target="primary"):
     """(GTID 수, binlog 바이트). 조회 실패는 (0, 0) — 진단을 막지 않는다."""
     try:
         gtids = count_gtids(first_scalar(
-            mysql(target, "SELECT REPLACE(@@GLOBAL.gtid_executed, '\\n', '')")))
-        rows = mysql(target, "SHOW BINARY LOGS")
+            db_query(target, "SELECT REPLACE(@@GLOBAL.gtid_executed, '\\n', '')")))
+        rows = db_query(target, "SHOW BINARY LOGS")
         size = sum(int(r[1]) for r in rows if len(r) > 1 and r[1].isdigit())
         return gtids, size
     except (LabError, ValueError):
@@ -1304,8 +1462,11 @@ def container_started_at(target):
 
 def app_session_pids(target):
     """엔진이 띄운 app 세션의 processlist id 집합."""
-    rows = mysql(target,
-                 "SELECT id FROM information_schema.processlist WHERE user='app'")
+    if vendor_of(target) == "postgresql":
+        sql = "SELECT pid FROM pg_stat_activity WHERE usename = 'app'"
+    else:
+        sql = "SELECT id FROM information_schema.processlist WHERE user='app'"
+    rows = db_query(target, sql)
     return {int(r[0]) for r in rows if r and r[0].isdigit()}
 
 
@@ -1313,7 +1474,7 @@ def kill_app_sessions(target):
     """남아있는 app 세션을 전부 정리(스테이지 재시작 시 깨끗한 출발점)."""
     for pid in app_session_pids(target):
         try:
-            mysql(target, f"KILL {pid}")
+            db_query(target, kill_session_sql(pid, vendor_of(target)))
         except LabError:
             pass  # 이미 사라진 세션
 
@@ -1324,7 +1485,13 @@ def reset_player_log(target):
     로깅을 켜 둔 채로 TRUNCATE가 가능하므로 off/on 토글이 필요 없다.
     binlog에서 빼는 이유는 NO_BINLOG 주석 참고 — 복제되면 replica의 로그까지 지운다.
     """
-    mysql(target, NO_BINLOG + "TRUNCATE TABLE mysql.general_log")
+    if vendor_of(target) == "postgresql":
+        # 로그가 테이블이 아니라 파일이라 SQL로 비울 수 없다. 로깅 수집기는
+        # 이어쓰기(O_APPEND)라 0으로 잘라도 그대로 계속 기록한다(실측).
+        _docker("exec", CONTAINERS.get(target, target),
+                "truncate", "-s", "0", PG_LOG_FILE)
+        return
+    db_query(target, NO_BINLOG + "TRUNCATE TABLE mysql.general_log")
 
 
 def read_player_commands(target):
@@ -1333,7 +1500,18 @@ def read_player_commands(target):
     누적은 호출부(run_watch_step) 책임이다 — 여기서 반환하는 건 '새 것'뿐이다.
     실패를 삼키지 않는다 — 호출부가 화면에 띄운다.
     """
-    return [r[0] for r in mysql(target, PLAYER_LOG_SQL) if r]
+    if vendor_of(target) == "postgresql":
+        # 읽기와 비우기를 **한 번의 docker exec**로 묶는다. 두 번으로 나누면 그
+        # 사이에 들어온 플레이어 명령이 통째로 사라진다(MySQL 쪽은 두 문장이 한
+        # 접속 안에서 이어져 창이 훨씬 좁다).
+        script = (" ".join(shlex.quote(a) for a in
+                           pg_psql_command(PG_PLAYER_LOG_SQL))
+                  + f"; truncate -s 0 {shlex.quote(PG_LOG_FILE)}")
+        p = _docker("exec", CONTAINERS.get(target, target), "sh", "-c", script)
+        if p.returncode != 0:
+            raise LabError((p.stderr or "").strip() or "명령 로그 조회 실패")
+        return [r[0] for r in parse_tsv(p.stdout) if r]
+    return [r[0] for r in db_query(target, PLAYER_LOG_SQL) if r]
 
 
 def wait_gtid_sync(target, source, timeout_seconds):
@@ -1350,11 +1528,11 @@ def wait_gtid_sync(target, source, timeout_seconds):
     개행을 없앤다.
     """
     gtid = first_scalar(
-        mysql(source, "SELECT REPLACE(@@GLOBAL.gtid_executed, '\\n', '')"))
+        db_query(source, "SELECT REPLACE(@@GLOBAL.gtid_executed, '\\n', '')"))
     if not gtid:
         return True                     # 원본이 비었으면 따라잡을 것도 없다
     # 클라이언트 타임아웃이 먼저 터지면 대기 결과를 읽지 못한다 — 여유를 둔다.
-    rows = mysql(target,
+    rows = db_query(target,
                  f"SELECT WAIT_FOR_EXECUTED_GTID_SET('{gtid}', {timeout_seconds})",
                  timeout=timeout_seconds + 15)
     # 0 = 다 따라잡음, 1 = 시간 초과.
@@ -1376,6 +1554,16 @@ def _all_containers_are(field, want):
     except LabError:
         return False
     return True
+
+
+def container_running(target):
+    """컨테이너 하나가 떠 있는가 → bool. docker 부재도 '아니다'로 흡수한다."""
+    try:
+        p = _docker("inspect", "--format", "{{.State.Running}}",
+                    CONTAINERS.get(target, target))
+    except LabError:
+        return False
+    return p.returncode == 0 and p.stdout.strip() == "true"
 
 
 def lab_running():
@@ -1444,7 +1632,7 @@ def setup_stage(stage, log=print):
         sql = step.get("sql")           # wait_gtid_sync 단계에는 SQL이 없다
         if stype == "sql":
             log(f"[setup] {target}: 상태 복원 SQL")
-            mysql(target, sql)
+            db_query(target, sql)
             continue
 
         if stype == "wait_gtid_sync":
@@ -1464,7 +1652,7 @@ def setup_stage(stage, log=print):
         before = app_session_pids(target)
         log(f"[setup] {target}: '{name}' 세션 {count}개 기동")
         for _ in range(count):
-            mysql_spawn(target, step.get("user", "app"),
+            db_spawn(target, step.get("user", "app"),
                         step.get("password", "app"), sql,
                         step.get("idle_seconds", 0))
         spawned = _wait_for_new_sessions(target, before, count)
@@ -1525,7 +1713,7 @@ def poll_state_objective(obj):
     """state 목표의 현재 값과 충족 여부."""
     target = obj.get("on", "primary")
     try:
-        rows = mysql(target, obj["query"])
+        rows = db_query(target, obj["query"])
     except LabError as e:
         return None, False, str(e)
     value = first_scalar(rows)
@@ -1549,7 +1737,7 @@ def run_watch_step(step, stage, session, baseline):
                 return None
             try:
                 value = first_scalar(
-                    mysql(obj.get("on", "primary"), obj["query"]))
+                    db_query(obj.get("on", "primary"), obj["query"]))
             except LabError:
                 if not obj.get("tolerate_error"):
                     raise
@@ -1877,13 +2065,19 @@ def _connect_hint(stage):
     hint = stage.get("connect_hint")
     if hint:
         return hint
-    hint = (f"MYSQL_PWD={PLAYER_PASSWORD} mysql -h{PLAYER_HOST} "
-            f"-P{PLAYER_PORTS['primary']} -u{PLAYER_USER} -D{PLAYER_DB}")
-    others = [t for t in client_targets(stage) if t != "primary"]
+    first = default_target(stage)
+    if vendor_of(first) == "postgresql":
+        hint = (f"PGPASSWORD={PLAYER_PASSWORD} psql -h{PLAYER_HOST} "
+                f"-p{PLAYER_PORTS[first]} -U{PLAYER_USER} -d{PG_PLAYER_DB}")
+    else:
+        hint = (f"MYSQL_PWD={PLAYER_PASSWORD} mysql -h{PLAYER_HOST} "
+                f"-P{PLAYER_PORTS[first]} -u{PLAYER_USER} -D{PLAYER_DB}")
+    others = [t for t in client_targets(stage) if t != first]
     if others:
         # 범인이 replica에 있는 스테이지에서 primary 명령만 띄우면 현장을 놓친다.
         hint += "   (" + ", ".join(
-            f"{t}는 -P{PLAYER_PORTS[t]}" for t in others) + ")"
+            f"{t}는 {'-p' if vendor_of(t) == 'postgresql' else '-P'}"
+            f"{PLAYER_PORTS[t]}" for t in others) + ")"
     return hint
 
 
@@ -2075,7 +2269,7 @@ def run_curses(stage, session, baseline):
             elif ch == "c":
                 target = _pick_client_target(stdscr, curses, stage)
                 if target:
-                    open_mysql_client(stdscr, curses, stage, session, target)
+                    open_db_client(stdscr, curses, stage, session, target)
                     # 클라이언트 안에서 고쳤을 수 있다 — 복귀 즉시 폴링되도록 리셋.
                     watch = init_watch(stage)
                 stdscr.timeout(KEY_TIMEOUT_MS)
@@ -2784,6 +2978,14 @@ def cmd_play(target=None, force_line=False, seed=None):
     if stage.get("vars"):
         print(f"이번 판 시드: {seed}  "
               f"(같은 판을 다시 하려면 --seed {seed})")
+
+    # PostgreSQL 스테이지는 프로파일 뒤에 있는 컨테이너를 쓴다. 기본 `./shoot up`
+    # 으로는 뜨지 않으므로, 여기서 걸러 주지 않으면 setup 단계가 docker exec 실패로
+    # 무너지고 원인이 드러나지 않는다.
+    if stage.get("dbms") == "postgresql" and not container_running("postgres"):
+        print("이 스테이지는 PostgreSQL 랩이 필요합니다.\n"
+              "  ./shoot up --with-postgresql")
+        return 1
 
     if not lab_running():
         print("랩이 내려가 있습니다.")
