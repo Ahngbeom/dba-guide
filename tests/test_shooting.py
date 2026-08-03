@@ -1673,6 +1673,55 @@ class BestRanksTest(unittest.TestCase):
         self.assertEqual(shooting.stage_rank_badge("2-2", best), "")
 
 
+class WorldGroupingTest(unittest.TestCase):
+    """월드는 그동안 JSON에만 있고 코드가 읽지 않았다."""
+
+    def _entries(self, *worlds):
+        return [(Path(f"{w}-{i}-x.json"), {"id": f"{w}-{i}-x", "world": w,
+                                           "stage": i, "title": f"제목{w}{i}"})
+                for w, i in worlds]
+
+    def test_groups_are_ordered_by_world_then_stage(self):
+        entries = self._entries((2, 2), (1, 4), (2, 1), (1, 3))
+        got = [(w, [s["id"] for _, s in items])
+               for w, items in shooting.group_by_world(entries)]
+        self.assertEqual(got, [(1, ["1-3-x", "1-4-x"]),
+                               (2, ["2-1-x", "2-2-x"])])
+
+    def test_every_shipped_world_has_a_name(self):
+        # 이름 없는 월드가 생기면 선택 화면에 번호만 뜬다.
+        for path in shooting.discover_stages():
+            world = shooting.load_stage(path).get("world")
+            self.assertIn(world, shooting.WORLD_TITLES, path.name)
+
+    def test_unknown_world_still_gets_a_label(self):
+        # 정의를 빠뜨렸다고 목록에서 사라지면 안 된다.
+        label = shooting.world_menu_label(99, self._entries((99, 1)), {})
+        self.assertIn("99", label)
+
+    def test_world_label_counts_its_stages(self):
+        label = shooting.world_menu_label(1, self._entries((1, 3), (1, 4)), {})
+        self.assertIn("2", label)
+        self.assertIn(shooting.WORLD_TITLES[1], label)
+
+    def test_world_label_shows_best_rank_across_its_stages(self):
+        entries = self._entries((1, 3), (1, 4))
+        label = shooting.world_menu_label(1, entries, {"1-3-x": "B",
+                                                       "1-4-x": "S"})
+        self.assertIn("S", label)     # 가장 높은 것을 보여준다
+
+    def test_world_label_without_any_clear_has_no_rank(self):
+        label = shooting.world_menu_label(1, self._entries((1, 3)), {})
+        self.assertIsNone(re.search(r"\[[SABC]\]", label))
+
+    def test_broken_definition_lands_in_its_own_group(self):
+        # 정의를 못 읽으면 world를 알 수 없다 — 목록에서 빼지 않는다.
+        entries = [(Path("9-9-broken.json"), None)]
+        groups = shooting.group_by_world(entries)
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(len(groups[0][1]), 1)
+
+
 class StageMenuTest(unittest.TestCase):
     """스테이지 선택 목록의 한 줄."""
 

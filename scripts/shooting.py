@@ -2286,18 +2286,18 @@ def cmd_list():
         print("스테이지가 없습니다.")
         return 1
     best = best_ranks(read_progress())
-    print("\n사용 가능한 스테이지\n")
-    for path in stages:
-        try:
-            stage = load_stage(path)
-        except (ValueError, json.JSONDecodeError) as e:
-            print(f"  [오류] {path.name}: {e}")
-            continue
-        kind = "🔥" if stage.get("kind") == "incident" else "🔧"
-        badge = stage_rank_badge(stage.get("id"), best)
-        print(f"  {kind} {stage.get('id'):<24} {stage.get('title')}"
-              f"{'  ' + badge if badge else ''}")
-        print(f"     {stage.get('brief', '')[:70]}")
+    print("\n사용 가능한 스테이지")
+    for world, items in group_by_world([(p, _safe_load(p)) for p in stages]):
+        print(f"\n  월드 {world} · {WORLD_TITLES.get(world, '미분류')}")
+        for path, stage in items:
+            if not stage:
+                print(f"    [오류] {path.name}: 정의를 읽을 수 없습니다")
+                continue
+            kind = "🔥" if stage.get("kind") == "incident" else "🔧"
+            badge = stage_rank_badge(stage.get("id"), best)
+            print(f"    {kind} {stage.get('id'):<26} {stage.get('title')}"
+                  f"{'  ' + badge if badge else ''}")
+            print(f"       {stage.get('brief', '')[:66]}")
     print()
     return 0
 
@@ -2375,6 +2375,47 @@ def cmd_doctor():
     return 0 if ok else 1
 
 
+# 월드는 그동안 스테이지 JSON에만 있고 아무도 읽지 않았다. 이름을 줘야 선택
+# 화면에서 '어디까지 왔는지'가 보인다. 번호가 아니라 다루는 주제로 묶는다.
+WORLD_TITLES = {
+    1: "잠금과 대기",
+    2: "복제",
+    3: "자원 고갈",
+    4: "성능과 실행 계획",
+}
+UNKNOWN_WORLD = 0            # 정의를 못 읽은 스테이지가 모이는 자리
+
+
+def group_by_world(entries):
+    """[(경로, 스테이지|None)] → [(월드, [(경로, 스테이지)])] (월드·스테이지 순).
+
+    정의를 못 읽은 파일은 월드를 알 수 없지만 **목록에서 빼지 않는다** — 파일은
+    있는데 안 보이는 상태가 더 헷갈린다.
+    """
+    buckets = {}
+    for path, stage in entries:
+        world = (stage or {}).get("world", UNKNOWN_WORLD)
+        buckets.setdefault(world, []).append((path, stage))
+    out = []
+    for world in sorted(buckets):
+        items = sorted(buckets[world],
+                       key=lambda e: ((e[1] or {}).get("stage", 0),
+                                      Path(e[0]).stem))
+        out.append((world, items))
+    return out
+
+
+def world_menu_label(world, entries, best):
+    """월드 선택 목록의 한 줄. 그 월드에서 받은 **최고** 등급을 함께 보여준다."""
+    title = WORLD_TITLES.get(world, "미분류")
+    ranks = [best.get((s or {}).get("id")) for _, s in entries]
+    ranks = [r for r in ranks if r in RANK_ORDER]
+    badge = ""
+    if ranks:
+        badge = f"  [{max(ranks, key=RANK_ORDER.index)}]"
+    return f"월드 {world} · {title}   {len(entries)}개{badge}"
+
+
 def stage_menu_label(path, stage, best):
     """선택 목록에 뿌릴 한 줄. `stage`가 None이면 정의 오류로 표시한다.
 
@@ -2426,22 +2467,58 @@ def _choose_stage_line(stages, labels):
         print("잘못된 입력입니다.")
 
 
+def _choose_in_worlds_curses(groups, best):
+    """월드 → 스테이지 2단계 선택 → 경로(취소면 None).
+
+    `exam.py`가 DBMS → 티어 → 챕터로 내려가는 것과 같은 방식이다. 단계마다
+    `tui.pick()`을 다시 부르면 되므로 공용 선택기는 손대지 않는다.
+    """
+    import curses
+
+    def _driver(stdscr):
+        _init_screen(curses)
+        while True:
+            w_idx = pick(
+                stdscr, curses, "어느 월드부터 할까요",
+                [world_menu_label(w, items, best) for w, items in groups],
+                footer=" ↑↓ 또는 숫자 선택   Enter 들어가기   Esc/q 종료 ")
+            if w_idx is None:
+                return None
+            world, items = groups[w_idx]
+            s_idx = pick(
+                stdscr, curses,
+                f"월드 {world} · {WORLD_TITLES.get(world, '미분류')}",
+                [stage_menu_label(p, s, best) for p, s in items],
+                footer=" ↑↓ 또는 숫자 선택   Enter 시작   Esc/q 월드 선택으로 ")
+            if s_idx is not None:
+                return items[s_idx][0]
+            # 스테이지 선택에서 나가면 월드 선택으로 되돌아간다.
+
+    return curses.wrapper(_driver)
+
+
 def choose_stage(stages):
     """스테이지가 여러 개면 골라서 하나를 돌려준다(종료면 None)."""
     if len(stages) == 1:
         return stages[0]
     best = best_ranks(read_progress())
-    labels = [stage_menu_label(p, _safe_load(p), best) for p in stages]
+    groups = group_by_world([(p, _safe_load(p)) for p in stages])
 
     if sys.stdin.isatty() and sys.stdout.isatty():
         try:
-            idx = _choose_stage_curses(labels)
-            return None if idx is None else stages[idx]
+            return _choose_in_worlds_curses(groups, best)
         except Exception:
             # 조용히 넘기지 않는다 — 이 폴백이 화면 코드의 버그를 감춘 적이 있다.
             traceback.print_exc()
             print("\n선택 화면에서 오류가 발생해 목록 입력으로 전환합니다.\n")
-    return _choose_stage_line(stages, labels)
+
+    # 평문 폴백은 한 단계로 둔다 — 번호를 두 번 묻는 것이 더 번거롭다.
+    flat, labels = [], []
+    for world, items in groups:
+        for path, stage in items:
+            flat.append(path)
+            labels.append(f"[월드 {world}] {stage_menu_label(path, stage, best)}")
+    return _choose_stage_line(flat, labels)
 
 
 def cmd_play(target=None, force_line=False, seed=None):
