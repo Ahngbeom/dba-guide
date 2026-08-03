@@ -11,6 +11,7 @@ import builtins
 import contextlib
 import io
 import json
+import random
 import re
 import shlex
 import shutil
@@ -1301,6 +1302,205 @@ class SkippedQuizTest(unittest.TestCase):
             shooting.summarize(self.stage, self.session), "2026-07-31")
         well = note.split("## 잘된 점")[1].split("## 아쉬운 점")[0]
         self.assertNotIn("상황 식별", well)
+
+
+class MakeVarsTest(unittest.TestCase):
+    """스테이지 파라미터 변주 — 표현식 평가기 없이 타입으로 관계를 선언한다."""
+
+    SPEC = {
+        "lock": {"type": "span", "min": 1, "max": 1000, "length": 100},
+        "victim": {"type": "int_in", "of": "lock"},
+        "workers": {"type": "int", "min": 5, "max": 9},
+        "mark": {"type": "choice", "values": ["HOLD", "FROZEN"]},
+    }
+
+    def _vars(self, seed=1):
+        return shooting.make_vars(self.SPEC, random.Random(seed))
+
+    def test_span_exposes_from_and_to(self):
+        v = self._vars()
+        self.assertEqual(v["lock.to"] - v["lock.from"] + 1, 100)
+        self.assertGreaterEqual(v["lock.from"], 1)
+        self.assertLessEqual(v["lock.to"], 1000)
+
+    def test_int_in_always_lands_inside_its_span(self):
+        # 이 관계가 이 기능의 전부다 — 어긋나면 판정이 조용히 깨진다.
+        for seed in range(200):
+            v = shooting.make_vars(self.SPEC, random.Random(seed))
+            self.assertGreaterEqual(v["victim"], v["lock.from"], seed)
+            self.assertLessEqual(v["victim"], v["lock.to"], seed)
+
+    def test_int_and_choice_respect_their_declarations(self):
+        for seed in range(50):
+            v = shooting.make_vars(self.SPEC, random.Random(seed))
+            self.assertIn(v["workers"], range(5, 10))
+            self.assertIn(v["mark"], ["HOLD", "FROZEN"])
+
+    def test_same_seed_reproduces_exactly(self):
+        self.assertEqual(self._vars(4821), self._vars(4821))
+
+    def test_different_seeds_actually_vary(self):
+        seen = {tuple(sorted(shooting.make_vars(self.SPEC,
+                                               random.Random(s)).items()))
+                for s in range(30)}
+        self.assertGreater(len(seen), 1)
+
+    def test_key_order_does_not_change_the_draw(self):
+        # 선언 순서를 바꿨다고 같은 시드의 결과가 달라지면 재현이 깨진다.
+        reordered = dict(reversed(list(self.SPEC.items())))
+        self.assertEqual(shooting.make_vars(self.SPEC, random.Random(7)),
+                         shooting.make_vars(reordered, random.Random(7)))
+
+    def test_no_vars_is_empty(self):
+        self.assertEqual(shooting.make_vars(None, random.Random(1)), {})
+
+
+class RenderStageTest(unittest.TestCase):
+    STAGE = {
+        "id": "x", "title": "t",
+        "vars": {"lock": {"type": "span", "min": 10, "max": 20, "length": 5},
+                 "victim": {"type": "int_in", "of": "lock"}},
+        "brief": "{{lock.from}}부터 막혔다",
+        "setup": [{"type": "sql",
+                   "sql": "UPDATE t SET s='X' WHERE id BETWEEN {{lock.from}} AND {{lock.to}}"}],
+        "objectives": [{"id": "o", "type": "state",
+                        "query": "SELECT s FROM t WHERE id = {{victim}}",
+                        "expect": {"op": "eq", "value": "{{victim}}"}}],
+        "hints": ["범인은 {{lock.from}}~{{lock.to}} 구간이다"],
+    }
+
+    def test_stage_without_vars_is_untouched(self):
+        plain = {"id": "p", "setup": [{"sql": "SELECT 1"}]}
+        self.assertEqual(shooting.render_stage(plain, random.Random(1)), plain)
+
+    def test_substitutes_everywhere_including_nested(self):
+        out = shooting.render_stage(self.STAGE, random.Random(3))
+        blob = json.dumps(out, ensure_ascii=False)
+        self.assertNotIn("{{", blob)
+        self.assertIn("BETWEEN", out["setup"][0]["sql"])
+
+    def test_judging_target_moves_with_the_setup(self):
+        # setup이 잠근 구간 안에 목표가 보는 행이 들어 있어야 한다.
+        for seed in range(50):
+            out = shooting.render_stage(self.STAGE, random.Random(seed))
+            lo, hi = (int(n) for n in re.search(
+                r"BETWEEN (\d+) AND (\d+)", out["setup"][0]["sql"]).groups())
+            victim = int(re.search(r"id = (\d+)", out["objectives"][0]["query"]).group(1))
+            self.assertTrue(lo <= victim <= hi, (seed, lo, victim, hi))
+            self.assertEqual(out["objectives"][0]["expect"]["value"], str(victim))
+
+    def test_same_seed_renders_identically(self):
+        self.assertEqual(shooting.render_stage(self.STAGE, random.Random(9)),
+                         shooting.render_stage(self.STAGE, random.Random(9)))
+
+    def test_original_stage_is_not_mutated(self):
+        before = json.dumps(self.STAGE, ensure_ascii=False)
+        shooting.render_stage(self.STAGE, random.Random(1))
+        self.assertEqual(json.dumps(self.STAGE, ensure_ascii=False), before)
+
+
+class SeedRecordTest(unittest.TestCase):
+    """시드를 남기지 않으면 '어제 그 판'을 다시 열 수 없다 — 회고가 반쪽이 된다."""
+
+    def setUp(self):
+        self.stage = shooting.load_stage(
+            REPO_ROOT / "shooting" / "stages" / "1-3-lock-contention.json")
+        self.session = shooting.init_session(self.stage)
+
+    def test_note_carries_the_seed(self):
+        staged = dict(self.stage, _seed=4821)
+        note = shooting.build_note(
+            staged, self.session, shooting.summarize(staged, self.session),
+            "2026-08-03")
+        self.assertIn("4821", note)
+        self.assertIn("--seed", note)          # 다시 여는 방법까지 적어둔다
+
+    def test_note_without_a_seed_says_nothing_about_it(self):
+        note = shooting.build_note(
+            self.stage, self.session,
+            shooting.summarize(self.stage, self.session), "2026-08-03")
+        self.assertNotIn("--seed", note)
+
+    def test_progress_record_carries_the_seed(self):
+        written = []
+        real = shooting.PROGRESS_FILE
+        try:
+            shooting.PROGRESS_FILE = Path("/nonexistent-dir/x.jsonl")
+            shooting.save_progress(dict(self.stage, _seed=77), "S", 4,
+                                   10.0, 0, 0)
+        finally:
+            shooting.PROGRESS_FILE = real
+        # 파일 쓰기는 실패해도 되지만(플레이를 막지 않는다) 레코드 자체를 확인한다.
+        rec = shooting.progress_record(dict(self.stage, _seed=77), "S", 4,
+                                       10.0, 0, 0)
+        self.assertEqual(rec["seed"], 77)
+        self.assertEqual(rec["stage"], self.stage["id"])
+        del written
+
+
+class ValidateVarsTest(unittest.TestCase):
+    BASE = {"id": "x", "title": "t",
+            "objectives": [{"id": "o", "type": "state", "query": "SELECT 1",
+                            "expect": {"op": "eq", "value": 1}}]}
+
+    def _errs(self, **extra):
+        return shooting.validate_stage({**self.BASE, **extra})
+
+    def test_undefined_placeholder_is_caught(self):
+        errs = self._errs(brief="{{nope}}")
+        self.assertTrue(any("nope" in e for e in errs), errs)
+
+    def test_non_ascii_placeholder_is_caught_too(self):
+        # 한국어 저장소다 — 누군가 반드시 한글 변수명을 쓴다. 인식조차 못 하면
+        # 치환도 안 되고 오류도 안 나서 원문이 그대로 화면에 뜬다.
+        errs = self._errs(brief="{{없는변수}}")
+        self.assertTrue(any("없는변수" in e for e in errs), errs)
+
+    def test_declared_non_ascii_name_works(self):
+        errs = self._errs(vars={"잠금": {"type": "int", "min": 1, "max": 9}},
+                          brief="{{잠금}}번")
+        self.assertEqual(errs, [])
+        out = shooting.render_stage(
+            {"vars": {"잠금": {"type": "int", "min": 5, "max": 5}},
+             "brief": "{{잠금}}번"}, random.Random(1))
+        self.assertEqual(out["brief"], "5번")
+
+    def test_int_in_must_point_at_a_span(self):
+        errs = self._errs(vars={"a": {"type": "int", "min": 1, "max": 2},
+                                "b": {"type": "int_in", "of": "a"}})
+        self.assertTrue(any("int_in" in e for e in errs), errs)
+
+    def test_span_longer_than_its_range_is_caught(self):
+        errs = self._errs(vars={"s": {"type": "span", "min": 1, "max": 10,
+                                      "length": 50}})
+        self.assertTrue(any("length" in e for e in errs), errs)
+
+    def test_unknown_var_type_is_caught(self):
+        errs = self._errs(vars={"s": {"type": "매직"}})
+        self.assertTrue(any("매직" in e for e in errs), errs)
+
+    def test_placeholder_in_a_numeric_field_is_allowed(self):
+        # count 같은 숫자 필드도 변주 대상이다. 값은 렌더링 뒤에 정해지므로
+        # 검증이 그 자리에서 int()로 읽으려 하면 안 된다.
+        errs = shooting.validate_stage({
+            **self.BASE,
+            "vars": {"n": {"type": "int", "min": 1, "max": 3}},
+            "setup": [{"type": "sessions", "count": "{{n}}", "sql": "SELECT 1"}],
+        })
+        self.assertEqual(errs, [])
+
+    def test_bad_literal_count_is_still_caught(self):
+        errs = shooting.validate_stage({
+            **self.BASE,
+            "setup": [{"type": "sessions", "count": 0, "sql": "SELECT 1"}],
+        })
+        self.assertTrue(any("count" in e for e in errs), errs)
+
+    def test_span_halves_are_referenceable(self):
+        errs = self._errs(vars={"s": {"type": "span", "min": 1, "max": 99,
+                                      "length": 5}},
+                          brief="{{s.from}}~{{s.to}}")
+        self.assertEqual(errs, [])
 
 
 class DockerDecodingTest(unittest.TestCase):
