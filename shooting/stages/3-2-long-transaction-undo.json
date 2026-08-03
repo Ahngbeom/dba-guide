@@ -8,13 +8,29 @@
   "brief": "새벽부터 조회가 조금씩 느려지고 있다. 디스크 사용량도 계속 오른다. 그런데 막힌 세션은 하나도 없고, 잠금을 기다리는 것도 없고, 앱은 평소와 똑같은 양의 일을 하고 있다. 재시작하면 잠깐 나아졌다가 다시 같은 길을 간다.",
   "target_seconds": 360,
   "connect_hint": "MYSQL_PWD=shoot mysql -h127.0.0.1 -P3306 -udba",
-
+  "vars": {
+    "base": {
+      "type": "int",
+      "min": 50000,
+      "max": 150000
+    },
+    "bulk": {
+      "type": "int",
+      "min": 10000,
+      "max": 14000
+    },
+    "live": {
+      "type": "int",
+      "min": 3000,
+      "max": 5000
+    }
+  },
   "setup": [
     {
       "type": "sql",
       "on": "primary",
       "_comment": "부하 프로시저는 반드시 SQL SECURITY INVOKER — DEFINER면 processlist.user가 root로 보고돼 app 세션 추적과 정리가 깨진다. DELIMITER는 줄 단위 명령이라 앞뒤로 진짜 개행이 필요하다.",
-      "sql": "GRANT EXECUTE ON shop.* TO 'app'@'%';\nDROP PROCEDURE IF EXISTS shop.undo_churn;\nDROP PROCEDURE IF EXISTS shop.undo_churn_bulk;\nDELIMITER //\nCREATE PROCEDURE shop.undo_churn(n INT) SQL SECURITY INVOKER\nBEGIN\n  DECLARE i INT DEFAULT 0;\n  WHILE i < n DO\n    UPDATE shop.orders SET amount = amount + 1 WHERE id = 100000 + (i % 500);\n    DO SLEEP(0.05);\n    SET i = i + 1;\n  END WHILE;\nEND//\nCREATE PROCEDURE shop.undo_churn_bulk(n INT) SQL SECURITY INVOKER\nBEGIN\n  DECLARE i INT DEFAULT 0;\n  WHILE i < n DO\n    UPDATE shop.orders SET amount = amount + 1 WHERE id = 100000 + (i % 500);\n    SET i = i + 1;\n  END WHILE;\nEND//\nDELIMITER ;"
+      "sql": "GRANT EXECUTE ON shop.* TO 'app'@'%';\nDROP PROCEDURE IF EXISTS shop.undo_churn;\nDROP PROCEDURE IF EXISTS shop.undo_churn_bulk;\nDELIMITER //\nCREATE PROCEDURE shop.undo_churn(n INT) SQL SECURITY INVOKER\nBEGIN\n  DECLARE i INT DEFAULT 0;\n  WHILE i < n DO\n    UPDATE shop.orders SET amount = amount + 1 WHERE id = {{base}} + (i % 500);\n    DO SLEEP(0.05);\n    SET i = i + 1;\n  END WHILE;\nEND//\nCREATE PROCEDURE shop.undo_churn_bulk(n INT) SQL SECURITY INVOKER\nBEGIN\n  DECLARE i INT DEFAULT 0;\n  WHILE i < n DO\n    UPDATE shop.orders SET amount = amount + 1 WHERE id = {{base}} + (i % 500);\n    SET i = i + 1;\n  END WHILE;\nEND//\nDELIMITER ;"
     },
     {
       "type": "session",
@@ -31,7 +47,7 @@
       "type": "sql",
       "on": "primary",
       "_comment": "범인이 스냅샷을 잡은 뒤에 갱신해야 그 이전 버전들이 purge되지 못하고 쌓인다. 순서가 뒤집히면 장애가 걸리지 않는다. 건수는 setup의 sql 단계 타임아웃(30초) 안에 끝나야 한다 — 실측 약 1,000건/초라 12,000건이면 12초쯤이다.",
-      "sql": "CALL shop.undo_churn_bulk(12000)"
+      "sql": "CALL shop.undo_churn_bulk({{bulk}})"
     },
     {
       "type": "session",
@@ -40,16 +56,17 @@
       "user": "app",
       "password": "app",
       "_comment": "플레이 중에도 이력이 계속 자라도록 하는 평범한 앱 트래픽. 이 세션은 범인이 아니다 — 끊으면 kill_precision 위반이다.",
-      "sql": "CALL shop.undo_churn(4000)"
+      "sql": "CALL shop.undo_churn({{live}})"
     }
   ],
-
   "objectives": [
     {
       "id": "diagnose-symptom",
       "type": "quiz",
       "label": "상황 식별",
-      "trigger": { "after_seconds": 40 },
+      "trigger": {
+        "after_seconds": 40
+      },
       "question": {
         "type": "mcq",
         "q": "막힌 세션도 잠금 대기도 없는데 조회가 점점 느려지고 디스크가 찬다. 가장 정확한 설명은?",
@@ -84,7 +101,10 @@
       "label": "오래된 트랜잭션 정리",
       "on": "primary",
       "query": "SELECT COUNT(*) FROM information_schema.innodb_trx WHERE trx_started < NOW() - INTERVAL 15 SECOND",
-      "expect": { "op": "eq", "value": 0 },
+      "expect": {
+        "op": "eq",
+        "value": 0
+      },
       "hold_seconds": 10
     },
     {
@@ -94,11 +114,13 @@
       "on": "primary",
       "_comment": "회수되면 수백 수준으로 떨어진다(실측 20007 → 510). 시작값 약 12,000과 회수 후 수백 사이에서 넉넉히 떨어진 곳에 임계값을 둬, 진행 중인 앱 트래픽에 흔들리지 않게 한다.",
       "query": "SELECT COUNT FROM information_schema.innodb_metrics WHERE NAME = 'trx_rseg_history_len'",
-      "expect": { "op": "lt", "value": 3000 },
+      "expect": {
+        "op": "lt",
+        "value": 3000
+      },
       "hold_seconds": 10
     }
   ],
-
   "constraints": [
     {
       "id": "no-restart",
@@ -112,12 +134,10 @@
       "max_extra_kills": 0
     }
   ],
-
   "hints": [
     "막힌 세션이 없는데 느려진다면 '기다림'이 아니라 '쌓임'이다. information_schema.innodb_metrics 에서 NAME='trx_rseg_history_len' 을 보라 — 이 숫자가 크면 정리되지 못한 옛 버전이 그만큼 쌓여 있다는 뜻이다.",
     "옛 행 버전은 그것을 볼 수 있는 트랜잭션이 하나도 없어야 정리된다. information_schema.innodb_trx 의 trx_started 를 보고 유난히 오래 열려 있는 것을 찾아라 — 잠금을 하나도 잡지 않은 읽기 트랜잭션도 범인이 될 수 있다.",
     "범인은 오래 열린 그 트랜잭션 하나다. 같은 app 계정으로 지금도 정상적으로 일하고 있는 세션이 따로 있으니, 계정만 보고 쓸어버리면 멀쩡한 트래픽까지 끊는다."
   ],
-
   "debrief": "범인은 밤새 열려 있던 리포트 세션이었다.\nSTART TRANSACTION WITH CONSISTENT SNAPSHOT 으로 스냅샷을 잡은 뒤 커밋도\n롤백도 하지 않고 접속만 붙잡고 있었다. 잠금은 하나도 잡지 않았다.\n\n이 스테이지의 요점은 여기다 — **잠금을 잡지 않아도 장애를 만들 수 있다.**\nInnoDB는 MVCC라 갱신된 행의 옛 버전을 undo에 남겨두고, 그 버전을 볼 수 있는\n트랜잭션이 하나도 남지 않아야 정리(purge)한다. 오래된 트랜잭션 하나가 살아 있으면\n그 시점 이후의 모든 옛 버전이 정리되지 못하고 쌓인다.\n\n그래서 증상이 1-3과 정반대로 보인다.\n\n  1-3 (잠금 경합)        : 세션이 멈춘다. data_lock_waits 에 대기가 보인다.\n  3-2 (undo 폭증)        : 아무도 안 멈춘다. 그런데 전반적으로 느려진다.\n\n잠금 대기가 0인데 느려진다면 '막힌 것'이 아니라 '쌓인 것'을 의심해야 한다.\n\n  SELECT COUNT FROM information_schema.innodb_metrics\n  WHERE NAME = 'trx_rseg_history_len';        -- 정리 못 한 이력의 길이\n\n  SELECT trx_mysql_thread_id, trx_started,\n         TIMESTAMPDIFF(SECOND, trx_started, NOW()) AS age_sec, trx_state\n  FROM information_schema.innodb_trx ORDER BY trx_started;\n\n버전 사슬이 길어지면 같은 질의도 훑어야 할 것이 많아져 느려지고, undo 테이블스페이스가\n자라 디스크를 먹는다. 재시작하면 트랜잭션이 끊겨 잠깐 나아지지만, 같은 배치가 다시\n열리면 같은 길을 간다 — '재시작하면 잠깐 낫는다'가 이 장애의 특징적인 신호다.\n\n범인만 끊어야 하는 이유도 분명하다. 같은 app 계정으로 정상 트래픽이 돌고 있었고,\n계정만 보고 쓸어버리면 멀쩡한 처리까지 롤백된다.\n\n재발 방지: 분석·리포트 세션에 START TRANSACTION READ ONLY 쓰기(읽기 전용\n트랜잭션은 스냅샷을 오래 붙잡지 않도록 최적화된다), 배치에 트랜잭션 최대 수명과\nMAX_EXECUTION_TIME 걸기, trx_rseg_history_len 과 innodb_trx 의 최장 트랜잭션\n경과 시간을 상시 감시(대개 history list length 가 먼저 신호를 준다),\n그리고 오래 열린 트랜잭션을 자동으로 끊는 감시 잡."
 }
