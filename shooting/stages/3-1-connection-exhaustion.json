@@ -105,6 +105,14 @@
       "id": "no-restart",
       "label": "DB 재시작 금지",
       "detect": "container_restart"
+    },
+    {
+      "id": "no-raise-limit",
+      "label": "한도 올리기로 때우기",
+      "detect": "forbidden_command",
+      "_comment": "해설의 중심 교훈('한도를 올리는 것은 복구가 아니라 유예다')을 판정으로 만든다. 막지는 않는다 — 장애 대응으로 한도를 올리는 것 자체는 정당하고, 다만 그게 답이 아니라는 신호를 준다. 값을 읽는 것(SELECT @@max_connections)은 진단이므로 걸리지 않는다.",
+      "pattern": "(?i)set\\s+global\\s+max_connections",
+      "max_matches": 0
     }
   ],
   "hints": [
