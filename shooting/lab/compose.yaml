@@ -22,6 +22,14 @@ services:
       # root로 붙을 수 있다(공용 와이파이에서 특히). 복제는 컨테이너 네트워크의
       # primary:3306으로 붙으므로 이 제한에 영향받지 않는다.
       - "127.0.0.1:3306:3306"
+    tmpfs:
+      # 디스크 풀 스테이지(3-3) 전용의 아주 작은 파일시스템.
+      #
+      # 주 데이터 볼륨을 채우는 방식은 쓰지 않는다 — 시스템 테이블스페이스가 차면
+      # InnoDB가 손상돼 `./shoot down -v` 말고는 되돌릴 방법이 없어질 수 있다.
+      # 여기에 테이블 파일 하나만 올려두면 그 테이블 쓰기만 실패하고 나머지
+      # 데이터베이스는 멀쩡하다. tmpfs라 컨테이너를 다시 띄우면 저절로 비워진다.
+      - /var/lib/dbshoot-audit:size=32m,mode=1777
     volumes:
       - primary-data:/var/lib/mysql
       - ./conf/primary.cnf:/etc/mysql/conf.d/zz-dbshoot.cnf:ro
