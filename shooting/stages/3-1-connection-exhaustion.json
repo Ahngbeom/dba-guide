@@ -7,6 +7,10 @@
   "title": "문이 닫혔다",
   "brief": "앱 서버가 DB에 접속하지 못한다. 로그에 'Too many connections'가 찍히고 새 요청이 전부 실패한다. 이미 붙어 있던 커넥션은 멀쩡하고, CPU도 디스크도 한가하다.",
   "target_seconds": 300,
+  "chapters": [
+    "02-intermediate/03-performance-monitoring.md",
+    "03-advanced/01-advanced-performance-tuning.md"
+  ],
   "connect_hint": "MYSQL_PWD=shoot mysql -h127.0.0.1 -P3306 -udba",
   "vars": {
     "pool": {

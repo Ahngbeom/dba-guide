@@ -7,6 +7,10 @@
   "title": "느린 화면",
   "brief": "'최근 주문' 화면을 배포한 뒤로 조회가 밀리기 시작했다. 에러는 없고 결과도 정확한데 응답이 오지 않는다. 커넥션이 계속 점유되어 앱 스레드가 말라가는 중이다. 데이터가 늘어난 것도 아니다.",
   "target_seconds": 300,
+  "chapters": [
+    "02-intermediate/02-indexing-and-query-tuning.md",
+    "03-advanced/01-advanced-performance-tuning.md"
+  ],
   "connect_hint": "MYSQL_PWD=shoot mysql -h127.0.0.1 -P3306 -udba",
   "vars": {
     "workers": {

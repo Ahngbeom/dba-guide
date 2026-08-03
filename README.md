@@ -172,9 +172,12 @@ DB 접근은 **`c` 키**로 한다 — 게임이 잠시 물러나고 **진짜 `m
 | 🔥 **1-4 멈춘 배포** | `ALTER TABLE`이 멈췄는데 잠금 대기 화면은 비어 있다. 행 잠금이 아니라 **메타데이터 잠금**이다 | [중급 01. 트랜잭션과 잠금](02-intermediate/01-transaction-and-locking.md), [중급 06. 스키마 변경 관리](02-intermediate/06-schema-change-management.md) |
 | 🔧 **2-1 리포팅 서버 붙이기** | 복제가 배선되지 않은 replica를 GTID 기반으로 직접 붙인다. 왜 빈 상태에서 출발해야 하는지도 함께 | [중급 05. 복제 기초](02-intermediate/05-replication-basics.md) |
 | 🔥 **2-2 멈춘 리포트** | 복제 연결은 멀쩡한데 데이터만 뒤처진다. **범인은 replica에 있다** — 읽기 전용은 안전과 다르다 | [중급 05. 복제 기초](02-intermediate/05-replication-basics.md), [고급 02. 고가용성과 장애조치](03-advanced/02-high-availability-and-failover.md) |
+| 🔥 **3-1 문이 닫혔다** | 반환되지 않은 커넥션이 한도를 채워 새 접속이 거부된다. **한도를 올리는 것은 복구가 아니라 유예다** | [중급 03. 성능 모니터링](02-intermediate/03-performance-monitoring.md), [고급 01. 고급 성능 튜닝](03-advanced/01-advanced-performance-tuning.md) |
+| 🔥 **3-2 지워지지 않는 과거** | 아무도 막히지 않았는데 느려진다. **잠금을 하나도 잡지 않은** 트랜잭션이 범인이라, 1-3의 진단 화면은 비어 있다 | [중급 01. 트랜잭션과 잠금](02-intermediate/01-transaction-and-locking.md), [고급 01. 고급 성능 튜닝](03-advanced/01-advanced-performance-tuning.md) |
+| 🔥 **3-3 쌓아둔 것의 값** | 특정 테이블만 쓰기가 실패한다. **`DELETE`로는 공간이 돌아오지 않고**, 가득 찬 뒤에는 재구축조차 자리가 없다 | [초급 06. 기본 모니터링](01-beginner/06-basic-monitoring.md), [중급 03. 성능 모니터링](02-intermediate/03-performance-monitoring.md) |
 | 🔥 **4-1 느린 화면** | 인덱스 없는 조회가 만든 적체. **범인이 없고 `KILL`로도 풀리지 않는** 첫 스테이지 | [중급 02. 인덱싱과 쿼리 튜닝](02-intermediate/02-indexing-and-query-tuning.md), [고급 01. 고급 성능 튜닝](03-advanced/01-advanced-performance-tuning.md) |
 
-> 스테이지는 앞의 것을 푼 사람의 반사를 일부러 배신하도록 배치돼 있다. 1-3에서 배운 `data_lock_waits`는 1-4에서 빈 화면을 돌려주고, 1-3·1-4에서 통했던 `KILL`은 4-1에서 오히려 감점 대상이다.
+> 스테이지는 앞의 것을 푼 사람의 반사를 일부러 배신하도록 배치돼 있다. 1-3에서 배운 `data_lock_waits`는 1-4에서 빈 화면을 돌려주고, 3-2에서는 그 화면이 비어 있다는 사실 자체가 단서가 된다. 1-3·1-4에서 통했던 `KILL`은 4-1에서 오히려 감점 대상이다.
 
 ## 이 학습서를 읽는 법
 

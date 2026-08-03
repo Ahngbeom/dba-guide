@@ -7,6 +7,10 @@
   "title": "지워지지 않는 과거",
   "brief": "새벽부터 조회가 조금씩 느려지고 있다. 디스크 사용량도 계속 오른다. 그런데 막힌 세션은 하나도 없고, 잠금을 기다리는 것도 없고, 앱은 평소와 똑같은 양의 일을 하고 있다. 재시작하면 잠깐 나아졌다가 다시 같은 길을 간다.",
   "target_seconds": 360,
+  "chapters": [
+    "02-intermediate/01-transaction-and-locking.md",
+    "03-advanced/01-advanced-performance-tuning.md"
+  ],
   "connect_hint": "MYSQL_PWD=shoot mysql -h127.0.0.1 -P3306 -udba",
   "vars": {
     "base": {
