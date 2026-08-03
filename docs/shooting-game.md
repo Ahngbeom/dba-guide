@@ -567,6 +567,18 @@ stdout이 tty가 아니면 Python이 블록 버퍼링을 쓰기 때문에, 그�
 |---|---|
 | `container_restart` | 스테이지 시작 시각과 컨테이너 `StartedAt` 비교 |
 | `kill_precision` | `general_log`의 `KILL` 대상이 `culprit` 세션인지. `max_extra_kills`(기본 0) 초과 시 위반 |
+| `forbidden_command` | 플레이어 명령에 `pattern`(정규식)이 걸리는지. `max_matches`(기본 0) 초과 시 위반 |
+
+`kill_precision`은 `culprit`을 **하나도 표시하지 않은 채** 쓸 수도 있다. 그러면
+어떤 `KILL`이든 위반이 되므로 "여기서는 끊는 것 자체가 답이 아니다"를 뜻하게 된다
+(4-1이 그렇게 쓴다).
+
+`forbidden_command`는 **"이 명령으로 때우는 것은 복구가 아니다"** 를 산문이 아니라
+판정으로 만든다. 3-1의 `SET GLOBAL max_connections`가 그 예다 — 막지는 않는다.
+장애 대응으로 한도를 올리는 것 자체는 정당하고, 다만 그게 답이 아니라는 신호를
+줄 뿐이다. 값을 **읽는** 것(`SELECT @@max_connections`)은 진단이므로 걸리지 않게
+패턴을 좁혀야 한다. 패턴은 `./shoot doctor`가 컴파일해 본다 — 깨진 정규식이 판
+도중에 터지면 안 되기 때문이다.
 
 ### 등급
 

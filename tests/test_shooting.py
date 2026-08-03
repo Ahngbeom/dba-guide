@@ -1534,6 +1534,71 @@ class GtidCountTest(unittest.TestCase):
         self.assertGreater(shooting.BINLOG_WARN_GTIDS, 1000)
 
 
+class ForbiddenCommandTest(unittest.TestCase):
+    """'이 명령으로 때우는 것은 복구가 아니다'를 산문이 아니라 판정으로."""
+
+    CONSTRAINT = [{"id": "no-raise-limit", "label": "한도 올리기로 때우기",
+                   "detect": "forbidden_command",
+                   "pattern": r"(?i)set\s+global\s+max_connections"}]
+
+    def _check(self, commands):
+        return shooting.detect_violations(self.CONSTRAINT,
+                                          {"commands": commands})
+
+    def test_clean_play_has_no_violation(self):
+        self.assertEqual(self._check(["SHOW PROCESSLIST", "KILL 12"]), [])
+
+    def test_the_shortcut_is_caught(self):
+        v = self._check(["SET GLOBAL max_connections = 500"])
+        self.assertEqual(len(v), 1)
+        self.assertEqual(v[0]["id"], "no-raise-limit")
+
+    def test_case_and_spacing_do_not_matter(self):
+        for cmd in ["set global max_connections=500",
+                    "SET   GLOBAL   MAX_CONNECTIONS = 500",
+                    "SET GLOBAL max_connections=99;"]:
+            self.assertEqual(len(self._check([cmd])), 1, cmd)
+
+    def test_reading_the_variable_is_not_the_shortcut(self):
+        # 진단하려고 값을 보는 것까지 감점하면 안 된다.
+        self.assertEqual(self._check(["SELECT @@max_connections",
+                                      "SHOW VARIABLES LIKE 'max_connections'"]), [])
+
+    def test_allowance_can_be_raised(self):
+        c = [{**self.CONSTRAINT[0], "max_matches": 1}]
+        cmds = ["SET GLOBAL max_connections = 500"]
+        self.assertEqual(shooting.detect_violations(c, {"commands": cmds}), [])
+        self.assertEqual(
+            len(shooting.detect_violations(c, {"commands": cmds * 2})), 1)
+
+    def test_detail_says_how_many(self):
+        v = self._check(["SET GLOBAL max_connections = 1",
+                         "SET GLOBAL max_connections = 2"])
+        self.assertIn("2", v[0]["detail"])
+
+    def test_missing_commands_is_not_a_crash(self):
+        self.assertEqual(shooting.detect_violations(self.CONSTRAINT, {}), [])
+
+    def test_broken_pattern_is_caught_by_validation(self):
+        errs = shooting.validate_stage({
+            "id": "x", "title": "t",
+            "objectives": [{"id": "o", "type": "state", "query": "SELECT 1",
+                            "expect": {"op": "eq", "value": 1}}],
+            "constraints": [{"id": "bad", "detect": "forbidden_command",
+                             "pattern": "SET GLOBAL ((("}],
+        })
+        self.assertTrue(any("pattern" in e for e in errs), errs)
+
+    def test_pattern_is_required(self):
+        errs = shooting.validate_stage({
+            "id": "x", "title": "t",
+            "objectives": [{"id": "o", "type": "state", "query": "SELECT 1",
+                            "expect": {"op": "eq", "value": 1}}],
+            "constraints": [{"id": "bad", "detect": "forbidden_command"}],
+        })
+        self.assertTrue(any("pattern" in e for e in errs), errs)
+
+
 class LastSeedTest(unittest.TestCase):
     """'그때 그 판을 다시' — 회고와 재도전 사이를 잇는다."""
 

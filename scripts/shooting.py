@@ -65,6 +65,8 @@ PLAYER_PORTS = {"primary": "3306", "replica": "3307"}
 # -S 긴 줄 자르기 / -F 한 화면이면 즉시 종료 / -X 나갈 때 화면 지우지 않기
 CLIENT_PAGER = "less -SFX"
 OBJECTIVE_TYPES = ("state", "quiz")
+CONSTRAINT_DETECTS = ("container_restart", "kill_precision",
+                      "forbidden_command")
 EXPECT_OPS = ("eq", "ne", "lt", "lte", "gt", "gte", "contains", "in")
 # wait_gtid_sync만 sql 없이 동작한다(대기 자체가 단계의 내용이다).
 SETUP_TYPES = ("sql", "session", "sessions", "wait_gtid_sync")
@@ -234,6 +236,21 @@ def count_extra_kills(kill_targets, allowed_pids):
     return sum(1 for target in (kill_targets or ()) if target not in allowed)
 
 
+def count_matching_commands(commands, pattern):
+    """플레이어 명령 중 정규식에 걸리는 개수. 패턴이 없거나 깨졌으면 0.
+
+    판 도중에 터지지 않게 여기서 삼킨다 — 깨진 패턴은 `validate_stage`가 미리
+    잡으므로, 여기까지 온 것은 사람이 손으로 고친 정의뿐이다.
+    """
+    if not pattern:
+        return 0
+    try:
+        rx = re.compile(pattern)
+    except re.error:
+        return 0
+    return sum(1 for cmd in (commands or ()) if cmd and rx.search(cmd))
+
+
 def detect_violations(constraints, ctx):
     """금지 행동 위반 목록. ctx는 감시 결과 묶음(도커/로그와 분리해 테스트 가능)."""
     found = []
@@ -250,6 +267,14 @@ def detect_violations(constraints, ctx):
             if extra > c.get("max_extra_kills", 0):
                 found.append({"id": c.get("id"), "label": label,
                               "detail": f"범인 외 세션 {extra}건을 KILL했습니다"})
+        elif kind == "forbidden_command":
+            # "이 명령으로 때우는 것은 복구가 아니다"를 산문이 아니라 판정으로
+            # 만든다. 막지는 않는다 — 제약은 등급만 깎는다.
+            hits = count_matching_commands(ctx.get("commands"),
+                                           c.get("pattern"))
+            if hits > c.get("max_matches", 0):
+                found.append({"id": c.get("id"), "label": label,
+                              "detail": f"해당 명령을 {hits}회 사용했습니다"})
     return found
 
 
@@ -863,8 +888,19 @@ def validate_stage(stage, repo_root=None):
             errs.extend(_validate_question(oid, obj.get("question")))
 
     for c in stage.get("constraints") or []:
-        if c.get("detect") not in ("container_restart", "kill_precision"):
+        detect = c.get("detect")
+        if detect not in CONSTRAINT_DETECTS:
             errs.append(f"constraint '{c.get('id')}': 알 수 없는 detect")
+        elif detect == "forbidden_command":
+            pattern = c.get("pattern")
+            if not pattern:
+                errs.append(f"constraint '{c.get('id')}': pattern이 필요합니다")
+            else:
+                try:
+                    re.compile(pattern)
+                except re.error as e:
+                    errs.append(f"constraint '{c.get('id')}': "
+                                f"pattern이 정규식으로 읽히지 않습니다 ({e})")
 
     errs.extend(_validate_vars(stage))
     errs.extend(_validate_chapters(stage, repo_root))
@@ -1566,6 +1602,7 @@ def recompute_violations(stage, session, baseline):
         "kill_targets": session.get("kills") or [],
         "allowed_pids": baseline.get("allowed_pids", set()),
         "restarted": session.get("restarted", False),
+        "commands": session.get("commands") or [],
     }
     session["violations"] = detect_violations(stage.get("constraints"), ctx)
     for v in session["violations"]:
