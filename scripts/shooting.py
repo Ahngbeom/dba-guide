@@ -24,6 +24,7 @@
 import argparse
 import json
 import os
+import random
 import re
 import shlex
 import shutil
@@ -333,7 +334,13 @@ def build_note(stage, session, result, today):
             f"- 영향: {fmt_mmss(result['elapsed'])} 동안 대응 "
             + (f"(목표 {fmt_mmss(target)})" if target else "(목표 없음)"),
             f"- 등급: {result['rank']} ({result['score']}/4)",
-            "- 근본 원인: <!-- 직접 채우세요 -->", ""]
+            "- 근본 원인: <!-- 직접 채우세요 -->"]
+    if stage.get("_seed") is not None:
+        # 변주가 있는 스테이지는 시드가 없으면 이 노트가 어떤 판을 말하는지
+        # 나중에 알 수 없다.
+        out.append(f"- 이 판 재현: `./shoot {stage.get('id')} "
+                   f"--seed {stage['_seed']}`")
+    out.append("")
 
     out.append("## 타임라인")
     for e in sorted(session.get("events") or [], key=lambda x: x["at"]):
@@ -599,6 +606,147 @@ def rank_breakdown(elapsed, target_seconds, hints_used, violations,
     return items, score, rank_for(score)
 
 
+# --------------------------------------------------------------------------- #
+# 스테이지 파라미터 변주 (순수 로직)
+# --------------------------------------------------------------------------- #
+# 같은 스테이지를 두 번째로 하면 진단이 아니라 정답 암기가 된다. 그래서 숫자를
+# 흔든다 — 다만 **장애의 성격은 고정한다.** 범인의 종류나 위치가 바뀌면 quiz 정답과
+# hints·debrief가 전부 거짓이 되므로, 그건 변주가 아니라 새 스테이지다.
+#
+# 어려운 부분은 판정 근거가 함께 움직여야 한다는 것이다. 잠긴 구간을 흔들면 목표가
+# 보는 행도 그 안으로 따라와야 한다. 파생값을 `{{lock.from + 250}}` 같은 식으로
+# 쓰려면 표현식 평가기가 필요한데, 표준 라이브러리만 쓰는 이 저장소에 그건 과한
+# 기계장치다. 대신 **관계를 타입으로 선언한다** — `int_in`이 그 역할을 한다.
+VAR_TYPES = ("int", "span", "int_in", "choice")
+# 이름에 제한을 두지 않는다. ASCII만 받으면 `{{잠금구간}}` 같은 이름은 자리로
+# 인식조차 되지 않아, 치환도 안 되고 오류도 안 난 채 원문이 화면에 그대로 뜬다.
+# 한국어 저장소에서 반드시 밟게 되는 함정이라 무엇이든 받아서 이름을 검증한다.
+_PLACEHOLDER_RE = re.compile(r"\{\{\s*([^{}]+?)\s*\}\}")
+
+
+def _is_placeholder(value):
+    """아직 렌더링되지 않은 변수 자리인가.
+
+    `count` 같은 숫자 필드도 변주 대상이라, 검증 시점에는 값이 `{{n}}`일 수 있다.
+    그 자리에서 int()로 읽으려 하면 정의를 못 읽고 죽는다.
+    """
+    return isinstance(value, str) and bool(_PLACEHOLDER_RE.search(value))
+
+
+def make_vars(spec, rng):
+    """`vars` 선언 → 치환값 사전. `span`은 `<이름>.from`/`.to`로 펼쳐진다.
+
+    이름순으로 뽑으므로 JSON 안의 선언 순서를 바꿔도 같은 시드면 같은 결과가
+    나온다 — 그러지 않으면 키 하나 옮긴 것만으로 재현이 깨진다.
+    """
+    spec = spec or {}
+    values, spans = {}, {}
+    # span을 먼저 만들어야 int_in이 참조할 수 있다.
+    for name in sorted(n for n, d in spec.items() if d.get("type") == "span"):
+        decl = spec[name]
+        length = int(decl["length"])
+        start = rng.randint(int(decl["min"]), int(decl["max"]) - length + 1)
+        spans[name] = (start, start + length - 1)
+        values[f"{name}.from"], values[f"{name}.to"] = spans[name]
+    for name in sorted(n for n, d in spec.items() if d.get("type") != "span"):
+        decl = spec[name]
+        kind = decl.get("type")
+        if kind == "int":
+            values[name] = rng.randint(int(decl["min"]), int(decl["max"]))
+        elif kind == "choice":
+            values[name] = rng.choice(list(decl["values"]))
+        elif kind == "int_in":
+            low, high = spans[decl["of"]]
+            values[name] = rng.randint(low, high)
+    return values
+
+
+def _render_value(node, values):
+    """중첩 구조 안의 모든 문자열에서 `{{이름}}`을 바꾼다."""
+    if isinstance(node, str):
+        return _PLACEHOLDER_RE.sub(
+            lambda m: str(values.get(m.group(1), m.group(0))), node)
+    if isinstance(node, list):
+        return [_render_value(v, values) for v in node]
+    if isinstance(node, dict):
+        return {k: _render_value(v, values) for k, v in node.items()}
+    return node
+
+
+def render_stage(stage, rng):
+    """`vars`를 뽑아 스테이지 사본의 `{{...}}`를 실제 값으로 바꾼다.
+
+    `vars`가 없으면 원본을 그대로 돌려준다 — 기존 스테이지는 아무 영향도 받지 않는다.
+    원본은 건드리지 않는다(사본을 만든다).
+
+    `expect.value`가 숫자여야 하는 자리에 문자열이 들어가도 괜찮다. `coerce()`가
+    비교 전에 숫자로 되돌린다.
+    """
+    if not stage.get("vars"):
+        return stage
+    return _render_value(stage, make_vars(stage["vars"], rng))
+
+
+def _var_names(spec):
+    """치환에 쓸 수 있는 이름 집합."""
+    names = set()
+    for name, decl in (spec or {}).items():
+        if decl.get("type") == "span":
+            names |= {f"{name}.from", f"{name}.to"}
+        else:
+            names.add(name)
+    return names
+
+
+def _placeholders_in(node):
+    """중첩 구조 전체에서 참조된 `{{이름}}`을 모은다."""
+    if isinstance(node, str):
+        return set(_PLACEHOLDER_RE.findall(node))
+    if isinstance(node, list):
+        return set().union(*(_placeholders_in(v) for v in node)) if node else set()
+    if isinstance(node, dict):
+        out = set()
+        for key, value in node.items():
+            if key != "vars":          # 선언 자체는 참조가 아니다
+                out |= _placeholders_in(value)
+        return out
+    return set()
+
+
+def _validate_vars(stage):
+    """`vars` 선언과 `{{...}}` 참조의 형식 오류 목록."""
+    spec = stage.get("vars")
+    errs = []
+    for name, decl in (spec or {}).items():
+        if not isinstance(decl, dict):
+            errs.append(f"vars '{name}': 객체가 아닙니다")
+            continue
+        kind = decl.get("type")
+        if kind not in VAR_TYPES:
+            errs.append(f"vars '{name}': 알 수 없는 type '{kind}'")
+            continue
+        if kind == "span":
+            length = int(decl.get("length", 0))
+            if length < 1:
+                errs.append(f"vars '{name}': span의 length는 1 이상이어야 합니다")
+            elif length > int(decl.get("max", 0)) - int(decl.get("min", 0)) + 1:
+                errs.append(f"vars '{name}': span의 length가 min~max 범위보다 큽니다")
+        elif kind == "int_in":
+            of = decl.get("of")
+            if (spec.get(of) or {}).get("type") != "span":
+                errs.append(f"vars '{name}': int_in의 of는 span이어야 합니다 "
+                            f"('{of}')")
+        elif kind == "choice" and not (decl.get("values") or []):
+            errs.append(f"vars '{name}': choice의 values가 비었습니다")
+        elif kind == "int" and int(decl.get("min", 0)) > int(decl.get("max", 0)):
+            errs.append(f"vars '{name}': int의 min이 max보다 큽니다")
+
+    known = _var_names(spec)
+    for ref in sorted(_placeholders_in(stage) - known):
+        errs.append(f"정의되지 않은 변수를 참조합니다: {{{{{ref}}}}}")
+    return errs
+
+
 def validate_stage(stage):
     """스테이지 정의의 형식 오류 목록. 정상이면 빈 리스트.
 
@@ -622,8 +770,12 @@ def validate_stage(stage):
                 errs.append(f"setup: 알 수 없는 source '{step['source']}'")
         elif not step.get("sql"):
             errs.append(f"setup: sql이 비었습니다 ({stype})")
-        if stype == "sessions" and int(step.get("count", 0)) < 1:
-            errs.append("setup: sessions의 count는 1 이상이어야 합니다")
+        if stype == "sessions" and not _is_placeholder(step.get("count")):
+            try:
+                if int(step.get("count", 0)) < 1:
+                    errs.append("setup: sessions의 count는 1 이상이어야 합니다")
+            except (TypeError, ValueError):
+                errs.append("setup: sessions의 count가 숫자가 아닙니다")
 
     objectives = stage.get("objectives") or []
     if not objectives:
@@ -655,6 +807,8 @@ def validate_stage(stage):
     for c in stage.get("constraints") or []:
         if c.get("detect") not in ("container_restart", "kill_precision"):
             errs.append(f"constraint '{c.get('id')}': 알 수 없는 detect")
+
+    errs.extend(_validate_vars(stage))
     return errs
 
 
@@ -1378,19 +1532,27 @@ def stage_rank_badge(stage_id, best):
     return f"[{rank}]" if rank else ""
 
 
+def progress_record(stage, rank, score, elapsed, hints_used, violations):
+    """results.jsonl에 남길 한 줄(순수 함수)."""
+    return {
+        "stage": stage.get("id"),
+        "title": stage.get("title"),
+        "rank": rank,
+        "score": score,
+        "elapsed": round(elapsed, 1),
+        "hints": hints_used,
+        "violations": violations,
+        # 변주가 있는 스테이지는 시드가 있어야 같은 판을 다시 열 수 있다.
+        "seed": stage.get("_seed"),
+        "at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+    }
+
+
 def save_progress(stage, rank, score, elapsed, hints_used, violations):
     try:
         PROGRESS_DIR.mkdir(parents=True, exist_ok=True)
-        rec = {
-            "stage": stage.get("id"),
-            "title": stage.get("title"),
-            "rank": rank,
-            "score": score,
-            "elapsed": round(elapsed, 1),
-            "hints": hints_used,
-            "violations": violations,
-            "at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-        }
+        rec = progress_record(stage, rank, score, elapsed, hints_used,
+                              violations)
         with open(PROGRESS_FILE, "a", encoding="utf-8") as f:
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
     except OSError:
@@ -2283,7 +2445,7 @@ def choose_stage(stages):
     return _choose_stage_line(stages, labels)
 
 
-def cmd_play(target=None, force_line=False):
+def cmd_play(target=None, force_line=False, seed=None):
     stages = discover_stages()
     if not stages:
         print("스테이지가 없습니다. shooting/stages/*.json 을 확인하세요.")
@@ -2307,6 +2469,15 @@ def cmd_play(target=None, force_line=False):
     except (ValueError, json.JSONDecodeError) as e:
         print(f"스테이지 정의 오류: {e}")
         return 1
+
+    # 시드는 스테이지에 `vars`가 있을 때만 의미가 있지만, 없을 때도 기록해 둔다 —
+    # 나중에 그 스테이지에 변주가 생겨도 지난 기록의 형식이 달라지지 않는다.
+    if seed is None:
+        seed = random.randrange(1, 1_000_000)
+    stage = dict(render_stage(stage, random.Random(seed)), _seed=seed)
+    if stage.get("vars"):
+        print(f"이번 판 시드: {seed}  "
+              f"(같은 판을 다시 하려면 --seed {seed})")
 
     if not lab_running():
         print("랩이 내려가 있습니다.")
@@ -2379,6 +2550,8 @@ def main(argv=None):
                         help="curses 대신 라인 모드로 실행")
     parser.add_argument("--keep-volumes", action="store_true",
                         help="down 시 볼륨을 남긴다")
+    parser.add_argument("--seed", type=int,
+                        help="스테이지 변주 시드. 같은 값이면 같은 판이 나온다")
     args = parser.parse_args(argv)
 
     if args.list:
@@ -2416,7 +2589,7 @@ def main(argv=None):
             print(f"랩 정리 실패: {e}")
             return 1
 
-    return cmd_play(stage_arg, force_line=args.line)
+    return cmd_play(stage_arg, force_line=args.line, seed=args.seed)
 
 
 if __name__ == "__main__":
