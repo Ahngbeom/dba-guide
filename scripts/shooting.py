@@ -1215,6 +1215,43 @@ def offer_review_edit(path):
     return True
 
 
+# 2-1·2-2는 replica의 shop을 지우고 primary binlog를 **처음부터 재생해** 다시
+# 만든다. 그래서 시작 비용이 누적 트랜잭션 수에 비례한다. 실측: GTID 148,868에서
+# 2-2의 120초 대기가 시간 초과로 실패했고, 갓 띄운 랩은 22개였다. 그 사이에서
+# 실패 쪽과 넉넉히 떨어진 곳에 경고선을 둔다.
+BINLOG_WARN_GTIDS = 50000
+
+
+def count_gtids(text):
+    """`uuid:1-5:10-12,uuid2:1-3` 형태의 GTID 집합이 담은 트랜잭션 수.
+
+    바이트가 아니라 이 숫자가 재생 비용을 좌우한다. 형태가 아니면 0을 돌려준다 —
+    진단용 표시라 못 읽었다고 죽을 이유가 없다.
+    """
+    total = 0
+    for chunk in (text or "").replace("\n", "").split(","):
+        parts = chunk.strip().split(":")
+        for span in parts[1:]:                 # 첫 조각은 UUID
+            low, _, high = span.partition("-")
+            try:
+                total += int(high) - int(low) + 1 if high else 1
+            except ValueError:
+                continue
+    return total
+
+
+def binlog_backlog(target="primary"):
+    """(GTID 수, binlog 바이트). 조회 실패는 (0, 0) — 진단을 막지 않는다."""
+    try:
+        gtids = count_gtids(first_scalar(
+            mysql(target, "SELECT REPLACE(@@GLOBAL.gtid_executed, '\\n', '')")))
+        rows = mysql(target, "SHOW BINARY LOGS")
+        size = sum(int(r[1]) for r in rows if len(r) > 1 and r[1].isdigit())
+        return gtids, size
+    except (LabError, ValueError):
+        return 0, 0
+
+
 def container_started_at(target):
     """컨테이너 기동 시각(재시작 감지용). 조회 실패 시 None."""
     container = CONTAINERS.get(target, target)
@@ -2382,6 +2419,8 @@ def cmd_notes(stage_id=None):
 
 def cmd_doctor():
     ok = True
+    # 경고는 실패와 구분한다 — 실행을 막지는 않지만 알고 있어야 하는 것들.
+    warn = False
     print("\n사전 점검\n")
 
     # 진단 명령이 진단 대상의 부재로 죽으면 안 된다 — docker가 아예 없는 상태가
@@ -2433,10 +2472,30 @@ def cmd_doctor():
     elif lab_running():
         print(f"  [ok] 랩 상태           기동 중"
               f"{' (healthy)' if lab_healthy() else ' (준비 중)'}")
+        # 복제 스테이지는 binlog를 처음부터 재생하므로 누적이 크면 시작조차
+        # 못 한다. 원인을 모르면 '복제가 고장났나' 하고 엉뚱한 곳을 판다.
+        gtids, size = binlog_backlog()
+        if gtids >= BINLOG_WARN_GTIDS:
+            warn = True
+            print(f"  [주의] binlog 누적     GTID {gtids:,}개 "
+                  f"({size / 1048576:.0f}MB) — 복제 스테이지(2-1·2-2)가 시간 "
+                  f"초과로 실패할 수 있습니다.\n"
+                  f"                         `./shoot down && ./shoot up`으로 "
+                  f"초기화하세요.")
+        elif gtids:
+            print(f"  [ok] binlog 누적       GTID {gtids:,}개 "
+                  f"({size / 1048576:.0f}MB)")
     else:
         print("  [--] 랩 상태           내려가 있음 — `./shoot up`으로 기동")
 
-    print("\n" + ("모두 정상입니다." if ok else "위 항목을 먼저 해결하세요.") + "\n")
+    if not ok:
+        verdict = "위 항목을 먼저 해결하세요."
+    elif warn:
+        # 경고는 종료 코드를 바꾸지 않는다 — 플레이를 막지 않기 때문이다.
+        verdict = "플레이에는 문제가 없지만 위 주의 항목을 확인하세요."
+    else:
+        verdict = "모두 정상입니다."
+    print("\n" + verdict + "\n")
     return 0 if ok else 1
 
 
