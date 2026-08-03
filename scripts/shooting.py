@@ -50,7 +50,11 @@ from tui import (  # noqa: E402
 from exam import grade_mcq, grade_short, shuffle_choices  # noqa: E402
 
 # 컨테이너 이름은 compose.yaml의 container_name과 맞춰야 한다.
-CONTAINERS = {"primary": "dbshoot-primary", "replica": "dbshoot-replica"}
+CONTAINERS = {"primary": "dbshoot-primary", "replica": "dbshoot-replica",
+              "postgres": "dbshoot-postgres"}
+# PostgreSQL 서비스는 compose 프로파일 뒤에 있다 — MySQL 스테이지만 하는 사람이
+# 이미지 내려받기와 기동 시간을 치를 이유가 없다.
+POSTGRES_PROFILE = "postgresql"
 
 POLL_SECONDS = 2.0        # DB 상태 폴링 주기
 
@@ -1384,10 +1388,11 @@ def lab_healthy():
     return _all_containers_are("{{.State.Health.Status}}", "healthy")
 
 
-def lab_up(wait_seconds=300):
+def lab_up(wait_seconds=300, with_postgres=False):
     """랩을 기동하고 healthy 가 될 때까지 기다린다."""
     print("랩을 기동합니다 (최초 실행은 이미지 내려받기 때문에 몇 분 걸릴 수 있습니다)…")
-    p = _compose("up", "-d")
+    args = ["--profile", POSTGRES_PROFILE] if with_postgres else []
+    p = _compose(*args, "up", "-d")
     if p.returncode != 0:
         raise LabError((p.stderr or p.stdout).strip())
     deadline = time.monotonic() + wait_seconds
@@ -1402,7 +1407,9 @@ def lab_up(wait_seconds=300):
 
 
 def lab_down(remove_volumes=True):
-    args = ["down"] + (["-v"] if remove_volumes else [])
+    # 프로파일을 함께 줘야 postgres 컨테이너까지 정리된다 — 빼먹으면 랩을
+    # 내렸는데 하나가 남아 다음 `up`에서 헷갈린다.
+    args = ["--profile", POSTGRES_PROFILE, "down"] + (["-v"] if remove_volumes else [])
     p = _compose(*args)
     if p.returncode != 0:
         raise LabError((p.stderr or p.stdout).strip())
@@ -2537,6 +2544,12 @@ def cmd_doctor():
         print("  [!!] mysql 클라이언트  없음 — 플레이어가 접속할 수단이 필요합니다")
         ok = False
 
+    # PostgreSQL은 아직 선택 사항이다 — 없다고 해서 점검을 실패시키지 않는다.
+    if shutil.which("psql"):
+        print(f"  [ok] psql 클라이언트    {shutil.which('psql')}")
+    else:
+        print("  [--] psql 클라이언트    없음 — PostgreSQL 스테이지를 하려면 필요합니다")
+
     stages = discover_stages()
     bad = 0
     for path in stages:
@@ -2571,6 +2584,15 @@ def cmd_doctor():
                   f"({size / 1048576:.0f}MB)")
     else:
         print("  [--] 랩 상태           내려가 있음 — `./shoot up`으로 기동")
+
+    if has_docker:
+        pg = _docker("inspect", "--format", "{{.State.Status}}",
+                     CONTAINERS["postgres"])
+        if pg.returncode == 0 and pg.stdout.strip() == "running":
+            print("  [ok] PostgreSQL 랩     기동 중")
+        else:
+            print("  [--] PostgreSQL 랩     내려가 있음 — "
+                  "`./shoot up --with-postgresql`")
 
     if not ok:
         verdict = "위 항목을 먼저 해결하세요."
@@ -2837,6 +2859,8 @@ def main(argv=None):
                         help="curses 대신 라인 모드로 실행")
     parser.add_argument("--keep-volumes", action="store_true",
                         help="down 시 볼륨을 남긴다")
+    parser.add_argument("--with-postgresql", action="store_true",
+                        help="up 시 PostgreSQL 랩도 함께 기동한다")
     parser.add_argument("--seed", type=int,
                         help="스테이지 변주 시드. 같은 값이면 같은 판이 나온다")
     args = parser.parse_args(argv)
@@ -2858,7 +2882,7 @@ def main(argv=None):
         return cmd_replay(stage_arg)
     if cmd == "up":
         try:
-            lab_up()
+            lab_up(with_postgres=args.with_postgresql)
             return 0
         except LabError as e:
             print(f"랩 기동 실패: {e}")
