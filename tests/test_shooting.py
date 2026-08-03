@@ -1503,6 +1503,37 @@ class ValidateVarsTest(unittest.TestCase):
         self.assertEqual(errs, [])
 
 
+class GtidCountTest(unittest.TestCase):
+    """복제 스테이지의 시작 비용은 재생할 **트랜잭션 수**에 좌우된다."""
+
+    def test_single_range(self):
+        self.assertEqual(shooting.count_gtids("uuid:1-6843"), 6843)
+
+    def test_single_transaction_has_no_dash(self):
+        self.assertEqual(shooting.count_gtids("uuid:7"), 1)
+
+    def test_multiple_ranges_in_one_uuid(self):
+        self.assertEqual(shooting.count_gtids("uuid:1-5:10-12"), 8)
+
+    def test_multiple_uuids(self):
+        self.assertEqual(
+            shooting.count_gtids("a:1-5,b:1-3"), 8)
+
+    def test_newlines_are_tolerated(self):
+        # 여러 UUID면 gtid_executed가 개행으로 나뉘어 나온다.
+        self.assertEqual(shooting.count_gtids("a:1-5,\nb:1-3"), 8)
+
+    def test_empty_or_garbage_is_zero(self):
+        for text in ("", None, "   ", "not-a-gtid-set"):
+            self.assertEqual(shooting.count_gtids(text), 0, repr(text))
+
+    def test_threshold_is_below_the_measured_failure(self):
+        # 실측: GTID 148,868에서 2-2의 120초 대기가 시간 초과로 실패했다.
+        # 갓 띄운 랩은 22개다. 임계치는 그 사이에서 실패 쪽과 떨어져 있어야 한다.
+        self.assertLess(shooting.BINLOG_WARN_GTIDS, 148868)
+        self.assertGreater(shooting.BINLOG_WARN_GTIDS, 1000)
+
+
 class PlayerLogQueryTest(unittest.TestCase):
     """감시가 무엇을 읽는가. 여기서 놓치면 판정이 조용히 헐거워진다."""
 
