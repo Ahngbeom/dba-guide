@@ -377,7 +377,12 @@ mysql 클라이언트로 평범하게 치는 한 발생하지 않는다.
 | `wait_gtid_sync` | `on`이 `source`를 따라잡을 때까지 대기(아래) |
 
 세션 단계의 필드: `on`(기본 `primary`), `user`/`password`(기본 `app`/`app`),
-`name`(로그 표시용), `count`(`sessions`만), `culprit`.
+`name`(로그 표시용), `count`(`sessions`만), `culprit`, `idle_seconds`.
+
+`idle_seconds`를 주면 `sql`을 실행한 뒤 그만큼 **접속만 붙잡고 논다**
+(`Command=Sleep`). 커넥션 풀 누수를 재현하려면 이게 필요하다 — 기본값인
+`mysql -e`는 질의가 끝나면 바로 끊고, `SELECT SLEEP()`은 `Command=Query`로 잡혀
+진짜 유휴 커넥션과 구분되지 않는다. 3-1이 이걸 쓴다.
 
 `wait_gtid_sync`의 필드: `on`(따라잡아야 하는 쪽), `source`(기본 `primary`),
 `timeout_seconds`(기본 60). 이 단계만 `sql`이 없다 — 대기 자체가 내용이다.
@@ -533,6 +538,19 @@ stdout이 tty가 아니면 Python이 블록 버퍼링을 쓰기 때문에, 그�
 명령이 매 주기 증발한다. 그래서 `NO_BINLOG`(`SET SESSION sql_log_bin = 0`)를
 앞에 붙인다. 반대로 **스테이지의 `sql` 단계는 복제되어야 한다** — 2-2의 센티널
 행이 replica에 도달하는 것이 판정의 근거이기 때문이다.
+
+**커넥션을 고갈시키는 스테이지는 한 자리를 남겨야 한다.** MySQL은
+`CONNECTION_ADMIN`/`SUPER` 계정을 위해 한도 **바깥에 한 자리**를 예약하는데,
+그 한 자리를 플레이어(`dba`)와 엔진(`root@localhost`)이 **함께** 노린다.
+`max_connections`를 전부 채우면 둘 중 하나가 못 들어와 판이 성립하지 않는다.
+3-1은 `max_connections - 1`만 채운다 — 남은 정규 한 자리를 엔진이, 예약 자리를
+플레이어가 쓴다. 실측으로 확인했다(엔진 폴링·플레이어 접속 각 0/12 실패,
+컨테이너 healthy, 새 `app` 접속은 `ERROR 1040`).
+
+한 가지 더: 이 스테이지를 하고 나면 랩의 `max_connections`가 낮아진 채로 남는다.
+`SET GLOBAL`은 컨테이너를 다시 띄우면 사라지고 다른 스테이지는 세션을 12개
+넘게 쓰지 않으므로 실해는 없지만, 새 스테이지가 서버 설정을 바꾼다면 **그 설정을
+되돌리는 것도 자기 `setup`의 몫**이라는 점을 기억해 둘 것(3-1의 첫 단계가 그렇다).
 
 ## 다른 DBMS 추가
 

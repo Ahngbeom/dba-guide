@@ -12,7 +12,9 @@ import contextlib
 import io
 import json
 import re
+import shlex
 import shutil
+import subprocess
 import sys
 import types
 import unittest
@@ -1299,6 +1301,47 @@ class SkippedQuizTest(unittest.TestCase):
             shooting.summarize(self.stage, self.session), "2026-07-31")
         well = note.split("## 잘된 점")[1].split("## 아쉬운 점")[0]
         self.assertNotIn("상황 식별", well)
+
+
+class SpawnCommandTest(unittest.TestCase):
+    """장애 주입 세션을 띄우는 명령 조립."""
+
+    def test_default_runs_sql_and_disconnects(self):
+        cmd = shooting.spawn_command("app", "SELECT 1")
+        self.assertEqual(cmd, ["mysql", "--no-defaults", "-u", "app",
+                               "-e", "SELECT 1"])
+
+    def test_no_defaults_is_always_present(self):
+        # /root/.my.cnf 가 MYSQL_PWD를 이겨 app 인증이 조용히 실패한다.
+        for cmd in (shooting.spawn_command("app", "SELECT 1"),
+                    shooting.spawn_command("app", "SELECT 1", idle_seconds=60)):
+            self.assertIn("--no-defaults", " ".join(cmd))
+
+    def test_idle_session_keeps_the_connection_open(self):
+        cmd = shooting.spawn_command("app", "SELECT 1", idle_seconds=60)
+        self.assertEqual(cmd[:2], ["sh", "-c"])
+        script = cmd[2]
+        # stdin이 열려 있는 동안 클라이언트가 대기하므로 Command=Sleep이 된다.
+        # `mysql -e`는 질의가 끝나면 바로 끊고, SELECT SLEEP()은 Command=Query라
+        # 유휴 커넥션과 구분되지 않는다.
+        self.assertIn("sleep 60", script)
+        self.assertIn("| mysql --no-defaults", script)
+
+    def test_idle_session_quotes_the_sql(self):
+        # 스테이지 SQL에는 따옴표가 흔하다 — 셸에 그대로 넘기면 깨진다.
+        sql = "UPDATE t SET s='IT''S' WHERE x=\"y\""
+        script = shooting.spawn_command("app", sql, idle_seconds=1)[2]
+        # mysql 대신 cat으로 받아 셸이 원문을 그대로 복원하는지 본다.
+        piped = script.split("| mysql")[0] + "| cat"
+        out = subprocess.run(["sh", "-c", piped], capture_output=True,
+                             text=True, timeout=10).stdout
+        self.assertEqual(out, sql + ";\n")
+
+    def test_idle_seconds_must_be_an_integer_in_the_script(self):
+        # 문자열이 그대로 들어가면 셸에서 sleep이 실패한다.
+        script = shooting.spawn_command("app", "SELECT 1",
+                                        idle_seconds="90")[2]
+        self.assertIn("sleep 90", script)
 
 
 class StreamingOutputTest(unittest.TestCase):
