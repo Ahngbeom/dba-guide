@@ -1,0 +1,104 @@
+{
+  "id": "1-1-runaway-query",
+  "world": 1,
+  "stage": 1,
+  "kind": "incident",
+  "dbms": "mysql",
+  "title": "끝나지 않는 리포트",
+  "brief": "월간 정산 리포트를 돌렸는데 30분이 지나도 끝나지 않는다. 그동안 DB의 CPU 사용률이 계속 높게 유지되고, 다른 화면들도 전보다 굼뜨다. 에러는 어디에도 없고, 접속도 정상적으로 된다.",
+  "target_seconds": 240,
+  "chapters": [
+    "01-beginner/06-basic-monitoring.md",
+    "02-intermediate/03-performance-monitoring.md"
+  ],
+  "connect_hint": "MYSQL_PWD=shoot mysql -h127.0.0.1 -P3306 -udba",
+  "vars": {
+    "rows": {
+      "type": "int",
+      "min": 120000,
+      "max": 160000
+    },
+    "metric": {
+      "type": "choice",
+      "values": [
+        "amount",
+        "customer_id"
+      ]
+    }
+  },
+  "setup": [
+    {
+      "type": "session",
+      "on": "primary",
+      "name": "monthly-report",
+      "user": "app",
+      "password": "app",
+      "_comment": "**단일 문장이어야 한다.** 프로시저 루프로 만들면 processlist.time이 내부 문장마다 0으로 초기화돼(실측) 판정도 안 되고, 무엇보다 플레이어가 배울 진단 경로('Time이 큰 줄을 찾아라')가 통째로 깨진다. 실수로 만든 카티전 조인은 폭주 쿼리의 전형이기도 하다. 실측 초당 약 1,200만 조합이라 14만x14만이면 25분을 넘긴다 — 방치로는 끝나지 않는다. 범인이 하나뿐이라 kill_precision은 걸지 않는다: '정확히 누구를'은 1-3에서 배운다.",
+      "sql": "SELECT SUM(a.{{metric}} + b.{{metric}}) FROM shop.orders a JOIN shop.orders b ON b.id <= {{rows}} WHERE a.id <= {{rows}}"
+    }
+  ],
+  "objectives": [
+    {
+      "id": "diagnose-symptom",
+      "type": "quiz",
+      "label": "상황 식별",
+      "trigger": {
+        "after_seconds": 30
+      },
+      "question": {
+        "type": "mcq",
+        "q": "에러도 없고 접속도 되는데 특정 작업이 끝나지 않고 CPU만 높다. 가장 먼저 확인할 것은?",
+        "choices": [
+          "지금 실행 중인 쿼리 목록과 각각의 경과 시간",
+          "디스크 여유 공간",
+          "현재 접속 수와 max_connections",
+          "복제 지연 시간"
+        ],
+        "answer": 0,
+        "explain": "'무엇이 지금 돌고 있는가'는 거의 모든 DB 장애의 첫 질문이다. SHOW PROCESSLIST 는 실행 중인 명령과 경과 시간(Time)을 함께 보여주므로, 오래 붙잡고 있는 것이 있으면 바로 눈에 띈다. 자원 지표(디스크·커넥션·복제)는 그 다음이다 — 지금 증상은 자원이 모자란 것이 아니라 무언가가 오래 돌고 있는 것이다."
+      }
+    },
+    {
+      "id": "diagnose-view",
+      "type": "quiz",
+      "label": "확인 경로 파악",
+      "question": {
+        "type": "short",
+        "q": "지금 실행 중인 명령과 각각의 경과 시간을 보여주는 명령은?",
+        "accept": [
+          "SHOW PROCESSLIST",
+          "SHOW FULL PROCESSLIST",
+          "show processlist",
+          "information_schema.processlist"
+        ],
+        "explain": "SHOW PROCESSLIST 의 Time 이 그 명령이 얼마나 오래 돌고 있는지이고, Info 가 실제 쿼리다. 긴 쿼리는 잘려 보이므로 전문이 필요하면 SHOW FULL PROCESSLIST 를 쓴다. 같은 내용을 SQL로 다루려면 information_schema.processlist 를 조회하면 되고, 그래야 WHERE 로 거를 수 있다."
+      }
+    },
+    {
+      "id": "runaway-stopped",
+      "type": "state",
+      "label": "폭주 쿼리 중단",
+      "on": "primary",
+      "_comment": "app 계정이 5초 넘게 붙잡고 있는 명령이 없어야 한다. 시작 직후에는 아직 5초가 안 됐지만 _wait_for_incident가 최대 30초를 기다리므로 그 사이에 미충족이 된다.",
+      "query": "SELECT COUNT(*) FROM information_schema.processlist WHERE user = 'app' AND command = 'Query' AND time > 5",
+      "expect": {
+        "op": "eq",
+        "value": 0
+      },
+      "hold_seconds": 10
+    }
+  ],
+  "constraints": [
+    {
+      "id": "no-restart",
+      "label": "DB 재시작 금지",
+      "detect": "container_restart"
+    }
+  ],
+  "hints": [
+    "에러가 없다면 '고장'이 아니라 '무언가가 오래 걸리는 중'이다. SHOW PROCESSLIST 를 보고 Time 이 유난히 큰 줄을 찾아라.",
+    "Info 컬럼이 그 세션이 지금 실행 중인 쿼리다. 길면 잘려 보이므로 SHOW FULL PROCESSLIST 로 전문을 확인한다 — 조인 조건이 빠진 질의가 보일 것이다.",
+    "찾았으면 그 세션의 Id 로 KILL 한다. 재시작해도 멈추기는 하지만, 그건 다른 정상 작업까지 함께 끊는 것이다."
+  ],
+  "debrief": "범인은 정산 리포트 배치 하나였다.\n조인 조건이 제대로 걸리지 않아 두 테이블의 거의 모든 조합을 훑고 있었고,\n그동안 CPU를 계속 붙잡아 다른 화면까지 굼뜨게 만들었다.\n\n이 스테이지가 가르치는 것은 하나다 — **'지금 무엇이 돌고 있는가'가 첫 질문이다.**\n에러도 없고 접속도 되는데 느리다면, 자원이 모자란 것이 아니라\n무언가가 오래 붙잡고 있는 것이다.\n\n  SHOW PROCESSLIST;          -- Time 이 큰 줄을 찾는다\n  SHOW FULL PROCESSLIST;     -- Info 가 잘리지 않게\n\n  SELECT id, user, time, LEFT(info, 80)\n  FROM information_schema.processlist\n  WHERE command <> 'Sleep' AND time > 60 ORDER BY time DESC;\n\n찾았으면 그 세션의 Id 로 KILL 한다. 재시작으로도 멈추기는 하지만 그건\n정상 작업까지 함께 끊는 것이라, 장애 대응에서는 마지막 수단이다.\n\n다만 **'오래 걸린다'가 언제나 KILL 로 풀리는 것은 아니다.**\n이 판에서는 범인이 하나였고 그것만 끊으면 끝났지만,\n\n  - 여러 세션이 서로를 기다리고 있다면(1-3) 아무나 끊어서는 안 되고,\n  - 인덱스가 없어서 느린 것이라면(4-1) 끊어도 다음 요청이 똑같이 느리다.\n\n무엇을 끊을지 정하기 전에 '왜 오래 걸리는가'를 먼저 봐야 하는 이유다.\n\n재발 방지: 무거운 배치에 MAX_EXECUTION_TIME(또는 문장 타임아웃) 걸기,\n리포트성 질의를 replica로 보내기, 슬로우 쿼리 로그로 오래 걸리는 질의를\n상시 수집하기, 그리고 배치가 같은 스캔을 반복하지 않도록 결과를 모아 한 번에\n계산하도록 고치기."
+}
