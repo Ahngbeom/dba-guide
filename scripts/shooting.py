@@ -94,7 +94,12 @@ PLAYER_LOG_SQL = (
     "SELECT REPLACE(REPLACE(REPLACE("
     "CONVERT(argument USING utf8mb4), '\\r', ' '), '\\n', ' '), '\\t', ' ') "
     "FROM mysql.general_log "
-    "WHERE user_host LIKE 'dba%' AND command_type = 'Query' "
+    # Execute까지 읽는 이유: 준비된 구문(prepared statement)은 Query 행에
+    # `EXECUTE k USING @pid`만 남기고, **실제로 실행된 문장**은 Execute 행에
+    # 들어간다(`KILL 999999`). Query만 보면 그렇게 친 KILL이 kill_precision에도
+    # 타임라인에도 남지 않는다. 평범한 명령은 Query에만 남으므로 중복되지 않는다.
+    # Prepare 행(`KILL ?`)은 파라미터가 치환되기 전이라 넣지 않는다.
+    "WHERE user_host LIKE 'dba%' AND command_type IN ('Query', 'Execute') "
     # mysql 클라이언트가 접속할 때 자동으로 보내는 배너 질의는 플레이어가 친 게
     # 아니므로 뺀다.
     "AND argument NOT LIKE 'select @@version_comment%' "
