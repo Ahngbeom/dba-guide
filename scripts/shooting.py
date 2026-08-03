@@ -1740,7 +1740,6 @@ def ensure_streaming_output(stream=None):
 
 def run_line(stage, session, baseline):
     """tty가 아니거나 curses가 없을 때의 단순 진행 화면."""
-    ensure_streaming_output()
     print(f"\n== {stage.get('title')} ({stage.get('id')}) ==")
     print(f"\n{stage.get('brief', '')}\n")
     print(f"접속: {_connect_hint(stage)}\n")
@@ -2539,6 +2538,9 @@ def cmd_play(target=None, force_line=False, seed=None):
 
 
 def main(argv=None):
+    # 라인 모드 화면이 아니라 **여기서** 켠다. 장애 주입(setup)이 먼저 돌고,
+    # 복제 스테이지처럼 그게 몇 분 걸리면 그동안의 진행이 통째로 묻힌다.
+    ensure_streaming_output()
     parser = argparse.ArgumentParser(
         prog="shoot", description="DB 장애 대응 게임")
     parser.add_argument("command", nargs="?", default="play",
