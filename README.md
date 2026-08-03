@@ -168,6 +168,7 @@ DB 접근은 **`c` 키**로 한다 — 게임이 잠시 물러나고 **진짜 `m
 
 | 스테이지 | 무엇을 겪는가 | 관련 챕터 |
 |---|---|---|
+| 🔥 **1-1 끝나지 않는 리포트** | 에러도 없고 접속도 되는데 끝나지 않는 배치 하나가 CPU를 붙잡고 있다. **'지금 무엇이 돌고 있는가'가 첫 질문**임을 익히는 자리 | [초급 06. 기본 모니터링](01-beginner/06-basic-monitoring.md), [중급 03. 성능 모니터링](02-intermediate/03-performance-monitoring.md) |
 | 🔥 **1-3 락 지옥** | 커밋되지 않은 트랜잭션이 만든 잠금 대기 사슬. 사슬의 뿌리 하나만 정확히 끊어야 한다 | [중급 01. 트랜잭션과 잠금](02-intermediate/01-transaction-and-locking.md) |
 | 🔥 **1-4 멈춘 배포** | `ALTER TABLE`이 멈췄는데 잠금 대기 화면은 비어 있다. 행 잠금이 아니라 **메타데이터 잠금**이다 | [중급 01. 트랜잭션과 잠금](02-intermediate/01-transaction-and-locking.md), [중급 06. 스키마 변경 관리](02-intermediate/06-schema-change-management.md) |
 | 🔧 **2-1 리포팅 서버 붙이기** | 복제가 배선되지 않은 replica를 GTID 기반으로 직접 붙인다. 왜 빈 상태에서 출발해야 하는지도 함께 | [중급 05. 복제 기초](02-intermediate/05-replication-basics.md) |
