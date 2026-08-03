@@ -10,6 +10,10 @@ CREATE USER IF NOT EXISTS 'dba'@'%' IDENTIFIED BY 'shoot';
 GRANT ALL PRIVILEGES ON shop.* TO 'dba'@'%';
 GRANT SELECT ON performance_schema.* TO 'dba'@'%';
 GRANT SELECT ON sys.* TO 'dba'@'%';
+-- 슬로우 쿼리 로그를 스스로 확인할 수 있어야 한다(4-2). log_output=TABLE이라
+-- 파일이 아니라 이 테이블로 들어간다. general_log는 주지 않는다 — 엔진이
+-- 플레이어를 감시하는 통로이고, 판정 근거를 플레이어가 읽을 이유가 없다.
+GRANT SELECT ON mysql.slow_log TO 'dba'@'%';
 -- PROCESS: 다른 세션까지 SHOW PROCESSLIST로 볼 수 있어야 진단이 가능하다.
 -- CONNECTION_ADMIN: 남의 세션을 KILL 할 수 있어야 복구가 가능하다.
 GRANT PROCESS, REPLICATION CLIENT, REPLICATION SLAVE ON *.* TO 'dba'@'%';

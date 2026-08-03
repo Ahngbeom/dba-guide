@@ -1,0 +1,110 @@
+{
+  "id": "4-2-slow-query-log",
+  "world": 4,
+  "stage": 2,
+  "kind": "build",
+  "dbms": "mysql",
+  "title": "보이지 않는 느림",
+  "brief": "사용자들이 '가끔 느리다'고 한다. 그런데 무엇이 느린지 아무도 모른다. 지난주 장애 때도 '어떤 질의가 오래 걸렸는지' 알아낼 방법이 없어 추측만 했다. 다음 장애 전에 갖춰 두라는 지시가 내려왔다.",
+  "target_seconds": 300,
+  "chapters": [
+    "02-intermediate/03-performance-monitoring.md",
+    "01-beginner/06-basic-monitoring.md"
+  ],
+  "connect_hint": "MYSQL_PWD=shoot mysql -h127.0.0.1 -P3306 -udba",
+  "setup": [
+    {
+      "type": "sql",
+      "on": "primary",
+      "_comment": "구축형이라 장애를 주입하지 않는다 — **준비되지 않은 상태**를 만들 뿐이다. 지난 판에서 플레이어가 켜놨을 수 있으므로 반드시 꺼서 시작하고, 기록도 비워야 지난 판의 행이 이번 판 목표를 시작부터 충족시키지 않는다. mysql.slow_log 조회 권한은 시드에도 넣었지만 여기서 다시 준다 — 그 파일을 고치기 전에 만들어진 랩 볼륨에서도 동작해야 한다(4-1과 같은 관용구). 부하 세션을 두지 않는 이유는 실측 때문이다: **로그를 켜기 전에 접속한 세션은 켠 뒤에도 기록되지 않는다.** 미리 띄워두면 플레이어가 무엇을 해도 그 세션의 질의는 잡히지 않아 목표가 영영 충족되지 않는다.",
+      "sql": "GRANT SELECT ON mysql.slow_log TO 'dba'@'%';\nSET GLOBAL slow_query_log = OFF;\nSET GLOBAL long_query_time = 10;\nTRUNCATE TABLE mysql.slow_log"
+    }
+  ],
+  "objectives": [
+    {
+      "id": "diagnose-goal",
+      "type": "quiz",
+      "label": "무엇을 갖출 것인가",
+      "trigger": {
+        "after_seconds": 30
+      },
+      "question": {
+        "type": "mcq",
+        "q": "'무엇이 느린지 모른다'를 없애려면 무엇을 갖춰야 하는가?",
+        "choices": [
+          "기준 시간을 넘긴 질의를 자동으로 기록해 두는 슬로우 쿼리 로그",
+          "장애가 날 때마다 SHOW PROCESSLIST를 사람이 들여다보기",
+          "복제를 붙여 부하를 나누기",
+          "커넥션 한도를 넉넉히 올려두기"
+        ],
+        "answer": 0,
+        "explain": "SHOW PROCESSLIST 는 **지금 돌고 있는 것**만 보여준다. 이미 끝난 느린 질의는 거기 없으므로, 사람이 마침 그 순간을 보고 있지 않으면 놓친다. 슬로우 쿼리 로그는 기준을 넘긴 질의를 자동으로 남기므로 나중에 돌아볼 수 있다. 장애가 난 뒤에 켜면 그 장애는 이미 기록되지 않았다 — 그래서 **미리** 갖추는 것이다."
+      }
+    },
+    {
+      "id": "diagnose-threshold",
+      "type": "quiz",
+      "label": "임계값 이해",
+      "question": {
+        "type": "short",
+        "q": "몇 초를 넘긴 질의를 느린 질의로 볼 것인지 정하는 시스템 변수 이름은?",
+        "accept": [
+          "long_query_time",
+          "@@long_query_time"
+        ],
+        "explain": "long_query_time 을 넘긴 질의만 기록된다. 기본값 10초는 대부분의 웹 서비스에서 너무 커서 정작 문제가 되는 질의를 놓친다 — 사용자가 '느리다'고 느끼는 것은 보통 1초 안팎이다. 낮출수록 많이 잡히지만 로그도 커지므로, 서비스의 응답 시간 목표에 맞춰 정한다. min_examined_row_limit 이나 log_queries_not_using_indexes 로 무엇을 남길지 더 좁힐 수 있다."
+      }
+    },
+    {
+      "id": "logging-on",
+      "type": "state",
+      "label": "슬로우 쿼리 로그 켜기",
+      "on": "primary",
+      "query": "SELECT @@slow_query_log",
+      "expect": {
+        "op": "eq",
+        "value": 1
+      },
+      "hold_seconds": 5
+    },
+    {
+      "id": "threshold-lowered",
+      "type": "state",
+      "label": "임계값을 실제 질의에 맞추기",
+      "on": "primary",
+      "_comment": "기본값 10초로는 웹 서비스에서 문제가 되는 질의를 하나도 남기지 않는다. 켜기만 해서는 부족하다는 것이 이 목표의 요점이다.",
+      "query": "SELECT @@long_query_time",
+      "expect": {
+        "op": "lte",
+        "value": 2
+      },
+      "hold_seconds": 5
+    },
+    {
+      "id": "actually-capturing",
+      "type": "state",
+      "label": "실제로 잡히는지 확인",
+      "on": "primary",
+      "_comment": "이 목표가 핵심이다 — 설정을 바꾸는 것과 그 설정이 동작하는 것은 다른 일이다. 플레이어가 스스로 느린 질의를 하나 흘려 넣어 확인해야 한다. 여기서 **켠 뒤에 새로 접속해야 잡힌다**는 것도 함께 겪게 된다(실측).",
+      "query": "SELECT COUNT(*) FROM mysql.slow_log",
+      "expect": {
+        "op": "gte",
+        "value": 1
+      },
+      "hold_seconds": 5
+    }
+  ],
+  "constraints": [
+    {
+      "id": "no-restart",
+      "label": "DB 재시작 금지",
+      "detect": "container_restart"
+    }
+  ],
+  "hints": [
+    "지금 돌고 있는 것만 보는 SHOW PROCESSLIST 로는 이미 끝난 느린 질의를 볼 수 없다. 기준을 넘긴 질의를 자동으로 남겨 두는 장치가 따로 있다.",
+    "켜는 것만으로는 부족하다. long_query_time 이 기본 10초라, 그보다 짧게 걸리는 질의는 켜 두어도 하나도 남지 않는다. 앱 질의가 실제로 몇 초 걸리는지 보고 그보다 낮춰라.",
+    "구성을 마쳤으면 느린 질의를 하나 직접 실행해 정말 쌓이는지 확인하라 — SELECT SLEEP(3) 이면 충분하고, SELECT * FROM mysql.slow_log 로 볼 수 있다(랩이 log_output=TABLE 이라 파일 대신 테이블로 들어간다). **켜기 전부터 열려 있던 접속에서는 잡히지 않는다** — 새 접속으로 시도하라."
+  ],
+  "debrief": "이 스테이지에는 범인이 없다. 고칠 것이 아니라 **갖출 것**이 과제였다.\n\n'무엇이 느린지 모른다'는 상태는 장애가 아니라 준비 부족이다.\nSHOW PROCESSLIST 는 **지금 돌고 있는 것**만 보여주므로, 사람이 마침 그 순간을\n보고 있지 않으면 이미 끝난 느린 질의는 어디에도 남지 않는다.\n\n  SET GLOBAL slow_query_log = ON;\n  SET GLOBAL long_query_time = 1;      -- 기본 10초로는 대부분을 놓친다\n\n**켜는 것만으로는 부족하다.** 기본 임계값 10초는 웹 서비스에서 너무 커서,\n정작 사용자가 '느리다'고 느끼는 1초 안팎의 질의를 하나도 남기지 않는다.\n켜 두고도 로그가 비어 있으면 '느린 질의가 없다'가 아니라\n'기준이 잘못됐다'를 의심해야 한다.\n\n그래서 마지막 목표가 '실제로 잡히는지 확인'이었다.\n설정을 바꾸는 것과 그 설정이 동작하는 것은 다른 일이고,\n둘을 가르는 습관이 감시 구성에서는 특히 중요하다.\n\n  SELECT start_time, user_host, query_time, LEFT(sql_text, 60)\n  FROM mysql.slow_log ORDER BY start_time DESC LIMIT 10;\n\n(이 랩은 log_output = TABLE 이라 테이블로 들어간다. 기본값은 FILE 이고,\n그때는 slow_query_log_file 경로의 파일을 보거나 mysqldumpslow 로 요약한다.)\n\n확인하다 한 가지를 더 만났을 것이다 — **켜기 전부터 열려 있던 접속의 질의는\n켠 뒤에도 기록되지 않는다.** 새로 접속해야 잡힌다(이 랩에서 실측했다).\n커넥션 풀은 접속을 오래 붙잡고 재사용하므로, 실무에서 설정을 바꾼 뒤\n'왜 아무것도 안 잡히지' 하는 일이 여기서 온다. 풀이 커넥션을 재활용할 때까지\n기다리거나 재활용을 유도해야 한다.\n\n무엇보다 **장애가 난 뒤에 켜면 그 장애는 이미 기록되지 않았다.**\n이 스테이지가 다른 장애 스테이지들보다 앞에 있어야 하는 이유이고,\n실무에서도 '평온할 때 해두는 일'이 장애 대응의 절반이다.\n\n다음 단계: log_queries_not_using_indexes 로 인덱스를 타지 않는 질의를 함께 잡고\n(4-1이 그런 경우다), min_examined_row_limit 으로 잡음을 줄이고,\nperformance_schema 의 statement digest(events_statements_summary_by_digest)로\n'가장 오래 걸린 한 건'이 아니라 '누적으로 가장 많이 먹는 질의'를 본다."
+}
