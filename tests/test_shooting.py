@@ -1303,6 +1303,36 @@ class SkippedQuizTest(unittest.TestCase):
         self.assertNotIn("상황 식별", well)
 
 
+class DockerDecodingTest(unittest.TestCase):
+    """감시는 플레이어가 친 명령을 그대로 읽어온다 — 바이트를 통제할 수 없다."""
+
+    def test_undecodable_output_does_not_kill_the_run(self):
+        # 실제로 이것 때문에 판이 통째로 죽었다(UnicodeDecodeError).
+        # 글자 하나 깨지는 것이 판을 끝내는 것보다 낫다.
+        captured = {}
+
+        def fake_run(cmd, **kw):
+            captured.update(kw)
+            return types.SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        real = shooting.subprocess.run
+        shooting.subprocess.run = fake_run
+        try:
+            shooting._docker("ps")
+            self.assertEqual(captured.get("errors"), "replace")
+            captured.clear()
+            shooting._compose("ps")
+            self.assertEqual(captured.get("errors"), "replace")
+        finally:
+            shooting.subprocess.run = real
+
+    def test_replacement_actually_survives_bad_bytes(self):
+        # errors="replace"가 실제로 계약대로 동작하는지(디코딩이 예외 대신 대체).
+        self.assertEqual(b"ok\x97".decode("utf-8", errors="replace"), "ok�")
+        with self.assertRaises(UnicodeDecodeError):
+            b"ok\x97".decode("utf-8")
+
+
 class SpawnCommandTest(unittest.TestCase):
     """장애 주입 세션을 띄우는 명령 조립."""
 

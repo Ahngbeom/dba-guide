@@ -717,9 +717,14 @@ def docker_available():
 def _docker(*args, timeout=60):
     # docker가 없으면 FileNotFoundError가 그대로 올라가 트레이스백으로 죽는다.
     # LabError로 승격해 두면 이미 그것을 잡고 있는 호출자들이 그대로 살아난다.
+    #
+    # errors="replace"가 없으면 UTF-8로 못 읽는 바이트 하나에 판이 통째로 죽는다.
+    # 감시는 플레이어가 친 명령을 general_log에서 그대로 읽어오는데, 그 안에
+    # 어떤 바이트가 들어올지 엔진이 통제할 수 없다(멀티바이트 문자가 잘려 들어오는
+    # 경우가 실제로 있었다). 글자 하나 깨지는 것이 판을 끝내는 것보다 낫다.
     try:
         return subprocess.run(["docker", *args], capture_output=True,
-                              text=True, timeout=timeout)
+                              text=True, errors="replace", timeout=timeout)
     except FileNotFoundError:
         raise LabError(DOCKER_MISSING) from None
 
@@ -728,7 +733,7 @@ def _compose(*args, timeout=600):
     try:
         return subprocess.run(
             ["docker", "compose", "-f", str(COMPOSE_FILE), *args],
-            capture_output=True, text=True, timeout=timeout)
+            capture_output=True, text=True, errors="replace", timeout=timeout)
     except FileNotFoundError:
         raise LabError(DOCKER_MISSING) from None
 

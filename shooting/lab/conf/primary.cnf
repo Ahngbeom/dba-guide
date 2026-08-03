@@ -14,3 +14,8 @@ log_output = TABLE
 # 장애가 재현되지 않는다. 기본 50초는 너무 짧다.
 # 넉넉히 잡아야 느리게 푸는 플레이어도 클리어할 수 있다(등급만 내려간다).
 innodb_lock_wait_timeout = 1800
+
+# 디스크 풀 스테이지(3-3)가 쓰는 전용 볼륨. InnoDB는 datadir 밖의 경로에
+# 테이블 파일을 만들려면 그 디렉터리를 미리 알고 있어야 한다(DATA DIRECTORY 절).
+# compose.yaml의 tmpfs 마운트와 짝이다.
+innodb_directories = /var/lib/dbshoot-audit
