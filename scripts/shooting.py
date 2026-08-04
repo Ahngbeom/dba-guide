@@ -61,7 +61,10 @@ POSTGRES_PROFILE = "postgresql"
 # 자기가 어느 DBMS를 상대하는지 알 필요가 없다.
 TARGET_VENDOR = {"primary": "mysql", "replica": "mysql",
                  "postgres": "postgresql"}
-VENDORS = ("mysql", "postgresql")
+# 순서는 가이드 본문의 벤더 순서이자 exam.py 의 VALID_DBMS 순서와 같다 —
+# 두 도구의 선택 화면이 서로 다른 순서를 보이면 같은 저장소처럼 느껴지지 않는다.
+VENDORS = ("postgresql", "mysql")
+DBMS_TITLES = {"postgresql": "PostgreSQL", "mysql": "MySQL"}
 
 POLL_SECONDS = 2.0        # DB 상태 폴링 주기
 
@@ -2656,17 +2659,23 @@ def cmd_list():
         return 1
     best = best_ranks(read_progress())
     print("\n사용 가능한 스테이지")
-    for world, items in group_by_world([(p, _safe_load(p)) for p in stages]):
-        print(f"\n  월드 {world} · {WORLD_TITLES.get(world, '미분류')}")
-        for path, stage in items:
-            if not stage:
-                print(f"    [오류] {path.name}: 정의를 읽을 수 없습니다")
-                continue
-            kind = "🔥" if stage.get("kind") == "incident" else "🔧"
-            badge = stage_rank_badge(stage.get("id"), best)
-            print(f"    {kind} {stage.get('id'):<26} {stage.get('title')}"
-                  f"{'  ' + badge if badge else ''}")
-            print(f"       {stage.get('brief', '')[:66]}")
+    dbms_groups = group_by_dbms([(p, _safe_load(p)) for p in stages])
+    for dbms, entries in dbms_groups:
+        # DBMS가 하나뿐이면 머리글을 붙이지 않는다 — 목록의 모든 줄에 해당하는
+        # 이름은 정보가 아니라 잡음이다.
+        if len(dbms_groups) > 1:
+            print(f"\n[{DBMS_TITLES.get(dbms, dbms)}]")
+        for world, items in group_by_world(entries):
+            print(f"\n  월드 {world} · {WORLD_TITLES.get(world, '미분류')}")
+            for path, stage in items:
+                if not stage:
+                    print(f"    [오류] {path.name}: 정의를 읽을 수 없습니다")
+                    continue
+                kind = "🔥" if stage.get("kind") == "incident" else "🔧"
+                badge = stage_rank_badge(stage.get("id"), best)
+                print(f"    {kind} {stage.get('id'):<26} {stage.get('title')}"
+                      f"{'  ' + badge if badge else ''}")
+                print(f"       {stage.get('brief', '')[:66]}")
     print()
     return 0
 
@@ -2810,6 +2819,40 @@ WORLD_TITLES = {
 UNKNOWN_WORLD = 0            # 정의를 못 읽은 스테이지가 모이는 자리
 
 
+def filter_stages_by_dbms(entries, dbms):
+    """`--dbms`로 좁힌 목록. None이면 그대로 통과시킨다(exam.py와 같은 규칙)."""
+    if not dbms:
+        return entries
+    return [(p, st) for p, st in entries if stage_dbms(st) == dbms]
+
+
+def stage_dbms(stage):
+    """스테이지의 DBMS. 적지 않았으면 MySQL이다(기존 스테이지가 그렇다)."""
+    return (stage or {}).get("dbms") or "mysql"
+
+
+def group_by_dbms(entries):
+    """[(경로, 스테이지|None)] → [(dbms, [(경로, 스테이지)])].
+
+    VENDORS 순서를 따르고, 모르는 값은 뒤에 이름순으로 붙인다. 정의를 못 읽은
+    파일은 MySQL로 묶인다 — 목록에서 빼면 "파일은 있는데 안 보인다"가 된다.
+    """
+    buckets = {}
+    for path, stage in entries:
+        buckets.setdefault(stage_dbms(stage), []).append((path, stage))
+    known = [v for v in VENDORS if v in buckets]
+    return [(v, buckets[v])
+            for v in known + sorted(set(buckets) - set(VENDORS))]
+
+
+def dbms_menu_label(dbms, entries, best):
+    """DBMS 선택 목록의 한 줄. 그 DBMS에서 받은 **최고** 등급을 함께 보여준다."""
+    ranks = [best.get((s or {}).get("id")) for _, s in entries]
+    ranks = [r for r in ranks if r in RANK_ORDER]
+    badge = f"  [{max(ranks, key=RANK_ORDER.index)}]" if ranks else ""
+    return f"{DBMS_TITLES.get(dbms, dbms)}   {len(entries)}개{badge}"
+
+
 def group_by_world(entries):
     """[(경로, 스테이지|None)] → [(월드, [(경로, 스테이지)])] (월드·스테이지 순).
 
@@ -2891,61 +2934,110 @@ def _choose_stage_line(stages, labels):
         print("잘못된 입력입니다.")
 
 
-def _choose_in_worlds_curses(groups, best):
-    """월드 → 스테이지 2단계 선택 → 경로(취소면 None).
+def _pick_world_then_stage(stdscr, curses, groups, best, heading, can_go_up):
+    """월드 → 스테이지 선택 → 경로. 위 단계로 나가면 None.
+
+    `can_go_up`은 안내 문구만 바꾼다 — DBMS 단계가 없을 때 "DBMS 선택으로"라고
+    적으면 있지도 않은 화면을 가리키게 된다.
+    """
+    back = "DBMS 선택으로" if can_go_up else "종료"
+    while True:
+        w_idx = pick(
+            stdscr, curses, heading,
+            [world_menu_label(w, items, best) for w, items in groups],
+            footer=f" ↑↓ 또는 숫자 선택   Enter 들어가기   Esc/q {back} ")
+        if w_idx is None:
+            return None
+        world, items = groups[w_idx]
+        s_idx = pick(
+            stdscr, curses,
+            f"월드 {world} · {WORLD_TITLES.get(world, '미분류')}",
+            [stage_menu_label(p, st, best) for p, st in items],
+            footer=" ↑↓ 또는 숫자 선택   Enter 시작   Esc/q 월드 선택으로 ")
+        if s_idx is not None:
+            return items[s_idx][0]
+        # 스테이지 선택에서 나가면 월드 선택으로 되돌아간다.
+
+
+def _choose_in_worlds_curses(dbms_groups, best):
+    """DBMS → 월드 → 스테이지 3단계 선택 → 경로(취소면 None).
 
     `exam.py`가 DBMS → 티어 → 챕터로 내려가는 것과 같은 방식이다. 단계마다
     `tui.pick()`을 다시 부르면 되므로 공용 선택기는 손대지 않는다.
+
+    **DBMS가 하나뿐이면 그 단계를 건너뛴다.** 선택지가 하나인 화면은 고를 것이
+    없는데 Enter만 요구하는 잡음이다 — 스테이지가 전부 MySQL인 동안에는 화면이
+    지금까지와 똑같이 보인다.
     """
     import curses
+    solo = len(dbms_groups) == 1
 
     def _driver(stdscr):
         _init_screen(curses)
         while True:
-            w_idx = pick(
-                stdscr, curses, "어느 월드부터 할까요",
-                [world_menu_label(w, items, best) for w, items in groups],
-                footer=" ↑↓ 또는 숫자 선택   Enter 들어가기   Esc/q 종료 ")
-            if w_idx is None:
-                return None
-            world, items = groups[w_idx]
-            s_idx = pick(
-                stdscr, curses,
-                f"월드 {world} · {WORLD_TITLES.get(world, '미분류')}",
-                [stage_menu_label(p, s, best) for p, s in items],
-                footer=" ↑↓ 또는 숫자 선택   Enter 시작   Esc/q 월드 선택으로 ")
-            if s_idx is not None:
-                return items[s_idx][0]
-            # 스테이지 선택에서 나가면 월드 선택으로 되돌아간다.
+            if solo:
+                dbms, entries = dbms_groups[0]
+            else:
+                d_idx = pick(
+                    stdscr, curses, "어느 DBMS로 할까요",
+                    [dbms_menu_label(d, e, best) for d, e in dbms_groups],
+                    footer=" ↑↓ 또는 숫자 선택   Enter 들어가기   Esc/q 종료 ")
+                if d_idx is None:
+                    return None
+                dbms, entries = dbms_groups[d_idx]
+            heading = ("어느 월드부터 할까요" if solo else
+                       f"{DBMS_TITLES.get(dbms, dbms)} · 어느 월드부터 할까요")
+            path = _pick_world_then_stage(
+                stdscr, curses, group_by_world(entries), best, heading,
+                can_go_up=not solo)
+            if path is not None:
+                return path
+            if solo:
+                return None      # 위 단계가 없으니 나가면 그대로 종료
+            # DBMS 선택으로 되돌아간다.
 
     return curses.wrapper(_driver)
 
 
-def choose_stage(stages):
-    """스테이지가 여러 개면 골라서 하나를 돌려준다(종료면 None)."""
+def choose_stage(stages, dbms=None):
+    """스테이지가 여러 개면 골라서 하나를 돌려준다(종료면 None).
+
+    `dbms`를 주면 그 DBMS만 남기고 선택 단계도 건너뛴다 — `exam.py`의 `--dbms`가
+    해당 선택 화면을 건너뛰는 것과 같다.
+    """
     if len(stages) == 1:
         return stages[0]
     best = best_ranks(read_progress())
-    groups = group_by_world([(p, _safe_load(p)) for p in stages])
+    entries = filter_stages_by_dbms([(p, _safe_load(p)) for p in stages], dbms)
+    if not entries:
+        print(f"{DBMS_TITLES.get(dbms, dbms)} 스테이지가 아직 없습니다.")
+        return None
+    if len(entries) == 1:
+        return entries[0][0]
+    dbms_groups = group_by_dbms(entries)
 
     if sys.stdin.isatty() and sys.stdout.isatty():
         try:
-            return _choose_in_worlds_curses(groups, best)
+            return _choose_in_worlds_curses(dbms_groups, best)
         except Exception:
             # 조용히 넘기지 않는다 — 이 폴백이 화면 코드의 버그를 감춘 적이 있다.
             traceback.print_exc()
             print("\n선택 화면에서 오류가 발생해 목록 입력으로 전환합니다.\n")
 
-    # 평문 폴백은 한 단계로 둔다 — 번호를 두 번 묻는 것이 더 번거롭다.
+    # 평문 폴백은 한 단계로 둔다 — 번호를 세 번 묻는 것이 더 번거롭다.
+    solo = len(dbms_groups) == 1
     flat, labels = [], []
-    for world, items in groups:
-        for path, stage in items:
-            flat.append(path)
-            labels.append(f"[월드 {world}] {stage_menu_label(path, stage, best)}")
+    for dbms, entries in dbms_groups:
+        for world, items in group_by_world(entries):
+            for path, stage in items:
+                flat.append(path)
+                tag = "" if solo else f"[{DBMS_TITLES.get(dbms, dbms)}] "
+                labels.append(f"{tag}[월드 {world}] "
+                              f"{stage_menu_label(path, stage, best)}")
     return _choose_stage_line(flat, labels)
 
 
-def cmd_play(target=None, force_line=False, seed=None):
+def cmd_play(target=None, force_line=False, seed=None, dbms=None):
     stages = discover_stages()
     if not stages:
         print("스테이지가 없습니다. shooting/stages/*.json 을 확인하세요.")
@@ -2960,7 +3052,7 @@ def cmd_play(target=None, force_line=False, seed=None):
                 return 1
             path = matches[0]
     else:
-        path = choose_stage(stages)
+        path = choose_stage(stages, dbms)
         if path is None:
             return 0
 
@@ -3063,6 +3155,8 @@ def main(argv=None):
                         help="down 시 볼륨을 남긴다")
     parser.add_argument("--with-postgresql", action="store_true",
                         help="up 시 PostgreSQL 랩도 함께 기동한다")
+    parser.add_argument("--dbms", choices=VENDORS,
+                        help="해당 DBMS 스테이지만. 선택 화면을 건너뛴다")
     parser.add_argument("--seed", type=int,
                         help="스테이지 변주 시드. 같은 값이면 같은 판이 나온다")
     args = parser.parse_args(argv)
@@ -3104,7 +3198,8 @@ def main(argv=None):
             print(f"랩 정리 실패: {e}")
             return 1
 
-    return cmd_play(stage_arg, force_line=args.line, seed=args.seed)
+    return cmd_play(stage_arg, force_line=args.line, seed=args.seed,
+                    dbms=args.dbms)
 
 
 if __name__ == "__main__":
