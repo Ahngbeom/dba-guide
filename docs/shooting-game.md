@@ -877,6 +877,49 @@ DBMS가 하나뿐이면 그 단계를 건너뛰므로, 스테이지가 전부 My
 `dbms`를 적지 않은 스테이지는 MySQL로 본다 — 기존 스테이지가 그렇게 쓰여 있고,
 그게 PostgreSQL로 새면 없는 랩에 붙으러 간다.
 
-### 남은 단계
+### 첫 PostgreSQL 스테이지가 무엇을 골랐나
 
-첫 PostgreSQL 스테이지.
+`pg-1-1-idle-in-transaction`. MySQL 스테이지를 번역하지 않고 **PostgreSQL에만
+있는 것**을 골랐다 — `idle in transaction`, 그리고 `pg_cancel_backend`가
+그 상태에 무력하다는 사실이다.
+
+실측으로 확인한 교육 요점:
+
+```
+SELECT pg_cancel_backend(2108);   -- t 를 돌려준다
+                                  -- 세션은 여전히 idle in transaction, 대기 3건 그대로
+SELECT pg_terminate_backend(2108);  -- 이제 끊긴다. 대기 0, 결제 커밋
+```
+
+반환값 `t`는 '해결됐다'가 아니라 '신호를 보냈다'는 뜻이다. 돌고 있는 질의가
+없으면 취소할 것도 없다. MySQL의 `KILL QUERY` / `KILL CONNECTION` 이 같은
+자리의 구분이지만, MySQL 스테이지에서는 범인이 늘 무언가를 **하고 있어서**
+이 차이가 드러나지 않는다.
+
+**스테이지 id에 `pg-` 접두사를 붙였다.** 월드 번호는 벤더별로 다시 시작하므로
+(PostgreSQL 월드 1의 첫 스테이지도 `1-1`이다) 접두사가 없으면 진행 기록과
+노트 디렉터리에서 MySQL 쪽과 구분되지 않는다.
+
+### 피해자 세션은 서로 막지 않게 해야 한다
+
+처음에는 결제 세션들이 전부 같은 행을 노리게 썼다. 그랬더니 **서로도 막아서**
+`pg_blocking_pids()`가 범인 하나가 아니라 사슬 전체를 지목했다(실측: 3개 세션에
+지목된 범인이 6개). 잠금 사슬 자체는 현실적이지만, `kill_precision`이 걸린
+판에서는 **도구가 범인이라고 알려준 세션을 끊었다가 감점되는** 부당한 함정이
+된다. 세션마다 다른 행을 고르게 하면 지목이 하나로 좁혀진다.
+
+일반화하면: 판정이 "정확히 하나를 골라라"라고 요구할 때는, 플레이어가 쓸 진단
+도구가 실제로 **하나만 가리키는지** 확인해야 한다.
+
+### PostgreSQL 스테이지를 쓸 때
+
+- `on`은 생략해도 된다. `dbms: "postgresql"` 이면 `normalize_targets()`가
+  `postgres`로 채운다.
+- **범인 세션은 `idle_seconds`가 `target_seconds`보다 길어야 한다.** 짧으면
+  판이 끝나기 전에 저절로 풀려 플레이어가 아무것도 하지 않았는데 클리어된다.
+- `BEGIN; UPDATE ...` 를 `idle_seconds`와 함께 주면 `idle in transaction`이
+  된다 — psql이 stdin을 기다리는 동안 트랜잭션이 열린 채로 남는다.
+- 세션을 끊는 스테이지라면 **`forbidden_command`로 쓸기를 함께 막아라.**
+  `kill_precision`은 pid가 적히지 않은 종료를 볼 수 없다(위 "판정의 두 구멍").
+  `(?i)pg_terminate_backend\s*\(\s*(?!\d)` 가 숫자가 아닌 인자만 걸러내므로
+  정확한 복구는 통과한다 — 패턴은 **양방향으로** 확인해야 한다.
