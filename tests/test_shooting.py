@@ -2489,3 +2489,91 @@ class PostgresStageTest(unittest.TestCase):
             self.assertTrue(
                 any(step.get("culprit") for step in st.get("setup") or []),
                 st["id"])
+
+
+class StateObjectiveHoldTest(unittest.TestCase):
+    """state 목표는 전부 hold_seconds 를 가져야 한다(저장소 전체 불변식)."""
+
+    def test_every_state_objective_holds(self):
+        for path in shooting.discover_stages():
+            stage = shooting.load_stage(path)
+            for o in stage["objectives"]:
+                if o["type"] == "state":
+                    self.assertGreater(
+                        o.get("hold_seconds", 0), 0,
+                        f"{stage['id']}/{o['id']}: 순간적인 빈틈에 클리어된다")
+
+
+class ImplicitConversionStageTest(unittest.TestCase):
+    """4-3. 실측이 두 번 설계를 고친 스테이지라 그 결론을 고정한다."""
+
+    def setUp(self):
+        paths = [p for p in shooting.discover_stages()
+                 if p.stem == "4-3-implicit-conversion"]
+        self.assertTrue(paths, "4-3 스테이지가 없습니다")
+        self.stage = shooting.load_stage(paths[0])
+        self.setup_sql = "\n".join(st.get("sql") or ""
+                                   for st in self.stage["setup"])
+
+    def _objective(self, oid):
+        return next(o for o in self.stage["objectives"] if o["id"] == oid)
+
+    def test_load_reads_a_column_outside_the_index(self):
+        """COUNT(*)로 두면 커버링 인덱스 스캔이 되어 key=NULL 지문이 안 나온다."""
+        self.assertIn("MAX(name)", self.setup_sql)
+        self.assertNotIn("COUNT(*) INTO", self.setup_sql)
+
+    def test_judged_query_matches_what_the_player_will_explain(self):
+        """판정이 보는 질의와 플레이어가 EXPLAIN 할 질의가 다르면 스테이지가 거짓말을 한다."""
+        judged = self._objective("plan-uses-index")["query"]
+        self.assertIn("MAX(name) FROM shop.member WHERE code =", judged)
+        self.assertIn("MAX(name) INTO @hit FROM shop.member WHERE code =",
+                      self.setup_sql)
+
+    def test_plan_is_judged_by_outcome_not_by_a_specific_fix(self):
+        """컬럼 타입을 확인하면 한 가지 복구 경로만 인정하게 된다."""
+        obj = self._objective("plan-uses-index")
+        self.assertIn("EXPLAIN FORMAT=JSON", obj["query"])
+        self.assertEqual(obj["expect"]["op"], "contains")
+        self.assertIn("access_type", obj["expect"]["value"])
+
+    def test_recovery_is_measured_on_a_recent_window(self):
+        """누적 평균으로 보면 장애 구간이 영원히 섞여 회복이 드러나지 않는다."""
+        q = self._objective("lookups-fast-again")["query"]
+        self.assertIn("INTERVAL", q)
+        self.assertIn("COALESCE", q)   # 부하가 끝나면 저절로 충족되면 안 된다
+
+    def test_setup_restores_the_broken_column_type(self):
+        """지난 판에서 플레이어가 고쳐놨다면 그대로는 장애가 걸리지 않는다."""
+        self.assertIn("MODIFY code VARCHAR(20)", self.setup_sql)
+
+    def test_setup_only_fills_the_table_when_empty(self):
+        """80만 행을 판마다 다시 적재하면 시작이 느려진다."""
+        self.assertIn("CREATE TABLE IF NOT EXISTS shop.member", self.setup_sql)
+        self.assertIn("IF (SELECT COUNT(*) FROM shop.member) = 0 THEN",
+                      self.setup_sql)
+
+    def test_load_procedure_runs_as_invoker(self):
+        """DEFINER면 processlist.user 가 root 로 보여 세션 추적이 어긋난다."""
+        self.assertIn("SQL SECURITY INVOKER", self.setup_sql)
+
+    def test_slow_log_is_left_on_but_useless(self):
+        """비어 있는 것을 보여주는 것이 이 판의 첫 함정이다."""
+        self.assertIn("SET GLOBAL slow_query_log = ON", self.setup_sql)
+        self.assertIn("SET GLOBAL long_query_time = 1", self.setup_sql)
+
+    def test_any_kill_is_a_violation(self):
+        """범인 세션이 없으므로 조회 세션을 끊는 것은 전부 위반이다."""
+        detects = {c["detect"] for c in self.stage["constraints"]}
+        self.assertIn("kill_precision", detects)
+        self.assertFalse(any(st.get("culprit") for st in self.stage["setup"]))
+
+    def test_lookup_code_always_exists_in_the_seeded_range(self):
+        """존재하지 않는 코드를 고르면 플레이어가 보는 화면이 달라진다.
+
+        시드가 만드는 코드는 100000 + (a*1000 + b), a<=800, b<=1000 이라
+        101001..901000 이 빈틈없이 채워진다.
+        """
+        spec = self.stage["vars"]["code"]
+        self.assertGreaterEqual(spec["min"], 101001)
+        self.assertLessEqual(spec["max"], 901000)

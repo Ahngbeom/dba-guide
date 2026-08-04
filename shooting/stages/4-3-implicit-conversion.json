@@ -1,0 +1,139 @@
+{
+  "id": "4-3-implicit-conversion",
+  "world": 4,
+  "stage": 3,
+  "kind": "incident",
+  "dbms": "mysql",
+  "title": "있는데 쓰지 않는다",
+  "brief": "회원 조회 화면이 어제 배포 뒤로 느려졌다. CPU는 계속 100%인데 슬로우 쿼리 로그에는 아무것도 잡히지 않는다. 인덱스는 분명히 있고 개발팀은 쿼리를 바꾼 적이 없다고 한다. 바뀐 것은 조회 파라미터를 문자열 대신 숫자로 넘기게 한 것뿐인데, 그건 성능과 상관없어 보인다.",
+  "target_seconds": 420,
+  "chapters": [
+    "02-intermediate/02-indexing-and-query-tuning.md",
+    "03-advanced/01-advanced-performance-tuning.md"
+  ],
+  "connect_hint": "MYSQL_PWD=shoot mysql -h127.0.0.1 -P3306 -udba",
+  "vars": {
+    "code": {
+      "type": "int",
+      "min": 101001,
+      "max": 901000
+    },
+    "lookups": {
+      "type": "int",
+      "min": 9,
+      "max": 13
+    }
+  },
+  "setup": [
+    {
+      "type": "sql",
+      "_comment": "회원 테이블을 준비한다. 비어 있을 때만 채우는 이유는 80만 행 적재가 4초쯤 걸려서, 판을 다시 할 때마다 그 비용을 치를 이유가 없기 때문이다. 랩 볼륨이 이 스테이지보다 먼저 만들어졌을 수도 있으므로 시드에 넣지 않고 여기서 만든다(4-1·4-2의 GRANT와 같은 관용구). DROP이 먼저라 DELIMITER가 맨 앞에 오지 않는다.",
+      "sql": "DROP PROCEDURE IF EXISTS shop.member_seed;\nDELIMITER //\nCREATE PROCEDURE shop.member_seed()\nBEGIN\n  CREATE TABLE IF NOT EXISTS shop.member (\n    id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,\n    code VARCHAR(20) NOT NULL,\n    name VARCHAR(40) NOT NULL,\n    memo VARCHAR(120) NOT NULL DEFAULT '',\n    KEY idx_code (code)\n  ) ENGINE=InnoDB;\n  IF (SELECT COUNT(*) FROM shop.member) = 0 THEN\n    INSERT INTO shop.member (code, name, memo)\n    SELECT 100000 + (a.id * 1000 + b.id), CONCAT('member-', a.id, '-', b.id), REPEAT('x', 100)\n    FROM (SELECT id FROM shop.orders LIMIT 800) a\n    JOIN (SELECT id FROM shop.orders LIMIT 1000) b;\n  END IF;\nEND//\nDELIMITER ;\nCALL shop.member_seed()"
+    },
+    {
+      "type": "sql",
+      "_comment": "장애 상태를 만든다. code를 반드시 VARCHAR로 되돌려야 한다 — 지난 판에서 플레이어가 BIGINT로 고쳐놨다면 그대로 두면 장애가 걸리지 않는다. 슬로우 쿼리 로그를 켜고 임계값을 1초로 두는 것은 **비어 있는 것을 보여주기 위해서다**: 이 스테이지의 조회는 한 번에 0.1초쯤이라 임계값에 걸리지 않는다. 4-2에서 갖춘 도구가 여기서는 아무것도 알려주지 않는다는 것이 이 판의 첫 함정이다.",
+      "sql": "ALTER TABLE shop.member MODIFY code VARCHAR(20) NOT NULL;\nCREATE TABLE IF NOT EXISTS shop.lookup_log (id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY, at DATETIME(6) NOT NULL, ms DOUBLE NOT NULL, KEY idx_at (at)) ENGINE=InnoDB;\nTRUNCATE TABLE shop.lookup_log;\nGRANT SELECT ON mysql.slow_log TO 'dba'@'%';\nSET GLOBAL slow_query_log = ON;\nSET GLOBAL long_query_time = 1;\nTRUNCATE TABLE mysql.slow_log"
+    },
+    {
+      "type": "sql",
+      "_comment": "조회 루프. 자기 소요 시간을 lookup_log에 남겨 두는 것이 핵심이다 — '고쳤다'를 계획만이 아니라 **실제로 빨라졌는가**로도 판정할 수 있게 된다. SQL SECURITY INVOKER 라야 app 세션이 processlist에서 app으로 보인다(DEFINER면 root로 보여 세션 추적과 정리가 모두 어긋난다). 조회가 name을 읽는 것도 의도한 것이다 — COUNT(*)로 두면 idx_code만으로 답이 나와 **커버링 인덱스 풀스캔**(type=index, key=idx_code)이 되고, 이 판이 가르치려는 지문인 key=NULL이 나오지 않는다(실측).",
+      "sql": "DROP PROCEDURE IF EXISTS shop.member_lookup;\nDELIMITER //\nCREATE PROCEDURE shop.member_lookup(n INT) SQL SECURITY INVOKER\nBEGIN\n  DECLARE i INT DEFAULT 0;\n  DECLARE t0 DATETIME(6);\n  WHILE i < n DO\n    SET t0 = NOW(6);\n    SELECT MAX(name) INTO @hit FROM shop.member WHERE code = {{code}};\n    INSERT INTO shop.lookup_log (at, ms) VALUES (NOW(6), TIMESTAMPDIFF(MICROSECOND, t0, NOW(6)) / 1000);\n    DO SLEEP(0.05);\n    SET i = i + 1;\n  END WHILE;\nEND//\nDELIMITER ;\nGRANT EXECUTE ON shop.* TO 'app'@'%'"
+    },
+    {
+      "type": "sessions",
+      "name": "member-lookup",
+      "user": "app",
+      "password": "app",
+      "count": "{{lookups}}",
+      "_comment": "회원 조회 트래픽. 범인 세션이 따로 없다 — 이 세션들은 죄가 없고, 끊어도 잠시 뒤 앱이 다시 붙일 뿐이다. 반복 횟수는 target_seconds를 넘기도록 넉넉히 잡는다(회당 약 0.15초).",
+      "sql": "CALL shop.member_lookup(4000)"
+    }
+  ],
+  "objectives": [
+    {
+      "id": "diagnose-symptom",
+      "type": "quiz",
+      "label": "상황 식별",
+      "trigger": {
+        "after_seconds": 50
+      },
+      "question": {
+        "type": "mcq",
+        "q": "CPU는 100%인데 슬로우 쿼리 로그는 비어 있다. 가장 정확한 설명은?",
+        "choices": [
+          "한 번에 오래 걸리는 질의가 아니라, 짧지만 매우 자주 도는 질의가 자원을 다 쓰고 있다",
+          "슬로우 쿼리 로그 설정이 잘못되어 기록되지 않고 있다",
+          "잠금 대기 때문에 세션들이 멈춰 있다",
+          "디스크가 느려 읽기가 지연되고 있다"
+        ],
+        "answer": 0,
+        "explain": "슬로우 쿼리 로그는 `long_query_time`을 **넘긴 한 건**만 남긴다. 한 번에 0.1초짜리 질의는 임계값이 1초면 하나도 남지 않지만, 초당 수십 번씩 돌면 CPU를 통째로 먹는다. '가장 오래 걸린 한 건'과 '누적으로 가장 많이 먹는 질의'는 다른 질문이고, 이 판은 후자다. 잠금 대기라면 세션이 멈춰 있어 CPU는 오히려 한가하다 — 자원이 타는 것과 기다리는 것은 정반대 증상이다."
+      }
+    },
+    {
+      "id": "diagnose-cause",
+      "type": "quiz",
+      "label": "원인 이름 붙이기",
+      "question": {
+        "type": "short",
+        "q": "컬럼 타입과 비교 값의 타입이 달라 인덱스를 타지 못하게 되는 현상을 무엇이라 부르는가? (한글 또는 영문)",
+        "accept": [
+          "암묵적 형변환",
+          "묵시적 형변환",
+          "암시적 형변환",
+          "형변환",
+          "타입 변환",
+          "implicit conversion",
+          "implicit type conversion",
+          "implicit cast",
+          "type conversion"
+        ],
+        "explain": "문자열 컬럼을 숫자와 비교하면 MySQL은 **컬럼 쪽**을 숫자로 바꿔서 비교한다. 컬럼에 함수를 씌운 것과 같아져서 인덱스를 쓸 수 없다. 반대 방향(숫자 컬럼 ↔ 문자열 값)은 값 쪽만 바뀌므로 인덱스가 살아 있다 — 그래서 같은 실수처럼 보여도 한쪽만 장애가 된다. EXPLAIN 에서 possible_keys 에는 인덱스가 보이는데 key 가 NULL 인 것이 이 현상의 지문이다."
+      }
+    },
+    {
+      "id": "plan-uses-index",
+      "type": "state",
+      "label": "실행 계획이 인덱스를 타게",
+      "_comment": "고치는 **방법**이 아니라 **결과**로 판정한다. 계획이 ref로 바뀌면 어떤 경로로 고쳤든 통과한다. 장애 상태에서는 access_type이 ALL이라 시작 시점에는 충족되지 않는다.",
+      "query": "EXPLAIN FORMAT=JSON SELECT MAX(name) FROM shop.member WHERE code = {{code}}",
+      "expect": {
+        "op": "contains",
+        "value": "\"access_type\": \"ref\""
+      },
+      "hold_seconds": 5
+    },
+    {
+      "id": "lookups-fast-again",
+      "type": "state",
+      "label": "조회가 실제로 빨라졌는가",
+      "_comment": "계획만 보고 끝내지 않는다. 돌고 있는 조회가 스스로 잰 소요 시간을 최근 구간에서만 본다 — 누적 평균으로 보면 장애 구간이 영원히 섞여 들어와 회복이 드러나지 않는다. 부하가 멈추면 최근 행이 없어 999가 되어 충족되지 않으므로, 반복 횟수는 판보다 길어야 한다.",
+      "query": "SELECT COALESCE(AVG(ms), 999) FROM shop.lookup_log WHERE at > NOW(6) - INTERVAL 15 SECOND",
+      "expect": {
+        "op": "lte",
+        "value": 10
+      },
+      "hold_seconds": 10
+    }
+  ],
+  "constraints": [
+    {
+      "id": "no-restart",
+      "label": "DB 재시작 금지",
+      "detect": "container_restart"
+    },
+    {
+      "id": "no-kill",
+      "label": "조회 세션 KILL",
+      "detect": "kill_precision",
+      "_comment": "4-1과 같은 자리다. 범인 세션이 없으므로 어떤 KILL도 위반이다 — 조회 세션은 죄가 없고, 끊어도 원인은 그대로 남아 앱이 다시 붙는 순간 되돌아온다."
+    }
+  ],
+  "hints": [
+    "슬로우 쿼리 로그가 비어 있다고 해서 느린 질의가 없는 것은 아니다. 한 번은 짧지만 아주 여러 번 도는 질의는 임계값에 걸리지 않는다. 지금 무엇이 돌고 있는지부터 보라 — SHOW PROCESSLIST 는 프로시저 안에서 실행 중인 문장까지 보여준다.",
+    "그 조회를 그대로 EXPLAIN 해 보라. possible_keys 에는 인덱스가 있는데 key 가 NULL 이고 type 이 ALL 이라면, **쓸 수 있었는데 쓰지 않은** 것이다. 인덱스를 하나 더 만드는 것으로는 아무것도 달라지지 않는다.",
+    "조회 조건의 값과 컬럼의 타입을 나란히 놓아 보라(SHOW CREATE TABLE shop.member). 문자열 컬럼을 숫자와 비교하면 MySQL은 컬럼 쪽을 숫자로 바꾸고, 그 순간 인덱스는 쓸 수 없다. 앱을 지금 고칠 수 없다면 컬럼을 값에 맞추는 방법이 있다."
+  ],
+  "debrief": "범인은 **암묵적 형변환**이었다.\n\n  SHOW CREATE TABLE shop.member;      -- code VARCHAR(20), KEY idx_code (code)\n  SELECT ... WHERE code = 100501;     -- 앱이 숫자로 넘기기 시작했다\n\n문자열 컬럼을 숫자와 비교하면 MySQL은 **컬럼 쪽**을 숫자로 바꿔서 비교한다.\n컬럼에 함수를 씌운 것과 같아지므로 인덱스는 쓸 수 없게 된다.\n\n  EXPLAIN SELECT MAX(name) FROM shop.member WHERE code = 100501;\n  -- type: ALL   possible_keys: idx_code   key: NULL   rows: 792199\n\n**possible_keys 에는 있는데 key 가 NULL** — 이것이 이 현상의 지문이다.\n'인덱스가 없다'가 아니라 '쓸 수 있었는데 쓰지 않았다'는 뜻이고,\n두 상태는 EXPLAIN 을 보기 전에는 구분되지 않는다.\n\n방향이 중요하다. 반대 방향(숫자 컬럼 ↔ 문자열 값)은 **값 쪽만** 바뀌므로\n인덱스가 살아 있다. 같은 실수처럼 보여도 한쪽만 장애가 된다.\n\n복구는 컬럼을 값에 맞추는 것이었다.\n\n  ALTER TABLE shop.member MODIFY code BIGINT NOT NULL;\n\n다만 **이건 응급 조치에 가깝다.** 진짜 원인은 앱이 타입을 바꿔 보내기 시작한\n것이고, 정상적인 순서는 앱을 되돌리는 것이다. 코드가 숫자만 담는다는 보장이\n없다면(앞자리 0이 있는 코드, 하이픈이 섞인 코드) BIGINT 로 바꾸는 순간\n데이터가 망가진다. 오늘은 코드가 순수한 숫자였기에 성립한 선택이다.\n실무에서 큰 테이블의 ALTER 가 얼마나 위험한지도 함께 고려해야 한다.\n\n두 번째 함정은 **도구가 침묵한 것**이었다.\n\n  SELECT COUNT(*) FROM mysql.slow_log;   -- 0\n\n슬로우 쿼리 로그는 `long_query_time` 을 넘긴 **한 건**만 남긴다.\n한 번에 0.1초짜리 조회는 임계값이 1초면 하나도 남지 않지만,\n초당 수십 번 돌면 CPU를 통째로 먹는다.\n**'가장 오래 걸린 한 건'과 '누적으로 가장 많이 먹는 질의'는 다른 질문이다.**\n4-2에서 갖춘 도구가 여기서 아무것도 알려주지 않은 이유가 이것이다.\n\n누적으로 보려면 statement digest 를 본다.\n\n  SELECT DIGEST_TEXT, COUNT_STAR,\n         SUM_TIMER_WAIT/1e12 AS 총초, SUM_ROWS_EXAMINED/COUNT_STAR AS 평균검사행\n  FROM performance_schema.events_statements_summary_by_digest\n  ORDER BY SUM_TIMER_WAIT DESC LIMIT 10;\n\n한 가지 주의 — **저장 프로시저 안에서 실행된 문장은 여기 개별 항목으로 잡히지\n않는다.** 바깥의 `CALL` 한 줄로만 집계된다(이 랩에서 실측했다). 오늘 부하가\n프로시저로 돌고 있었으므로 digest 만 봤다면 범인이 보이지 않았을 것이다.\n그래서 `SHOW PROCESSLIST` 가 먼저였다 — 그쪽은 프로시저 안에서 지금 실행 중인\n문장을 보여준다. 도구마다 보이는 것과 안 보이는 것이 다르고,\n**한 도구가 조용하다고 해서 문제가 없는 것은 아니다.**\n\n재발 방지: 스키마의 타입과 애플리케이션이 보내는 값의 타입을 맞추고(ORM 이\n조용히 바꾸는 일이 흔하다), 코드 리뷰에서 '이 컬럼은 무슨 타입인가'를 묻고,\n인덱스가 있는데도 느린 질의가 있으면 **먼저 EXPLAIN 을 떠서 key 를 확인한다.**\n상시로는 `Handler_read_rnd_next` 같은 풀스캔 지표나 digest 의 평균 검사 행 수를\n지표로 두면 '조용한 낭비'가 쌓이기 전에 보인다.\n\n다음 단계: 컬럼에 함수를 씌우는 경우(`WHERE DATE(created_at) = ...`),\n콜레이션이 다른 컬럼끼리의 조인, 앞부분에 와일드카드가 붙은 LIKE 도\n같은 이유로 인덱스를 버린다. 전부 '인덱스는 있는데 안 쓴다'로 나타난다."
+}

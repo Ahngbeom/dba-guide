@@ -182,6 +182,7 @@ DB 접근은 **`c` 키**로 한다 — 게임이 잠시 물러나고 **진짜 �
 | 🔥 **3-4 있지도 않은 중복** | 'Duplicate entry'가 나는데 그 값으로 조회하면 행은 하나뿐이다. **오류 메시지가 가리키는 곳과 원인이 다르다** — id 공간이 바닥났다 | [초급 01. RDBMS 기초](01-beginner/01-rdbms-fundamentals.md), [중급 06. 스키마 변경 관리](02-intermediate/06-schema-change-management.md) |
 | 🔥 **4-1 느린 화면** | 인덱스 없는 조회가 만든 적체. **범인이 없고 `KILL`로도 풀리지 않는** 첫 스테이지 | [중급 02. 인덱싱과 쿼리 튜닝](02-intermediate/02-indexing-and-query-tuning.md), [고급 01. 고급 성능 튜닝](03-advanced/01-advanced-performance-tuning.md) |
 
+| 🔥 **4-3 있는데 쓰지 않는다** | CPU는 타는데 슬로우 쿼리 로그는 비어 있다. 인덱스도 있다. **`possible_keys` 에는 있는데 `key` 가 `NULL`** — 쓸 수 있었는데 쓰지 않은 것이다 | [중급 02. 인덱싱과 쿼리 튜닝](02-intermediate/02-indexing-and-query-tuning.md), [고급 01. 고급 성능 튜닝](03-advanced/01-advanced-performance-tuning.md) |
 | 🔧 **4-2 보이지 않는 느림** | 고칠 것이 아니라 **갖출 것**이 과제다. 슬로우 쿼리 로그를 구성하고, **켜는 것만으로는 부족하다**는 것까지 확인한다 | [중급 03. 성능 모니터링](02-intermediate/03-performance-monitoring.md), [초급 06. 기본 모니터링](01-beginner/06-basic-monitoring.md) |
 PostgreSQL 스테이지는 선택 화면에서 따로 고른다(`./shoot --dbms postgresql`). 랩이 프로파일 뒤에 있으므로 `./shoot up --with-postgresql` 로 띄운다.
 
@@ -189,7 +190,7 @@ PostgreSQL 스테이지는 선택 화면에서 따로 고른다(`./shoot --dbms 
 |---|---|---|
 | 🔥 **1-1 아무 일도 하지 않는 범인** | 자원은 한가한데 결제만 멈췄다. 범인은 **아무 질의도 돌리고 있지 않은** `idle in transaction` 세션이라, `pg_cancel_backend` 는 성공을 돌려주고도 아무것도 바꾸지 못한다 | [중급 01. 트랜잭션과 잠금](02-intermediate/01-transaction-and-locking.md), [초급 06. 기본 모니터링](01-beginner/06-basic-monitoring.md) |
 
-> 스테이지는 앞의 것을 푼 사람의 반사를 일부러 배신하도록 배치돼 있다. 1-3에서 배운 `data_lock_waits`는 1-4에서 빈 화면을 돌려주고, 3-2에서는 그 화면이 비어 있다는 사실 자체가 단서가 된다. 1-3·1-4에서 통했던 `KILL`은 4-1에서 오히려 감점 대상이다. 벤더를 건너가면 한 겹 더 있다 — MySQL 1-3에서 익힌 '사슬의 뿌리를 끊는다'는 PostgreSQL 1-1에도 통하지만, 뿌리가 **놀고 있어서** 질의를 취소하는 명령은 성공을 돌려주고도 아무것도 하지 않는다.
+> 스테이지는 앞의 것을 푼 사람의 반사를 일부러 배신하도록 배치돼 있다. 1-3에서 배운 `data_lock_waits`는 1-4에서 빈 화면을 돌려주고, 3-2에서는 그 화면이 비어 있다는 사실 자체가 단서가 된다. 1-3·1-4에서 통했던 `KILL`은 4-1에서 오히려 감점 대상이다. 4-2에서 **직접 갖춘** 슬로우 쿼리 로그는 4-3에서 끝내 비어 있다 — 도구가 조용한 것과 문제가 없는 것은 다르다. 벤더를 건너가면 한 겹 더 있다 — MySQL 1-3에서 익힌 '사슬의 뿌리를 끊는다'는 PostgreSQL 1-1에도 통하지만, 뿌리가 **놀고 있어서** 질의를 취소하는 명령은 성공을 돌려주고도 아무것도 하지 않는다.
 
 ## 이 학습서를 읽는 법
 
