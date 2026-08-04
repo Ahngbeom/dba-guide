@@ -2408,8 +2408,84 @@ class DbmsMenuTest(unittest.TestCase):
         for vendor in shooting.VENDORS:
             self.assertIn(vendor, shooting.DBMS_TITLES, vendor)
 
-    def test_single_vendor_today_keeps_the_screen_as_it_was(self):
-        """스테이지가 전부 한 벤더인 동안에는 DBMS 단계가 나오지 않아야 한다."""
+    def test_both_vendors_ship_so_the_step_appears(self):
+        """두 벤더가 모두 있으니 DBMS 단계가 나와야 한다.
+
+        이 단언은 원래 "한 벤더뿐이니 단계가 나오면 안 된다"였고, 첫 PostgreSQL
+        스테이지가 들어오는 날 깨지도록 두었다. 그날이 와서 뒤집었다.
+        """
         entries = [(p, shooting._safe_load(p))
                    for p in shooting.discover_stages()]
-        self.assertEqual(len(shooting.group_by_dbms(entries)), 1)
+        self.assertEqual([d for d, _ in shooting.group_by_dbms(entries)],
+                         ["postgresql", "mysql"])
+
+
+class PostgresStageTest(unittest.TestCase):
+    """첫 PostgreSQL 스테이지가 엔진의 PostgreSQL 경로와 실제로 맞물리는가."""
+
+    def setUp(self):
+        paths = [p for p in shooting.discover_stages()
+                 if shooting.stage_dbms(shooting._safe_load(p)) == "postgresql"]
+        self.assertTrue(paths, "PostgreSQL 스테이지가 없습니다")
+        self.stages = [shooting.load_stage(p) for p in paths]
+
+    def test_targets_only_the_postgres_container(self):
+        for st in self.stages:
+            self.assertEqual(shooting.watch_targets(st), {"postgres"},
+                             st["id"])
+
+    def test_omitted_on_is_filled_at_load(self):
+        """load_stage 가 채워주지 않으면 setup이 MySQL primary 로 간다."""
+        for st in self.stages:
+            for step in st.get("setup") or []:
+                self.assertEqual(step.get("on"), "postgres", st["id"])
+
+    def test_sweep_pattern_catches_the_blanket_kill(self):
+        """2단계에서 확인한 구멍(pid 없는 쓸기)을 스테이지가 직접 막아야 한다."""
+        for st in self.stages:
+            pats = [c["pattern"] for c in st.get("constraints") or []
+                    if c.get("detect") == "forbidden_command"]
+            self.assertTrue(pats, st["id"])
+            sweep = ("SELECT pg_terminate_backend(pid) "
+                     "FROM pg_stat_activity WHERE state like 'idle%'")
+            self.assertTrue(any(re.search(p, sweep) for p in pats), st["id"])
+
+    def test_sweep_pattern_lets_a_precise_kill_through(self):
+        """정확한 복구가 감점되면 스테이지가 거짓말을 하는 것이다."""
+        for st in self.stages:
+            for c in st.get("constraints") or []:
+                if c.get("detect") != "forbidden_command":
+                    continue
+                self.assertIsNone(
+                    re.search(c["pattern"],
+                              "SELECT pg_terminate_backend(2108)"), st["id"])
+
+    def test_variables_are_all_declared(self):
+        """{{이름}}이 vars에 없으면 그대로 SQL에 실려 나간다."""
+        for st in self.stages:
+            declared = set((st.get("vars") or {}))
+            used = set(re.findall(r"\{\{(\w+)\}\}", json.dumps(st)))
+            self.assertEqual(used - declared, set(), st["id"])
+
+    def test_rendering_leaves_no_placeholder(self):
+        for st in self.stages:
+            out = json.dumps(shooting.render_stage(st, random.Random(5)))
+            self.assertNotIn("{{", out, st["id"])
+
+    def test_state_objectives_hold_before_clearing(self):
+        """hold_seconds 가 없으면 순간적인 빈틈에 클리어된다."""
+        for st in self.stages:
+            for o in st["objectives"]:
+                if o["type"] == "state":
+                    self.assertGreater(o.get("hold_seconds", 0), 0,
+                                       f"{st['id']}/{o['id']}")
+
+    def test_culprit_is_marked_for_kill_precision(self):
+        """kill_precision 을 걸어두고 범인을 표시하지 않으면 정확한 KILL도 위반이 된다."""
+        for st in self.stages:
+            detects = {c.get("detect") for c in st.get("constraints") or []}
+            if "kill_precision" not in detects:
+                continue
+            self.assertTrue(
+                any(step.get("culprit") for step in st.get("setup") or []),
+                st["id"])

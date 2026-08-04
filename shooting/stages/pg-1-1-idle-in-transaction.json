@@ -1,0 +1,151 @@
+{
+  "id": "pg-1-1-idle-in-transaction",
+  "world": 1,
+  "stage": 1,
+  "kind": "incident",
+  "dbms": "postgresql",
+  "title": "아무 일도 하지 않는 범인",
+  "brief": "결제 승인이 전부 멈췄다. 오류는 없고 그냥 응답이 없다. CPU도 디스크도 한가해서 부하 문제로 보이지 않는다. 어젯밤 배포한 정산 배치 말고는 바뀐 것이 없다는데, 그 배치는 이미 '완료'라고 로그를 남기고 끝났다고 한다.",
+  "target_seconds": 360,
+  "chapters": [
+    "02-intermediate/01-transaction-and-locking.md",
+    "01-beginner/06-basic-monitoring.md"
+  ],
+  "vars": {
+    "rows": {
+      "type": "int",
+      "min": 30,
+      "max": 80
+    },
+    "payments": {
+      "type": "int",
+      "min": 3,
+      "max": 6
+    }
+  },
+  "setup": [
+    {
+      "type": "sql",
+      "_comment": "지난 판의 흔적을 지우고 출발점을 맞춘다. 대상 행이 이미 PAID로 남아 있으면 '결제 재개' 목표가 시작부터 충족돼 장애 대기(_wait_for_incident)가 끝나지 않는다.",
+      "sql": "UPDATE orders SET status = 'NEW' WHERE id <= {{rows}}"
+    },
+    {
+      "type": "session",
+      "name": "settlement-batch",
+      "user": "app",
+      "password": "app",
+      "culprit": true,
+      "_comment": "범인. UPDATE로 행 잠금을 잡은 뒤 **커밋하지 않고 논다** — psql이 stdin을 기다리는 동안 세션은 'idle in transaction'으로 남고 잠금은 그대로 붙들려 있다. 커밋 경로를 잃은 배치가 실무에서 만드는 바로 그 상태다. idle_seconds가 target_seconds보다 길어야 판이 끝나기 전에 저절로 풀리지 않는다.",
+      "sql": "BEGIN; UPDATE orders SET status = 'SETTLING' WHERE id <= {{rows}}",
+      "idle_seconds": 900
+    },
+    {
+      "type": "sessions",
+      "name": "payment-api",
+      "user": "app",
+      "password": "app",
+      "count": "{{payments}}",
+      "_comment": "피해자들. 배치가 잠근 범위 안의 행을 건드리려다 막힌다. **세션마다 다른 행을 고르는 것이 중요하다** — 전부 같은 행을 노리면 서로도 막아서 pg_blocking_pids가 범인 하나가 아니라 사슬 전체를 지목한다(실측). 그러면 도구가 지목한 세션을 끊었다가 kill_precision에 걸리는 부당한 함정이 된다. idle_seconds를 주지 않는 이유는 이미 잠금 대기로 붙잡혀 있기 때문이고, 범인이 사라지면 각자 커밋하고 스스로 빠져나간다 — 그래서 복구를 확인하려고 플레이어가 손으로 UPDATE할 필요가 없다.",
+      "sql": "UPDATE orders SET status = 'PAID' WHERE id = 1 + floor(random() * {{rows}})::int"
+    }
+  ],
+  "objectives": [
+    {
+      "id": "diagnose-symptom",
+      "type": "quiz",
+      "label": "상황 식별",
+      "trigger": {
+        "after_seconds": 45
+      },
+      "question": {
+        "type": "mcq",
+        "q": "CPU도 디스크도 한가한데 결제만 멈췄다. 가장 정확한 설명은?",
+        "choices": [
+          "커밋하지 않은 트랜잭션이 행 잠금을 쥔 채 놀고 있어 뒤의 갱신이 전부 대기 중이다",
+          "결제 쿼리가 너무 무거워 CPU를 다 쓰고 있다",
+          "커넥션 한도에 걸려 새 접속이 거부되고 있다",
+          "디스크가 가득 차 쓰기가 실패하고 있다"
+        ],
+        "answer": 0,
+        "explain": "자원이 한가한데 특정 작업만 멈춰 있다면 **기다리고 있는 것**이다. 일하느라 느린 것과 무언가를 기다리느라 멈춘 것은 증상이 비슷해도 원인이 정반대다. PostgreSQL에서 트랜잭션은 COMMIT 이나 ROLLBACK 을 만나기 전까지 끝나지 않고, 그 사이 잡은 행 잠금도 놓지 않는다. 세션이 질의를 하나도 돌리지 않고 있어도 마찬가지다 — 그 상태가 'idle in transaction'이다."
+      }
+    },
+    {
+      "id": "diagnose-blocker",
+      "type": "quiz",
+      "label": "가로막은 세션 찾기",
+      "question": {
+        "type": "short",
+        "q": "어떤 세션이 나를 막고 있는지 pid로 알려주는 PostgreSQL 함수 이름은?",
+        "accept": [
+          "pg_blocking_pids",
+          "pg_blocking_pids()"
+        ],
+        "explain": "SELECT pid, pg_blocking_pids(pid) FROM pg_stat_activity WHERE cardinality(pg_blocking_pids(pid)) > 0 로 '누가 누구를 막고 있는지'가 한 번에 나온다. pg_locks 를 직접 조인해도 같은 답에 닿지만 훨씬 번거롭다. 대기 중인 세션은 pg_stat_activity 의 wait_event_type = 'Lock' 으로도 골라낼 수 있다."
+      }
+    },
+    {
+      "id": "waiters-cleared",
+      "type": "state",
+      "label": "잠금 대기 해소",
+      "_comment": "대기가 0이어야 한다. hold_seconds 없이 판정하면 순간적인 빈틈에 통과할 수 있다.",
+      "query": "SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock'",
+      "expect": {
+        "op": "eq",
+        "value": 0
+      },
+      "hold_seconds": 8
+    },
+    {
+      "id": "no-idle-in-transaction",
+      "type": "state",
+      "label": "놀고 있는 트랜잭션 정리",
+      "_comment": "대기 해소만 보면 '범인을 그대로 두고 피해자만 죽이기'가 통과한다. 원인이 사라졌는지 따로 본다. app 세션만 세는 이유는 플레이어 자신의 psql이 트랜잭션을 열어둔 상태로 판정에 걸리면 이유를 알 길이 없기 때문이다 — 실무에서는 자기 세션도 똑같이 죄가 된다는 점은 해설에서 다룬다.",
+      "query": "SELECT count(*) FROM pg_stat_activity WHERE usename = 'app' AND state = 'idle in transaction'",
+      "expect": {
+        "op": "eq",
+        "value": 0
+      },
+      "hold_seconds": 8
+    },
+    {
+      "id": "payments-resumed",
+      "type": "state",
+      "label": "결제 재개",
+      "_comment": "막혀 있던 결제가 실제로 커밋됐는지까지 본다. 범인만 정확히 끊으면 대기하던 세션들이 스스로 마치므로 저절로 충족된다. setup이 대상 범위를 전부 NEW로 되돌리므로 시작 시점에는 0이다.",
+      "query": "SELECT count(*) FROM orders WHERE id <= {{rows}} AND status = 'PAID'",
+      "expect": {
+        "op": "gte",
+        "value": 1
+      },
+      "hold_seconds": 5
+    }
+  ],
+  "constraints": [
+    {
+      "id": "no-restart",
+      "label": "DB 재시작 금지",
+      "detect": "container_restart"
+    },
+    {
+      "id": "kill-precision",
+      "label": "범인 외 세션 끊기",
+      "detect": "kill_precision",
+      "_comment": "결제 세션은 피해자다. 이것까지 끊으면 멈춘 결제를 사람이 되살려야 한다."
+    },
+    {
+      "id": "no-sweep",
+      "label": "pid를 확인하지 않은 일괄 종료",
+      "detect": "forbidden_command",
+      "_comment": "PostgreSQL은 pg_terminate_backend(pid) FROM pg_stat_activity 로 pid를 하나도 적지 않고 세션을 쓸어버릴 수 있다. 숫자가 아닌 인자를 넘기는 형태만 걸린다 — 범인의 pid를 짚어 끊는 정상 복구는 걸리지 않는다. kill_precision은 '어떤 pid를 끊었나'를 보는 도구라 pid가 적히지 않은 이 형태를 볼 수 없어서, 여기서 따로 막는다(MySQL에는 없는 구멍이다).",
+      "pattern": "(?i)pg_terminate_backend\\s*\\(\\s*(?!\\d)",
+      "max_matches": 0
+    }
+  ],
+  "hints": [
+    "자원은 한가한데 특정 작업만 멈춰 있다면 일하느라 느린 게 아니라 **기다리는** 것이다. pg_stat_activity 에서 wait_event_type 이 'Lock' 인 세션이 있는지 보라.",
+    "기다리는 쪽을 찾았으면 기다리게 만든 쪽을 찾을 차례다. pg_blocking_pids(pid) 가 막고 있는 세션의 pid를 바로 알려준다. 그 pid의 state 를 함께 보라 — 범인이 무엇을 하고 있는지가 이 장애의 핵심이다.",
+    "범인은 아무 질의도 돌리고 있지 않다. 그래서 pg_cancel_backend 로는 아무 일도 일어나지 않는다 — 취소할 질의가 없기 때문이다. 반환값이 t 라고 해서 해결된 것이 아니다. 세션 자체를 끊어야 한다."
+  ],
+  "debrief": "범인은 **커밋하지 않고 놀고 있던 트랜잭션**이었다.\n정산 배치가 UPDATE 로 행 잠금을 잡은 뒤 COMMIT 도 ROLLBACK 도 하지 않은 채\n접속만 붙들고 있었다. 배치 로그에 '완료'라고 찍힌 것은 거짓말이 아니다 —\n**애플리케이션의 일은 끝났지만 트랜잭션은 끝나지 않았다.** 커밋을 빠뜨린 코드,\n예외 처리에서 새어 나간 경로, 커넥션 풀에 반납되며 정리되지 않은 세션이\n실무에서 이 상태를 만든다.\n\n  SELECT pid, state, wait_event_type, now() - xact_start AS 트랜잭션_나이,\n         left(query, 60)\n  FROM pg_stat_activity WHERE state <> 'idle' ORDER BY xact_start;\n\n  SELECT pid, pg_blocking_pids(pid), left(query, 60)\n  FROM pg_stat_activity WHERE cardinality(pg_blocking_pids(pid)) > 0;\n\n`pg_blocking_pids()` 가 '누가 누구를 막고 있는지'를 한 번에 알려준다.\npg_locks 를 직접 조인해도 같은 답에 닿지만 훨씬 번거롭다.\n\n이 스테이지의 요점은 여기다 — **범인은 아무 일도 하고 있지 않았다.**\n장애를 찾을 때 우리는 무의식적으로 '무거운 것'을 먼저 뒤진다. 긴 쿼리,\n높은 CPU, 큰 스캔. 그런데 자원이 한가한데 멈춰 있다면 범인은 일하는 쪽이 아니라\n**기다리게 만드는 쪽**이고, 그것은 종종 가만히 있다.\n\n그래서 첫 시도가 대개 빗나간다.\n\n  SELECT pg_cancel_backend(2108);   -- t 를 돌려준다. 그런데 아무 일도 안 일어난다\n\n`pg_cancel_backend` 는 **돌고 있는 질의**를 취소한다. idle in transaction 세션에는\n취소할 질의가 없으므로 잠금은 그대로다. 반환값 t 는 '해결됐다'가 아니라\n'신호를 보냈다'는 뜻이다 — 이 구분을 모르면 고쳤다고 착각한 채 다음을 찾게 된다.\n\n  SELECT pg_terminate_backend(2108);   -- 세션 자체를 끊는다\n\n세션이 끊기면 트랜잭션은 롤백되고, 대기하던 결제들이 즉시 자기 일을 마친다.\n(MySQL의 `KILL QUERY` 와 `KILL CONNECTION` 이 같은 자리의 구분이다.)\n\n**pid를 확인하지 않고 쓸어버리는 것은 복구가 아니다.**\n\n  SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE ...   -- 이 판에서는 감점\n\n한 줄로 끝나 보이지만 멀쩡히 일하던 결제 세션까지 함께 죽는다. 그것들은\n피해자였고, 죽이면 멈춘 결제를 사람이 되살려야 한다. 장애 대응에서 넓게 쓰는\n조치는 대개 **원인을 지우기 전에 증거를 지운다.**\n\n재발 방지는 사람의 주의력이 아니라 설정으로 건다.\n\n  ALTER SYSTEM SET idle_in_transaction_session_timeout = '60s';\n  ALTER SYSTEM SET log_lock_waits = on;        -- 잠금 대기를 로그에 남긴다\n  ALTER SYSTEM SET deadlock_timeout = '1s';    -- log_lock_waits 의 기준이 된다\n\n`idle_in_transaction_session_timeout` 은 커밋 없이 노는 세션을 서버가 알아서\n끊는다. PostgreSQL 에서 가장 먼저 켜 둘 안전장치 중 하나다\n(기본값은 0 = 무제한이라, 켜지 않으면 오늘 같은 일이 무기한 이어진다).\n\n덧붙여 — 오늘 판정에서는 `app` 세션만 셌지만, **자기 세션도 똑같이 죄가 된다.**\n진단하겠다고 psql 에서 BEGIN 을 치고 잊어버리면 그 순간 당신이 범인이다.\n오래 걸리는 트랜잭션 나이(`now() - xact_start`)를 상시 감시 지표로 두면\n범인이 누구든 먼저 보인다.\n\n다음 단계: 잠금 대기가 반복되는 구간에는 `lock_timeout` 을 걸어 무한 대기 대신\n빠르게 실패시키고, `pg_stat_activity` 의 트랜잭션 나이를 경보로 올리고,\n애플리케이션 쪽에서는 트랜잭션 범위를 짧게 — 외부 API 호출이나 사람의 입력을\n트랜잭션 안에 두지 않는다."
+}
