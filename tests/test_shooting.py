@@ -2346,3 +2346,70 @@ class VendorValidationTest(unittest.TestCase):
             with open(path, encoding="utf-8") as f:
                 raw = json.load(f)
             self.assertEqual(shooting.validate_stage(raw), [], path.name)
+
+
+class DbmsMenuTest(unittest.TestCase):
+    """선택 화면의 DBMS 단계."""
+
+    def _e(self, *dbms):
+        return [(Path(f"{i}.json"),
+                 {"id": f"s{i}", "world": 1, "stage": i, "dbms": d})
+                for i, d in enumerate(dbms, 1)]
+
+    def test_missing_dbms_means_mysql(self):
+        """기존 스테이지는 dbms를 안 적었을 수 있다 — 그게 PostgreSQL로 새면 안 된다."""
+        self.assertEqual(shooting.stage_dbms({}), "mysql")
+        self.assertEqual(shooting.stage_dbms(None), "mysql")
+
+    def test_groups_follow_the_guide_order(self):
+        groups = shooting.group_by_dbms(self._e("mysql", "postgresql"))
+        self.assertEqual([d for d, _ in groups], ["postgresql", "mysql"])
+
+    def test_order_agrees_with_exam(self):
+        """두 도구가 서로 다른 순서를 보이면 같은 저장소처럼 느껴지지 않는다."""
+        import exam
+        rank = {d: i for i, d in enumerate(exam.VALID_DBMS)}
+        got = [rank[d] for d in shooting.VENDORS]
+        self.assertEqual(got, sorted(got))
+
+    def test_unreadable_stage_still_listed(self):
+        """정의를 못 읽은 파일을 빼면 '파일은 있는데 안 보인다'가 된다."""
+        groups = shooting.group_by_dbms([(Path("x.json"), None)])
+        self.assertEqual(groups, [("mysql", [(Path("x.json"), None)])])
+
+    def test_unknown_vendor_goes_last(self):
+        groups = shooting.group_by_dbms(self._e("zzz", "mysql"))
+        self.assertEqual([d for d, _ in groups], ["mysql", "zzz"])
+
+    def test_label_shows_count_and_best_rank(self):
+        label = shooting.dbms_menu_label(
+            "mysql", self._e("mysql", "mysql"), {"s1": "A", "s2": "S"})
+        self.assertIn("MySQL", label)
+        self.assertIn("2개", label)
+        self.assertIn("[S]", label)          # 최고 등급
+
+    def test_filter_passes_everything_when_unset(self):
+        entries = self._e("mysql", "postgresql")
+        self.assertIs(shooting.filter_stages_by_dbms(entries, None), entries)
+
+    def test_filter_narrows_to_one_vendor(self):
+        got = shooting.filter_stages_by_dbms(
+            self._e("mysql", "postgresql"), "postgresql")
+        self.assertEqual([s["id"] for _, s in got], ["s2"])
+
+    def test_cli_rejects_a_vendor_the_engine_cannot_run(self):
+        """--dbms 오타를 argparse가 막아야 한다 — 조용히 빈 목록이 되면 안 된다."""
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), self.assertRaises(SystemExit):
+            shooting.main(["--dbms", "oracle"])
+        self.assertIn("--dbms", err.getvalue())
+
+    def test_every_vendor_has_a_display_name(self):
+        for vendor in shooting.VENDORS:
+            self.assertIn(vendor, shooting.DBMS_TITLES, vendor)
+
+    def test_single_vendor_today_keeps_the_screen_as_it_was(self):
+        """스테이지가 전부 한 벤더인 동안에는 DBMS 단계가 나오지 않아야 한다."""
+        entries = [(p, shooting._safe_load(p))
+                   for p in shooting.discover_stages()]
+        self.assertEqual(len(shooting.group_by_dbms(entries)), 1)
