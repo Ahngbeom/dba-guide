@@ -1155,6 +1155,7 @@ class DoctorTest(unittest.TestCase):
         with self._no_docker():
             self.assertFalse(shooting.lab_running())
             self.assertFalse(shooting.lab_healthy())
+            self.assertFalse(shooting.container_healthy("postgres"))
             self.assertIsNone(shooting.container_started_at("primary"))
 
 
@@ -1554,6 +1555,187 @@ class SessionIndexValidationTest(unittest.TestCase):
              "sql": "SELECT {{session_index}}"}])
         self.assertFalse([e for e in self._errs(stage) if "정의되지 않은" in e],
                          self._errs(stage))
+
+
+class WaitUntilTest(unittest.TestCase):
+    """폴링 대기를 한 군데로 모은 헬퍼.
+
+    같은 모양이 랩 기동과 플레이 전 대기로 흩어져 있었다. `tui.pick()`이
+    세 벌로 갈라졌다가 합쳐진 것과 같은 자리다 — 세 번째 사본을 만들기 전에 모은다.
+    """
+
+    @contextlib.contextmanager
+    def _no_sleep(self):
+        """실제로 자지 않는다. 잔 횟수만 센다."""
+        real = shooting.time.sleep
+        naps = []
+        shooting.time.sleep = naps.append
+        try:
+            yield naps
+        finally:
+            shooting.time.sleep = real
+
+    def test_true_at_once_does_not_sleep(self):
+        with self._no_sleep() as naps:
+            self.assertTrue(shooting.wait_until(lambda: True, 10))
+        self.assertEqual(naps, [])
+
+    def test_polls_until_the_condition_holds(self):
+        calls = []
+
+        def ready():
+            calls.append(1)
+            return len(calls) >= 3
+
+        with self._no_sleep() as naps:
+            self.assertTrue(shooting.wait_until(ready, 10, poll_seconds=0.1))
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(naps, [0.1, 0.1])
+
+    def test_gives_up_at_the_deadline(self):
+        with self._no_sleep():
+            self.assertFalse(
+                shooting.wait_until(lambda: False, 0, poll_seconds=0.01))
+
+    def test_calls_on_wait_once_per_rest(self):
+        # 기다리는 동안 화면이 조용하면 멈춘 것처럼 보인다.
+        calls, ticks = [], []
+
+        def ready():
+            calls.append(1)
+            return len(calls) >= 3
+
+        with self._no_sleep():
+            shooting.wait_until(ready, 10, poll_seconds=0.1,
+                                on_wait=lambda: ticks.append(1))
+        self.assertEqual(len(ticks), 2)
+
+
+class PostgresReadinessTest(unittest.TestCase):
+    """PostgreSQL 랩은 **준비될 때까지** 기다려야 한다.
+
+    `container_running`은 컨테이너가 뜨자마자 참이 되는데, 그 시점의 postgres는
+    아직 initdb로 20만 행을 넣는 중이다(`shooting/lab/pg-seed/01-schema.sql`).
+    그 창에서 출발하면 `setup_stage`의 첫 `docker exec psql`이 실패하고,
+    플레이어는 자기가 만들지 않은 오류를 본다. MySQL 경로에는 이미 healthy
+    대기가 있는데 PostgreSQL 경로에만 없었다.
+    """
+
+    PG_STAGE = "pg-1-1-idle-in-transaction"
+
+    @contextlib.contextmanager
+    def _lab(self, pg_running=True, healthy_after=0):
+        """랩을 흉내낸다. postgres는 `healthy_after`번 물어본 뒤에야 healthy."""
+        seen = {"health_polls": 0}
+        names = ("lab_running", "lab_healthy", "setup_stage", "teardown_stage",
+                 "offer_note", "run_line", "container_running",
+                 "container_healthy", "lab_up")
+        real = {n: getattr(shooting, n) for n in names}
+        real_sleep = shooting.time.sleep
+
+        def fake_container_healthy(target):
+            if target != "postgres":
+                return True
+            seen["health_polls"] += 1
+            return seen["health_polls"] > healthy_after
+
+        def fake_setup(stage, log=print):
+            # 출발 시점에 postgres가 실제로 준비돼 있었는지를 붙잡는다.
+            seen["pg_ready_at_setup"] = fake_container_healthy("postgres")
+            seen["health_polls"] -= 1          # 이 조회는 계측용이라 세지 않는다
+            return {"allowed_pids": set(), "started_at": {}}
+
+        def fake_run_line(stage, session, baseline):
+            seen["played"] = True
+            return None
+
+        shooting.lab_running = lambda: True
+        shooting.lab_healthy = lambda: True
+        shooting.container_running = lambda t: (pg_running if t == "postgres"
+                                                else True)
+        shooting.container_healthy = fake_container_healthy
+        shooting.lab_up = lambda *a, **k: True
+        shooting.setup_stage = fake_setup
+        shooting.teardown_stage = lambda stage: None
+        shooting.offer_note = lambda stage, session, result: None
+        shooting.run_line = fake_run_line
+        shooting.time.sleep = lambda s: None
+        buf = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(buf):
+                yield seen
+        finally:
+            seen["stdout"] = buf.getvalue()
+            shooting.time.sleep = real_sleep
+            for n, fn in real.items():
+                setattr(shooting, n, fn)
+
+    def test_waits_until_postgres_is_healthy_before_injecting(self):
+        with self._lab(healthy_after=3) as seen:
+            rc = shooting.cmd_play(self.PG_STAGE, force_line=True, seed=1)
+        self.assertEqual(rc, 0)
+        self.assertTrue(seen.get("played"))
+        self.assertTrue(seen.get("pg_ready_at_setup"),
+                        "postgres가 준비되기 전에 장애를 주입했다")
+
+    def test_a_healthy_lab_starts_without_waiting(self):
+        with self._lab(healthy_after=0) as seen:
+            shooting.cmd_play(self.PG_STAGE, force_line=True, seed=1)
+        self.assertTrue(seen.get("pg_ready_at_setup"))
+        self.assertNotIn("준비 중", seen["stdout"])
+
+    def test_a_lab_that_is_down_is_told_to_come_up_not_waited_on(self):
+        # 안 떠 있는 것을 기다리면 영원히 기다린다. 그건 안내할 일이다.
+        with self._lab(pg_running=False) as seen:
+            rc = shooting.cmd_play(self.PG_STAGE, force_line=True, seed=1)
+        self.assertEqual(rc, 1)
+        self.assertIn("--with-postgresql", seen["stdout"])
+        self.assertIsNone(seen.get("played"))
+
+    def test_lab_up_with_postgres_waits_for_it_too(self):
+        """`./shoot up --with-postgresql` 이 '준비 완료'라고 거짓말하면 안 된다."""
+        polls = {"n": 0}
+        names = ("_compose", "lab_healthy", "container_healthy")
+        real = {n: getattr(shooting, n) for n in names}
+        real_sleep = shooting.time.sleep
+
+        def fake_pg_healthy(target):
+            if target != "postgres":
+                return True
+            polls["n"] += 1
+            return polls["n"] > 2
+
+        shooting._compose = lambda *a, **k: types.SimpleNamespace(
+            returncode=0, stdout="", stderr="")
+        shooting.lab_healthy = lambda: True
+        shooting.container_healthy = fake_pg_healthy
+        shooting.time.sleep = lambda s: None
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                shooting.lab_up(wait_seconds=30, with_postgres=True)
+        finally:
+            shooting.time.sleep = real_sleep
+            for n, fn in real.items():
+                setattr(shooting, n, fn)
+        self.assertGreater(polls["n"], 2,
+                           "postgres healthy 를 기다리지 않고 끝냈다")
+
+    def test_lab_up_without_postgres_ignores_it(self):
+        # MySQL만 하는 사람이 뜨지도 않은 컨테이너를 기다릴 이유가 없다.
+        asked = []
+        names = ("_compose", "lab_healthy", "container_healthy")
+        real = {n: getattr(shooting, n) for n in names}
+        shooting._compose = lambda *a, **k: types.SimpleNamespace(
+            returncode=0, stdout="", stderr="")
+        shooting.lab_healthy = lambda: True
+        shooting.container_healthy = lambda t: asked.append(t) or True
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                shooting.lab_up(wait_seconds=30, with_postgres=False)
+        finally:
+            for n, fn in real.items():
+                setattr(shooting, n, fn)
+        self.assertEqual(asked, [])
 
 
 class SessionShuffleTest(unittest.TestCase):

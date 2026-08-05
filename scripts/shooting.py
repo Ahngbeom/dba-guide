@@ -1610,6 +1610,42 @@ def container_running(target):
     return p.returncode == 0 and p.stdout.strip() == "true"
 
 
+def container_healthy(target):
+    """컨테이너 하나가 healthy 인가 → bool. docker 부재도 '아니다'로 흡수한다.
+
+    `container_running`으로는 부족한 자리가 있다 — 컨테이너는 **뜨자마자** running
+    이지만, 그때 postgres는 아직 initdb로 시드를 넣는 중이다. 그 창에서 질의를
+    던지면 실패한다.
+    """
+    try:
+        p = _docker("inspect", "--format", "{{.State.Health.Status}}",
+                    CONTAINERS.get(target, target))
+    except LabError:
+        return False
+    return p.returncode == 0 and p.stdout.strip() == "healthy"
+
+
+def wait_until(predicate, timeout_seconds, poll_seconds=3.0, on_wait=None):
+    """`predicate()`가 참이 될 때까지 기다린다 → 참이 됐는가.
+
+    같은 모양의 폴링 루프가 랩 기동과 플레이 전 대기로 흩어져 있었다. 세 번째
+    사본을 만들기 전에 모은다 — `tui.pick()`이 세 벌로 갈라졌다가 합쳐진 자리와
+    같은 교훈이다.
+
+    `on_wait`는 한 번 쉴 때마다 부른다. 기다리는 동안 화면이 조용하면 멈춘 것처럼
+    보이기 때문이다. 조건을 **먼저** 보므로 timeout이 0이어도 한 번은 확인한다.
+    """
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        if predicate():
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        if on_wait:
+            on_wait()
+        time.sleep(poll_seconds)
+
+
 def lab_running():
     """primary/replica 컨테이너가 모두 running 인가."""
     return _all_containers_are("{{.State.Running}}", "true")
@@ -1627,13 +1663,17 @@ def lab_up(wait_seconds=300, with_postgres=False):
     p = _compose(*args, "up", "-d")
     if p.returncode != 0:
         raise LabError((p.stderr or p.stdout).strip())
-    deadline = time.monotonic() + wait_seconds
-    while time.monotonic() < deadline:
-        if lab_healthy():
-            print("랩 준비 완료.")
-            return True
-        time.sleep(3)
-        print("  … 초기화 대기 중")
+    # postgres를 함께 띄웠다면 **그것까지** 준비돼야 '준비 완료'다. lab_healthy()는
+    # primary/replica만 보므로, 빼먹으면 `./shoot up --with-postgresql`이 아직
+    # initdb로 시드를 넣고 있는 서버를 두고 완료를 선언한다.
+    def ready():
+        return lab_healthy() and (not with_postgres
+                                  or container_healthy("postgres"))
+
+    if wait_until(ready, wait_seconds,
+                  on_wait=lambda: print("  … 초기화 대기 중")):
+        print("랩 준비 완료.")
+        return True
     raise LabError("랩이 제한 시간 안에 준비되지 않았습니다. "
                    "`docker compose -f shooting/lab/compose.yaml logs`를 확인하세요.")
 
@@ -3139,10 +3179,22 @@ def cmd_play(target=None, force_line=False, seed=None, dbms=None):
     # PostgreSQL 스테이지는 프로파일 뒤에 있는 컨테이너를 쓴다. 기본 `./shoot up`
     # 으로는 뜨지 않으므로, 여기서 걸러 주지 않으면 setup 단계가 docker exec 실패로
     # 무너지고 원인이 드러나지 않는다.
-    if stage.get("dbms") == "postgresql" and not container_running("postgres"):
-        print("이 스테이지는 PostgreSQL 랩이 필요합니다.\n"
-              "  ./shoot up --with-postgresql")
-        return 1
+    if stage.get("dbms") == "postgresql":
+        if not container_running("postgres"):
+            print("이 스테이지는 PostgreSQL 랩이 필요합니다.\n"
+                  "  ./shoot up --with-postgresql")
+            return 1
+        # running 은 컨테이너가 **뜨자마자** 참이 된다. 그 시점의 postgres는 아직
+        # initdb로 시드(20만 행)를 넣는 중이라, 여기서 기다리지 않으면 setup의 첫
+        # `docker exec psql`이 실패하고 플레이어는 자기가 만들지 않은 오류를 본다.
+        if not container_healthy("postgres"):
+            print("PostgreSQL 랩이 아직 준비 중입니다. 잠시 기다립니다…")
+            if not wait_until(lambda: container_healthy("postgres"), 120,
+                              on_wait=lambda: print("  … 초기화 대기 중")):
+                print("PostgreSQL 랩이 제한 시간 안에 준비되지 않았습니다.\n"
+                      "  docker compose -f shooting/lab/compose.yaml"
+                      " --profile postgresql logs postgres")
+                return 1
 
     if not lab_running():
         print("랩이 내려가 있습니다.")
@@ -3153,9 +3205,7 @@ def cmd_play(target=None, force_line=False, seed=None, dbms=None):
             return 1
     elif not lab_healthy():
         print("랩이 아직 준비 중입니다. 잠시 기다립니다…")
-        deadline = time.monotonic() + 120
-        while time.monotonic() < deadline and not lab_healthy():
-            time.sleep(3)
+        wait_until(lab_healthy, 120)
 
     print(f"\n장애를 주입합니다 — {stage.get('title')}")
     try:
