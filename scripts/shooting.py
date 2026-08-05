@@ -617,6 +617,44 @@ def client_command(stage, pager=None, target="primary"):
     return cmd
 
 
+def client_name(stage):
+    """이 스테이지에서 `c` 키가 실제로 띄우는 클라이언트 이름.
+
+    화면 라벨은 반드시 이걸로 만든다 — `client_command()`가 벤더에 따라 고르는
+    바이너리와 라벨이 각자 판단하면 조용히 갈라진다(실제로 갈라져 있었다).
+    """
+    return "psql" if vendor_of(default_target(stage)) == "postgresql" else "mysql"
+
+
+def client_error_hint(target):
+    """클라이언트 실행이 실패했을 때 보여줄 안내(순수 함수).
+
+    MySQL 쪽 함정 — 사용자의 `~/.my.cnf`에 `password=`가 있으면 `MYSQL_PWD`를
+    이겨 인증을 가로챈다 — 은 psql 과 아무 상관이 없다. 없는 함정을 지어내는 대신
+    PostgreSQL 쪽은 확인 가능한 것만 안내한다.
+    """
+    if vendor_of(target) == "postgresql":
+        return ("접속에 실패했습니다. PostgreSQL 랩이 떠 있는지 확인하세요 —\n"
+                "`./shoot doctor` 로 점검하고, 없으면\n"
+                "`./shoot up --with-postgresql` 로 띄웁니다.")
+    return ("접속에 실패했습니다. ~/.my.cnf 에 password= 설정이 있으면\n"
+            "MYSQL_PWD 보다 우선해 인증을 가로챌 수 있습니다\n"
+            "(MySQL 옵션 우선순위: 명령줄 > 옵션 파일 > 환경변수).")
+
+
+def play_footer(stage, session):
+    """플레이 화면 하단 바 문구(순수 함수).
+
+    문자열을 `_draw_play` 안에 두면 "화면이 실제로 무엇을 안내하는가"를 테스트할
+    수 없다 — 라벨이 벤더를 따라가는지 지키려면 밖으로 꺼내야 한다.
+    """
+    hints = stage.get("hints") or []
+    notes = session.get("notes_count", 0)
+    return (f" c {client_name(stage)} 접속   r 상황 보고   "
+            f"n 지난 기록({notes})   "
+            f"h 힌트({session['hints_used']}/{len(hints)})   q 포기 ")
+
+
 def client_env(target, pager=None):
     """클라이언트에 넘길 환경변수. 비밀번호를 명령줄에 노출하지 않는다."""
     env = dict(os.environ)
@@ -1312,9 +1350,7 @@ def open_db_client(stdscr, curses, stage, session, target="primary"):
         stdscr, curses, client_command(stage, pager, target),
         env=client_env(target, pager),
         banner=client_banner(stage, session, target),
-        on_error=("접속에 실패했습니다. ~/.my.cnf 에 password= 설정이 있으면\n"
-                  "MYSQL_PWD 보다 우선해 인증을 가로챌 수 있습니다\n"
-                  "(MySQL 옵션 우선순위: 명령줄 > 옵션 파일 > 환경변수)."))
+        on_error=client_error_hint(target))
 
 
 def write_note_draft(stage, session, result):
@@ -2457,7 +2493,7 @@ def _draw_play(stdscr, curses, stage, session, watch=None):
 
     row = 2
     put(stdscr, curses, row, 1, "접속", w - 2, curses.A_DIM)
-    put(stdscr, curses, row, 8, "c 키로 mysql 접속", w - 9,
+    put(stdscr, curses, row, 8, f"c 키로 {client_name(stage)} 접속", w - 9,
         curses.color_pair(4) | curses.A_BOLD)
     row += 1
     put(stdscr, curses, row, 8, f"또는 {_connect_hint(stage)}", w - 9,
@@ -2524,11 +2560,7 @@ def _draw_play(stdscr, curses, stage, session, watch=None):
                 f"{spinner_frame(watch)} 감시 중 · {fresh}"
                 f" · {watch.get('current') or ''}", w - 2, curses.A_DIM)
 
-    hints = stage.get("hints") or []
-    notes = session.get("notes_count", 0)
-    bar(stdscr, curses, h - 1, w,
-        f" c mysql 접속   r 상황 보고   n 지난 기록({notes})   "
-        f"h 힌트({session['hints_used']}/{len(hints)})   q 포기 ")
+    bar(stdscr, curses, h - 1, w, play_footer(stage, session))
     stdscr.refresh()
 
 

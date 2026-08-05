@@ -1557,6 +1557,58 @@ class SessionIndexValidationTest(unittest.TestCase):
                          self._errs(stage))
 
 
+class ClientLabelTest(unittest.TestCase):
+    """화면이 안내하는 클라이언트 이름은 실제로 뜨는 것과 같아야 한다.
+
+    `client_command()`는 처음부터 벤더에 따라 `mysql`/`psql`을 골랐는데 HUD의
+    라벨만 `mysql`로 굳어 있었다. PostgreSQL 스테이지에서 화면은 "c 키로 mysql
+    접속"이라 하고 `c`를 누르면 psql이 뜬다 — 게다가 바로 아랫줄의 접속 명령
+    (`_connect_hint`)은 psql을 제대로 안내해서, 한 화면이 서로 다른 두 클라이언트를
+    가리켰다.
+    """
+
+    def _stage(self, name):
+        return shooting.load_stage(
+            REPO_ROOT / "shooting" / "stages" / name)
+
+    def test_names_the_client_each_vendor_actually_launches(self):
+        self.assertEqual(
+            shooting.client_name(self._stage("1-1-runaway-query.json")),
+            "mysql")
+        self.assertEqual(
+            shooting.client_name(
+                self._stage("pg-1-1-idle-in-transaction.json")),
+            "psql")
+
+    def test_every_stage_footer_names_the_binary_that_will_run(self):
+        """라벨과 명령이 각자 벤더를 판단하면 또 갈라진다 — 묶어서 고정한다."""
+        for path in shooting.discover_stages():
+            stage = shooting.load_stage(path)
+            session = shooting.init_session(stage)
+            target = shooting.default_target(stage)
+            binary = shooting.client_command(stage, None, target)[0]
+            self.assertIn(f"c {binary} 접속",
+                          shooting.play_footer(stage, session), path.name)
+
+    def test_footer_still_carries_the_other_keys(self):
+        stage = self._stage("pg-1-1-idle-in-transaction.json")
+        session = shooting.init_session(stage)
+        session["notes_count"] = 2
+        footer = shooting.play_footer(stage, session)
+        for piece in ("r 상황 보고", "지난 기록(2)", "q 포기",
+                      f"h 힌트(0/{len(stage['hints'])})"):
+            self.assertIn(piece, footer)
+
+    def test_connect_failure_hint_is_vendor_specific(self):
+        # MySQL 쪽 함정(~/.my.cnf 가 MYSQL_PWD 를 이긴다)은 psql 과 무관하다.
+        mysql_hint = shooting.client_error_hint("primary")
+        self.assertIn(".my.cnf", mysql_hint)
+        pg_hint = shooting.client_error_hint("postgres")
+        self.assertNotIn(".my.cnf", pg_hint)
+        self.assertNotIn("MYSQL_PWD", pg_hint)
+        self.assertIn("--with-postgresql", pg_hint)
+
+
 class WaitUntilTest(unittest.TestCase):
     """폴링 대기를 한 군데로 모은 헬퍼.
 
