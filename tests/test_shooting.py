@@ -1510,6 +1510,39 @@ class SessionIndexValidationTest(unittest.TestCase):
              "sql": "UPDATE t SET s='P' WHERE id = {{session_index}}"}])
         self.assertEqual(self._errs(stage), [])
 
+    def test_the_engine_substitutes_exactly_where_validation_allows(self):
+        """엔진과 검증기가 같은 규칙을 말해야 한다.
+
+        검증기는 `{{session_index}}`를 `sessions` 단계의 `sql` 에서만 허용하는데
+        엔진은 단수 `session` 단계에도 치환을 걸고 있었다. 검증이 막아 주니 결과는
+        같지만, 규칙이 두 곳에 서로 다르게 적혀 있으면 다음 사람이 어느 쪽을 믿을지
+        모른다 — 한쪽만 고쳐도 조용히 갈라진다.
+        """
+        spawned = []
+        names = ("kill_app_sessions", "reset_player_log", "app_session_pids",
+                 "db_spawn", "_wait_for_new_sessions", "_wait_for_incident",
+                 "container_started_at")
+        real = {n: getattr(shooting, n) for n in names}
+        shooting.kill_app_sessions = lambda t: None
+        shooting.reset_player_log = lambda t: None
+        shooting.app_session_pids = lambda t: set()
+        shooting.db_spawn = (lambda t, u, p, sql, idle_seconds=0:
+                             spawned.append(sql))
+        shooting._wait_for_new_sessions = (
+            lambda t, before, count, timeout=20: set(range(count)))
+        shooting._wait_for_incident = lambda stage, timeout=30: True
+        shooting.container_started_at = lambda t: "t0"
+        stage = _minimal_stage(setup=[
+            {"type": "session", "on": "primary",
+             "sql": "SELECT '{{session_index}}'"}])
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                shooting.setup_stage(stage, log=lambda *a: None)
+        finally:
+            for n, fn in real.items():
+                setattr(shooting, n, fn)
+        self.assertEqual(spawned, ["SELECT '{{session_index}}'"])
+
     def test_rejected_in_a_singular_session_step(self):
         # 단수 session 은 하나뿐이라 번호에 의미가 없다.
         stage = _minimal_stage(setup=[
@@ -3328,6 +3361,23 @@ class PostgresStageTest(unittest.TestCase):
             self.assertEqual(len(set(ids)), len(ids), (seed, ids))
             self.assertTrue(all(1 <= v <= locked_to for v in ids),
                             (seed, ids, locked_to))
+
+    def test_the_two_var_ranges_cannot_drift_apart(self):
+        """피해자가 잠긴 구간 안에 있는 것은 **두 선언 사이의 관계**다.
+
+        위 테스트의 `1 <= v` 는 정규식이 `1 + ` 를 읽어 값을 복원하므로 항상 참이고,
+        상한도 시드 100개 표본에 기대고 있다. 지키려는 것은 그 표본이 아니라
+        `payments` 를 넓히거나 `rows` 를 좁히면 피해자가 구간 밖으로 나간다는
+        사실이므로, 선언값에서 직접 본다 — 구간 밖 피해자는 아무에게도 막히지 않아
+        '결제가 멈췄다'는 장애가 애초에 성립하지 않는다.
+        """
+        base = shooting.load_stage(
+            REPO_ROOT / "shooting" / "stages"
+            / "pg-1-1-idle-in-transaction.json")
+        payments, rows = base["vars"]["payments"], base["vars"]["rows"]
+        # 피해자 id는 1 .. payments.max, 범인은 1 .. rows.min 이상을 잠근다.
+        self.assertLessEqual(payments["max"], rows["min"],
+                             f"payments {payments} 가 rows {rows} 를 넘는다")
 
     def test_variables_are_all_declared(self):
         """{{이름}}이 vars에 없으면 그대로 SQL에 실려 나간다.
