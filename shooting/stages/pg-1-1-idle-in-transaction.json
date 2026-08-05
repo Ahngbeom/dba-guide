@@ -45,8 +45,8 @@
       "user": "app",
       "password": "app",
       "count": "{{payments}}",
-      "_comment": "피해자들. 배치가 잠근 범위 안의 행을 건드리려다 막힌다. **세션마다 다른 행을 고르는 것이 중요하다** — 전부 같은 행을 노리면 서로도 막아서 pg_blocking_pids가 범인 하나가 아니라 사슬 전체를 지목한다(실측). 그러면 도구가 지목한 세션을 끊었다가 kill_precision에 걸리는 부당한 함정이 된다. idle_seconds를 주지 않는 이유는 이미 잠금 대기로 붙잡혀 있기 때문이고, 범인이 사라지면 각자 커밋하고 스스로 빠져나간다 — 그래서 복구를 확인하려고 플레이어가 손으로 UPDATE할 필요가 없다.",
-      "sql": "UPDATE orders SET status = 'PAID' WHERE id = 1 + floor(random() * {{rows}})::int"
+      "_comment": "피해자들. 배치가 잠근 범위 안의 행을 건드리려다 막힌다. **세션마다 다른 행을 잡는 것이 판정의 전제다** — session_index 치환자가 그것을 구조적으로 보장한다(예전에는 random()이라 최악 조합에서 41% 확률로 겹쳤다). 겹치면 PostgreSQL이 같은 튜플의 대기자를 tuple lock으로 직렬화하는 탓에 pg_blocking_pids가 사슬 중간을 지목한다. 실측: 넷이 같은 행을 노렸을 때 막힌 네 줄 중 범인이 등장하는 것은 한 줄뿐이었고 마지막 대기자의 blockers에는 범인이 아예 없었다 — 도구가 피해자를 가리키니 그것을 끊었다가 kill_precision에 걸리는 부당한 함정이 된다. (MySQL 1-3이 피해자 전원을 같은 행에 몰아넣고도 멀쩡한 것은 InnoDB가 blocker로 락 보유자를 보고하기 때문이다.) payments가 최대 6이고 rows가 최소 30이라 id 1~6은 항상 잠긴 구간 안이다. idle_seconds를 주지 않는 이유는 이미 잠금 대기로 붙잡혀 있기 때문이고, 범인이 사라지면 각자 커밋하고 스스로 빠져나간다 — 그래서 복구를 확인하려고 플레이어가 손으로 UPDATE할 필요가 없다.",
+      "sql": "UPDATE orders SET status = 'PAID' WHERE id = 1 + {{session_index}}"
     }
   ],
   "objectives": [

@@ -404,6 +404,31 @@ ERROR 1556 (HY000): You can't use locks with log tables.
 세션 단계의 필드: `on`(기본 `primary`), `user`/`password`(기본 `app`/`app`),
 `name`(로그 표시용), `count`(`sessions`만), `culprit`, `idle_seconds`.
 
+`sessions` 단계의 `sql` 안에서는 **`{{session_index}}`** 를 쓸 수 있다. 엔진이
+세션을 띄우면서 0, 1, 2… 로 채우므로 "각자 다른 대상을 잡는 세션 N개"를 선언적으로
+쓸 수 있다. 이 이름은 `vars`에 선언하지 않으며(선언하면 검증 실패), **`sessions`
+단계의 `sql` 밖에서 쓰면 검증이 거부한다** — 다른 자리에서는 치환될 기회가 없어
+원문이 그대로 SQL이나 플레이어 화면에 나가기 때문이다.
+
+세션들이 같은 행을 노려도 되는지는 **벤더에 따라 다르다.** MySQL 1-3은 피해자
+전원을 같은 행에 몰아넣는다 — InnoDB는 대기자를 같은 레코드 락 큐에 붙이고
+blocker로 **락 보유자**를 보고하므로 진단 화면이 범인 하나를 가리킨다. PostgreSQL은
+같은 튜플의 대기자를 **tuple lock으로 직렬화**하므로 `pg_blocking_pids`가 사슬
+중간을 지목한다. 실측(피해자 4개가 같은 행):
+
+```
+    pid  state                 wait    blocked_by
+    140  idle in transaction   Client  -              ← 범인
+    153  active                Lock    140
+    162  active                Lock    153
+    169  active                Lock    153,162
+    175  active                Lock    153,162,169
+```
+
+막힌 네 줄 중 범인이 등장하는 것은 한 줄뿐이고, pid 175의 blockers에는 범인이
+없다. '사슬의 뿌리를 끊어라'를 가르치는 스테이지에서 이건 부당한 함정이므로,
+PostgreSQL 잠금 스테이지의 피해자는 `{{session_index}}`로 행을 갈라야 한다.
+
 `idle_seconds`를 주면 `sql`을 실행한 뒤 그만큼 **접속만 붙잡고 논다**
 (`Command=Sleep`). 커넥션 풀 누수를 재현하려면 이게 필요하다 — 기본값인
 `mysql -e`는 질의가 끝나면 바로 끊고, `SELECT SLEEP()`은 `Command=Query`로 잡혀

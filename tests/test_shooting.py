@@ -2795,17 +2795,58 @@ class PostgresStageTest(unittest.TestCase):
                     self.assertIsNone(re.search(c["pattern"], kill),
                                       (st["id"], kill))
 
+    def test_victims_take_distinct_rows_inside_the_lock(self):
+        """피해자가 서로 다른 행을 잡아야 pg_blocking_pids 가 범인만 지목한다.
+
+        실측(설계 문서 참고): 넷이 같은 행을 노리면 막힌 네 줄 중 범인이 등장하는
+        것은 한 줄뿐이고, 마지막 대기자의 blockers 에는 범인이 아예 없다.
+        PostgreSQL이 같은 튜플의 대기자를 tuple lock 으로 직렬화하기 때문이다.
+        그 상태에서는 '사슬의 뿌리를 끊어라'라는 이 스테이지의 교훈이 정확히
+        반대를 가리킨다.
+
+        범위 관계도 함께 고정한다 — payments 와 rows 는 따로 선언된 두 변수라,
+        한쪽만 넓히면 피해자가 잠긴 구간 밖으로 나가 아무에게도 막히지 않는다.
+        """
+        base = shooting.load_stage(
+            REPO_ROOT / "shooting" / "stages"
+            / "pg-1-1-idle-in-transaction.json")
+        for seed in range(100):
+            st = shooting.render_stage(base, random.Random(seed))
+            culprit = next(s for s in st["setup"] if s.get("culprit"))
+            victims = next(s for s in st["setup"]
+                           if s["type"] == "sessions")
+            locked_to = int(re.search(r"id <= (\d+)", culprit["sql"]).group(1))
+            ids = []
+            for i in range(int(victims["count"])):
+                sql = shooting.render_session_sql(victims["sql"], i)
+                # 렌더링은 문자열 치환일 뿐이라 "id = 1 + {{session_index}}"는
+                # "id = 1 + N"으로 남는다(실제 값은 실행 시점에 PostgreSQL이
+                # 계산한다) — 그래서 산술식을 그대로 읽어 최종 id를 구한다.
+                ids.append(1 + int(re.search(r"id = 1 \+ (\d+)", sql).group(1)))
+            self.assertEqual(len(set(ids)), len(ids), (seed, ids))
+            self.assertTrue(all(1 <= v <= locked_to for v in ids),
+                            (seed, ids, locked_to))
+
     def test_variables_are_all_declared(self):
-        """{{이름}}이 vars에 없으면 그대로 SQL에 실려 나간다."""
+        """{{이름}}이 vars에 없으면 그대로 SQL에 실려 나간다.
+
+        session_index는 예외다 — vars에 선언하면 검증이 거부하는 예약 이름이라
+        (validate_stage), 여기서도 이미 알려진 이름으로 쳐준다.
+        """
         for st in self.stages:
-            declared = set((st.get("vars") or {}))
+            declared = set((st.get("vars") or {})) | {shooting.SESSION_INDEX_VAR}
             used = set(re.findall(r"\{\{(\w+)\}\}", json.dumps(st)))
             self.assertEqual(used - declared, set(), st["id"])
 
     def test_rendering_leaves_no_placeholder(self):
+        """render_stage는 vars만 채운다 — session_index는 setup_stage가 세션을
+        띄우는 시점에야 채워지므로, 렌더링 직후에는 그 자리만 예외적으로 남는다.
+        """
         for st in self.stages:
             out = json.dumps(shooting.render_stage(st, random.Random(5)))
-            self.assertNotIn("{{", out, st["id"])
+            leftover = set(re.findall(r"\{\{(\w+)\}\}", out))
+            self.assertEqual(leftover - {shooting.SESSION_INDEX_VAR}, set(),
+                             st["id"])
 
     def test_state_objectives_hold_before_clearing(self):
         """hold_seconds 가 없으면 순간적인 빈틈에 클리어된다."""
