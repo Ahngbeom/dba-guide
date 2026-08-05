@@ -137,8 +137,8 @@
       "id": "no-sweep",
       "label": "pid를 확인하지 않은 일괄 종료",
       "detect": "forbidden_command",
-      "_comment": "PostgreSQL은 pg_terminate_backend(pid) FROM pg_stat_activity 로 pid를 하나도 적지 않고 세션을 쓸어버릴 수 있다. 숫자가 아닌 인자를 넘기는 형태만 걸린다 — 범인의 pid를 짚어 끊는 정상 복구는 걸리지 않는다. kill_precision은 '어떤 pid를 끊었나'를 보는 도구라 pid가 적히지 않은 이 형태를 볼 수 없어서, 여기서 따로 막는다(MySQL에는 없는 구멍이다).",
-      "pattern": "(?i)pg_terminate_backend\\s*\\(\\s*(?!\\d)",
+      "_comment": "PostgreSQL은 pg_terminate_backend(pid) FROM pg_stat_activity 로 pid를 하나도 적지 않고 세션을 쓸어버릴 수 있다. 숫자가 아닌 인자를 넘기는 형태만 걸린다 — 범인의 pid를 짚어 끊는 정상 복구는 걸리지 않는다. kill_precision은 '어떤 pid를 끊었나'를 보는 도구라 pid가 적히지 않은 이 형태를 볼 수 없어서, 여기서 따로 막는다(MySQL에는 없는 구멍이다). 괄호 안의 공백은 반드시 **전방탐색 안**에서 건너뛴다 — `\\(\\s*(?!\\d)` 로 밖에 두면 엔진이 \\s*를 0글자로 역추적해 공백 위에서 (?!\\d)를 재평가하고, `pg_terminate_backend( 2108 )` 같은 정상 복구가 위반으로 잡힌다.",
+      "pattern": "(?i)pg_terminate_backend\\s*\\((?!\\s*\\d)",
       "max_matches": 0
     }
   ],

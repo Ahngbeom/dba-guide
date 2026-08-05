@@ -2597,25 +2597,48 @@ class PostgresStageTest(unittest.TestCase):
             for step in st.get("setup") or []:
                 self.assertEqual(step.get("on"), "postgres", st["id"])
 
+    # 감시가 돌려주는 것은 플레이어가 **친 그대로**의 문장이다(개행·탭만 공백으로
+    # 눌린다). 그러니 패턴은 한 가지 표기가 아니라 사람이 실제로 쓰는 폭을 감당해야
+    # 한다 — 특히 괄호 안팎의 공백은 붙여넣기에서 흔하다.
+    SWEEPS = (
+        "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+        "WHERE state like 'idle%'",
+        "SELECT pg_terminate_backend( pid ) FROM pg_stat_activity",
+        "SELECT pg_terminate_backend(a.pid) FROM pg_stat_activity a",
+        "select pg_terminate_backend (pid) from pg_stat_activity",
+    )
+    PRECISE_KILLS = (
+        "SELECT pg_terminate_backend(2108)",
+        "SELECT pg_terminate_backend( 2108 )",
+        "SELECT pg_terminate_backend(2108);",
+        "select pg_terminate_backend (2108);",
+        "SELECT pg_terminate_backend(  2108  );",
+    )
+
     def test_sweep_pattern_catches_the_blanket_kill(self):
         """2단계에서 확인한 구멍(pid 없는 쓸기)을 스테이지가 직접 막아야 한다."""
         for st in self.stages:
             pats = [c["pattern"] for c in st.get("constraints") or []
                     if c.get("detect") == "forbidden_command"]
             self.assertTrue(pats, st["id"])
-            sweep = ("SELECT pg_terminate_backend(pid) "
-                     "FROM pg_stat_activity WHERE state like 'idle%'")
-            self.assertTrue(any(re.search(p, sweep) for p in pats), st["id"])
+            for sweep in self.SWEEPS:
+                self.assertTrue(any(re.search(p, sweep) for p in pats),
+                                (st["id"], sweep))
 
     def test_sweep_pattern_lets_a_precise_kill_through(self):
-        """정확한 복구가 감점되면 스테이지가 거짓말을 하는 것이다."""
+        """정확한 복구가 감점되면 스테이지가 거짓말을 하는 것이다.
+
+        pid를 짚어 끊는 것은 이 스테이지가 가르치려는 **정답**이다. 괄호 뒤에
+        공백을 하나 넣었다고 감점되면, 플레이어는 자기가 뭘 잘못했는지 알 길이
+        없는 채로 등급을 잃는다.
+        """
         for st in self.stages:
             for c in st.get("constraints") or []:
                 if c.get("detect") != "forbidden_command":
                     continue
-                self.assertIsNone(
-                    re.search(c["pattern"],
-                              "SELECT pg_terminate_backend(2108)"), st["id"])
+                for kill in self.PRECISE_KILLS:
+                    self.assertIsNone(re.search(c["pattern"], kill),
+                                      (st["id"], kill))
 
     def test_variables_are_all_declared(self):
         """{{이름}}이 vars에 없으면 그대로 SQL에 실려 나간다."""
