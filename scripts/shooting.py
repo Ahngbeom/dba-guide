@@ -541,7 +541,10 @@ def build_note(stage, session, result, today):
             f"진단 정확도 {correct}/{total} · "
             f"금지 행동 {len(session.get('violations') or [])}건 · "
             f"힌트 {session.get('hints_used', 0)}회",
-            "이 노트는 `n` 키로 다음 스테이지에서도 다시 꺼내 볼 수 있습니다."]
+            "이 노트는 `n` 키로 다음 스테이지에서도 다시 꺼내 볼 수 있습니다.",
+            # 포기한 판에는 해설('더 읽을 곳')이 붙지 않는다. 회고를 쓰다 막히는
+            # 것은 그때가 더 흔하므로, 템플릿의 출처는 노트 자체가 들고 있는다.
+            f"위 템플릿과 5 Whys는 {POSTMORTEM_CHAPTER} 의 실습입니다."]
     return "\n".join(out) + "\n"
 
 
@@ -993,6 +996,14 @@ def _validate_vars(stage):
     return errs
 
 
+# 모든 스테이지가 끝나면 회고를 쓴다 — `build_note()`가 만드는 초안의 템플릿과
+# 빈칸으로 남긴 5 Whys가 바로 이 챕터의 실습이다. 그래서 이 링크는 어느 한
+# 스테이지의 주제가 아니라 **게임의 구조**에 딸려 있다. 스테이지 14개의
+# `chapters`에 적어 넣으면 같은 상수를 14벌 복사하는 것이고, `connect_hint`가
+# 정확히 그렇게 썩었다.
+POSTMORTEM_CHAPTER = "03-advanced/09-incident-response-and-postmortem.md"
+
+
 def chapter_title(repo_root, rel):
     """챕터 파일의 첫 제목(`# …`). 못 읽으면 None.
 
@@ -1009,14 +1020,17 @@ def chapter_title(repo_root, rel):
 
 
 def chapter_reading_list(stage, repo_root=None):
-    """클리어 후 보여줄 '더 읽을 곳'. `chapters`가 없으면 None.
+    """클리어 후 보여줄 '더 읽을 곳'.
 
     읽기(챕터) → 확인(`./exam`) → 겪기(`./shoot`)에서 마지막 축만 앞의 둘과
     끊겨 있었다. 장애를 막 겪은 직후가 그 주제를 읽기에 가장 좋은 때다.
+
+    회고 챕터는 스테이지가 아니라 **게임의 구조**에 딸려 있어 항상 붙는다
+    (`POSTMORTEM_CHAPTER` 주석 참고).
     """
-    chapters = stage.get("chapters") or []
-    if not chapters:
-        return None
+    chapters = list(stage.get("chapters") or [])
+    if POSTMORTEM_CHAPTER not in chapters:
+        chapters.append(POSTMORTEM_CHAPTER)
     root = repo_root or REPO_ROOT
     lines = []
     for rel in chapters:

@@ -1557,6 +1557,101 @@ class SessionIndexValidationTest(unittest.TestCase):
                          self._errs(stage))
 
 
+class ReadmeStageTableTest(unittest.TestCase):
+    """README의 스테이지 표는 목록 화면과 같은 것을 말해야 한다.
+
+    표 한가운데 빈 줄이 하나 들어가 4-3·4-2 두 줄이 머리글에서 떨어져 나간 적이
+    있다. GFM에서 머리글 없는 행은 표가 아니라 본문 텍스트로 렌더링되므로,
+    저장소를 웹에서 보는 사람에게는 파이프 문자가 그대로 노출된다. 마크다운은
+    깨져도 조용하다 — 그래서 테스트가 본다.
+    """
+
+    def _readme(self):
+        return (REPO_ROOT / "README.md").read_text(encoding="utf-8").splitlines()
+
+    def _stage_rows(self):
+        """`| 🔥 **1-1 …** |` 꼴 행을 (줄번호, 스테이지번호)로."""
+        rx = re.compile(r"^\|\s*[🔥🔧]\s*\*\*([\d-]+)\s")
+        return [(i, m.group(1))
+                for i, line in enumerate(self._readme())
+                if (m := rx.match(line))]
+
+    def test_every_stage_has_a_row(self):
+        listed = {num for _, num in self._stage_rows()}
+        for path in shooting.discover_stages():
+            stage = shooting.load_stage(path)
+            num = f"{stage['world']}-{stage['stage']}"
+            self.assertIn(num, listed, stage["id"])
+
+    def test_rows_never_drift_away_from_their_header(self):
+        # 행이 속한 파이프 블록 안에 구분행(|---|)이 있어야 표로 렌더링된다.
+        lines = self._readme()
+        for i, num in self._stage_rows():
+            top = i
+            while top > 0 and lines[top - 1].startswith("|"):
+                top -= 1
+            block = []
+            j = top
+            while j < len(lines) and lines[j].startswith("|"):
+                block.append(lines[j])
+                j += 1
+            self.assertTrue(any(set(b) <= set("|- :") for b in block),
+                            f"{num} 행(README:{i + 1})이 머리글 없는 표에 있다")
+
+    def test_rows_are_in_stage_order(self):
+        """목록 화면은 world·stage 순으로 정렬한다. 문서만 뒤바뀌면 서로 다르다.
+
+        표가 둘(MySQL·PostgreSQL)이고 PostgreSQL 월드 번호는 다시 1부터
+        시작하므로, 전체가 아니라 **한 표 안의** 순서를 본다.
+        """
+        lines = self._readme()
+        blocks = {}
+        for i, num in self._stage_rows():
+            top = i
+            while top > 0 and lines[top - 1].startswith("|"):
+                top -= 1
+            blocks.setdefault(top, []).append(num)
+        self.assertTrue(blocks, "README에서 스테이지 표를 찾지 못했다")
+        key = lambda n: [int(x) for x in n.split("-")]      # noqa: E731
+        for top, nums in blocks.items():
+            self.assertEqual(nums, sorted(nums, key=key),
+                             f"README:{top + 1} 표의 순서가 스테이지 번호와 다르다")
+
+
+class PostmortemChapterTest(unittest.TestCase):
+    """회고 챕터는 스테이지 하나가 아니라 **게임의 구조**에 딸려 있다.
+
+    README는 "모든 스테이지가 고급 09의 회고 루프와 이어진다"고 하고
+    `build_note`도 그 챕터의 템플릿을 따른다고 적어두었는데, 정작 그 경로를
+    `chapters`에 넣은 스테이지가 하나도 없어 '더 읽을 곳'에 한 번도 뜨지 않았다.
+    14벌로 복사해 넣으면 connect_hint 처럼 썩으므로 엔진이 붙인다.
+    """
+
+    def test_the_chapter_file_exists(self):
+        self.assertTrue((REPO_ROOT / shooting.POSTMORTEM_CHAPTER).is_file(),
+                        shooting.POSTMORTEM_CHAPTER)
+
+    def test_every_stage_points_at_it_after_the_run(self):
+        for path in shooting.discover_stages():
+            stage = shooting.load_stage(path)
+            self.assertIn(shooting.POSTMORTEM_CHAPTER,
+                          shooting.chapter_reading_list(stage), path.name)
+
+    def test_it_is_not_listed_twice(self):
+        stage = _minimal_stage(chapters=[shooting.POSTMORTEM_CHAPTER])
+        listing = shooting.chapter_reading_list(stage)
+        self.assertEqual(listing.count(shooting.POSTMORTEM_CHAPTER), 1)
+
+    def test_the_note_points_at_it_too(self):
+        """포기해도 노트는 쓴다 — 해설(더 읽을 곳)이 붙지 않는 그 경로가 특히."""
+        stage = shooting.load_stage(
+            REPO_ROOT / "shooting" / "stages" / "1-1-runaway-query.json")
+        session = shooting.init_session(stage)
+        result = shooting.summarize(stage, session)
+        note = shooting.build_note(stage, session, result, "2026-08-05")
+        self.assertIn(shooting.POSTMORTEM_CHAPTER, note)
+
+
 class ConnectHintIsGeneratedTest(unittest.TestCase):
     """접속 명령의 단일 출처는 `PLAYER_*` 상수다.
 
@@ -2620,8 +2715,15 @@ class ChapterLinkTest(unittest.TestCase):
         self.assertIn("트랜잭션", text)          # 파일명이 아니라 제목이 보인다
         self.assertIn("02-intermediate", text)   # 경로도 함께
 
-    def test_no_chapters_means_no_section(self):
-        self.assertIsNone(shooting.chapter_reading_list({}))
+    def test_the_section_is_never_empty(self):
+        """예전에는 `chapters`가 없으면 None이었다 — 빈 섹션을 띄우지 않으려고.
+
+        회고 챕터가 항상 붙게 되면서 목록이 빌 수 없어졌으므로, 지키려던 것
+        ("내용 없는 '더 읽을 곳'을 보여주지 않는다")을 그대로 다시 적는다.
+        """
+        listing = shooting.chapter_reading_list({})
+        self.assertTrue(listing and listing.strip())
+        self.assertIn(shooting.POSTMORTEM_CHAPTER, listing)
 
 
 class StageMenuTest(unittest.TestCase):
