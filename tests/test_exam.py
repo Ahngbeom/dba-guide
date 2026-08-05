@@ -639,23 +639,27 @@ class AnswerLeakLintTest(unittest.TestCase):
     # 보기 길이 단서 (래칫)
     #
     # 보기 순서는 출제할 때 섞으므로 위치는 정답을 알려주지 않는다. 그런데 **길이**
-    # 는 알려준다 — 측정 시점 85문항 중 67개(79%)에서 정답이 가장 긴 보기였고,
-    # 정답 평균 37자 대 오답 21자였다. "항상 가장 긴 것을 찍는다"가 79%를 내는데
-    # 통과 기준이 70%라, 한 문제도 읽지 않고 객관식을 통과할 수 있었다.
+    # 는 알려준다 — 처음 측정했을 때 85문항 중 64개(75%)에서 정답이 다른 어떤 보기
+    # 보다 길었고, 정답 평균 37자 대 오답 21자였다. "항상 가장 긴 것을 찍는다"만으로
+    # 통과 기준(70%)을 넘겨, 한 문제도 읽지 않고 객관식을 통과할 수 있었다.
+    #
+    # **동점은 세지 않는다.** 정답과 같은 길이의 오답이 있으면 "가장 긴 것"을 고를
+    # 수 없으므로 단서가 성립하지 않는다. 오히려 "A는 X, B는 Y"의 정답에 "A는 Y,
+    # B는 X"를 짝지으면 길이가 저절로 같아지는데, 그건 가장 좋은 오답 작성법이라
+    # 벌하면 안 된다(그래서 `>` 로 센다. 동점까지 세면 처음 수치는 67/85였고,
+    # 어느 기준으로 보든 우연 기대치 25%를 크게 넘었다).
     #
     # 원인은 출제 습관이다 — 정답은 정확하게 쓰려다 길어지고 오답은 짧게 던진다.
-    # 216문항을 손보는 것은 콘텐츠 작업이므로, 그 전에 **더 나빠지지 않게** 못을
-    # 박는다. 아래 수치는 고쳐야 할 빚의 잔액이고 **줄어드는 방향으로만** 바꾼다.
-    # 은행을 개선했으면 그 줄의 숫자를 함께 낮춰라(낮추지 않아도 통과하지만,
-    # 낮춰 두어야 다음 사람이 되돌리는 것을 막는다).
+    # 216문항을 한 번에 손볼 수는 없으므로 남은 빚을 아래에 고정한다.
+    # **줄어드는 방향으로만** 바꾼다 — 은행을 고쳤으면 그 줄의 숫자도 함께 낮춰라.
     # ------------------------------------------------------------------ #
     LONGEST_ANSWER_BASELINE = {
         "01-rdbms-fundamentals.json": 1,
         "02-sql-basics.json": 1,
-        "03-installation-and-access.json": 2,
+        "03-installation-and-access.json": 0,
         "04-user-and-privilege-management.json": 2,
         "05-backup-basics.json": 3,
-        "06-basic-monitoring.json": 2,
+        "06-basic-monitoring.json": 1,
         "01-transaction-and-locking.json": 3,
         "02-indexing-and-query-tuning.json": 3,
         "03-performance-monitoring.json": 4,
@@ -664,23 +668,23 @@ class AnswerLeakLintTest(unittest.TestCase):
         "06-schema-change-management.json": 3,
         "07-cloud-db-infra-and-connection.json": 4,
         "08-cloud-managed-db-basics.json": 5,
-        "01-advanced-performance-tuning.json": 3,
-        "02-high-availability-and-failover.json": 3,
-        "03-disaster-recovery.json": 3,
-        "04-scaling-and-sharding.json": 3,
-        "05-security-and-compliance.json": 3,
+        "01-advanced-performance-tuning.json": 0,
+        "02-high-availability-and-failover.json": 0,
+        "03-disaster-recovery.json": 0,
+        "04-scaling-and-sharding.json": 0,
+        "05-security-and-compliance.json": 0,
         "06-automation-and-iac.json": 2,
-        "07-cloud-managed-db-advanced.json": 4,
-        "08-kubernetes-db-operators.json": 3,
-        "09-incident-response-and-postmortem.json": 3,
+        "07-cloud-managed-db-advanced.json": 0,
+        "08-kubernetes-db-operators.json": 0,
+        "09-incident-response-and-postmortem.json": 0,
     }
-    # 정답 평균 길이 ÷ 오답 평균 길이. 측정 시점 1.7571.
-    LENGTH_RATIO_BASELINE = 1.76
+    # 정답 평균 길이 ÷ 오답 평균 길이. 처음 1.7571 → 03-advanced 정리 후 1.3929.
+    LENGTH_RATIO_BASELINE = 1.40
 
     @staticmethod
     def _longest_is_answer(q):
-        return (len(q["choices"][q["answer"]])
-                == max(len(c) for c in q["choices"]))
+        others = [len(c) for i, c in enumerate(q["choices"]) if i != q["answer"]]
+        return len(q["choices"][q["answer"]]) > max(others)
 
     def _mcq(self, path):
         return [q for q in json.loads(path.read_text(encoding="utf-8"))
