@@ -2754,7 +2754,7 @@ def cmd_replay(stage_id=None):
         where = f"'{stage_id}'의 " if stage_id else ""
         print(f"\n{where}지난 기록을 찾을 수 없습니다.")
         print("한 판 끝내면 시드가 기록되어 다시 열 수 있습니다.")
-        print("(시드는 변주가 있는 스테이지에만 의미가 있습니다.)\n")
+        print("(시드는 `vars`나 mcq 진단 문항이 있는 스테이지에만 의미가 있습니다.)\n")
         return 1
     sid, seed = found
     print(f"\n지난 판을 다시 엽니다 — {sid}  (시드 {seed})")
@@ -2879,6 +2879,20 @@ def filter_stages_by_dbms(entries, dbms):
 def stage_dbms(stage):
     """스테이지의 DBMS. 적지 않았으면 MySQL이다(기존 스테이지가 그렇다)."""
     return (stage or {}).get("dbms") or "mysql"
+
+
+def stage_seed_matters(stage):
+    """이 스테이지에서 시드가 실제로 판을 가르는가.
+
+    `vars`가 있으면 파라미터가 시드로 갈리고(render_stage), mcq 진단 문항이
+    있으면 보기 순서가 시드로 섞인다(init_session) — 둘 다 없으면 시드는
+    기록될 뿐 아무것도 바꾸지 않는다.
+    """
+    if stage.get("vars"):
+        return True
+    return any(o.get("type") == "quiz"
+               and (o.get("question") or {}).get("type") == "mcq"
+               for o in stage.get("objectives", []))
 
 
 def group_by_dbms(entries):
@@ -3112,12 +3126,13 @@ def cmd_play(target=None, force_line=False, seed=None, dbms=None):
         print(f"스테이지 정의 오류: {e}")
         return 1
 
-    # 시드는 스테이지에 `vars`가 있을 때만 의미가 있지만, 없을 때도 기록해 둔다 —
-    # 나중에 그 스테이지에 변주가 생겨도 지난 기록의 형식이 달라지지 않는다.
+    # 시드는 `vars`가 있을 때뿐 아니라 mcq 진단 문항의 보기 순서도 가른다
+    # (init_session). 둘 다 없을 때도 기록은 남긴다 — 나중에 그 스테이지에
+    # 변주나 mcq가 생겨도 지난 기록의 형식이 달라지지 않는다.
     if seed is None:
         seed = random.randrange(1, 1_000_000)
     stage = dict(render_stage(stage, random.Random(seed)), _seed=seed)
-    if stage.get("vars"):
+    if stage_seed_matters(stage):
         print(f"이번 판 시드: {seed}  "
               f"(같은 판을 다시 하려면 --seed {seed})")
 

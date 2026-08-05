@@ -1433,6 +1433,7 @@ class RenderSessionSqlTest(unittest.TestCase):
         sql = "SELECT {{" + shooting.SESSION_INDEX_VAR + "}}"
         self.assertEqual(shooting.render_session_sql(sql, 5), "SELECT 5")
 
+
 class SetupStageSessionIndexTest(unittest.TestCase):
     """세션 기동 루프가 번호를 넘기는지.
 
@@ -1643,7 +1644,11 @@ class CmdPlayWiringTest(unittest.TestCase):
 
     @contextlib.contextmanager
     def _fake_lab(self):
-        """랩 대신 화면 함수가 받은 (stage, session)을 붙잡는다."""
+        """랩 대신 화면 함수가 받은 (stage, session)을 붙잡는다.
+
+        표준출력도 `seen["stdout"]`에 남긴다 — 지워 없애기만 하면 "시드가
+        화면에 뜨는가" 같은 출력 자체를 검증하는 테스트를 못 짠다.
+        """
         seen = {}
         real = {name: getattr(shooting, name) for name in
                 ("lab_running", "lab_healthy", "setup_stage", "teardown_stage",
@@ -1663,10 +1668,12 @@ class CmdPlayWiringTest(unittest.TestCase):
         shooting.teardown_stage = lambda stage: None
         shooting.offer_note = lambda stage, session, result: None
         shooting.run_line = fake_run_line
+        buf = io.StringIO()
         try:
-            with contextlib.redirect_stdout(io.StringIO()):
+            with contextlib.redirect_stdout(buf):
                 yield seen
         finally:
+            seen["stdout"] = buf.getvalue()
             for name, fn in real.items():
                 setattr(shooting, name, fn)
 
@@ -1691,6 +1698,23 @@ class CmdPlayWiringTest(unittest.TestCase):
             shooting.cmd_play("1-1-runaway-query", force_line=True,
                               seed=self.SEED)
         self.assertGreaterEqual(seen["session"]["started"], seen["setup_done"])
+
+    def test_seed_is_shown_for_an_mcq_stage_without_vars(self):
+        """시드는 `vars`가 없어도 mcq 진단 문항이 있으면 판을 가른다
+        (init_session이 그 시드로 보기를 섞는다) — 화면에도 그만큼 떠야 한다.
+
+        2-1-replication-setup은 `vars` 없이 mcq 문항만 있는 스테이지다.
+        `vars`로만 게이트를 걸면 이런 스테이지에서는 시드가 한 번도 화면에
+        뜨지 않는다.
+        """
+        stage = shooting.load_stage(
+            REPO_ROOT / "shooting" / "stages" / "2-1-replication-setup.json")
+        self.assertFalse(stage.get("vars"))
+        with self._fake_lab() as seen:
+            rc = shooting.cmd_play("2-1-replication-setup", force_line=True,
+                                   seed=self.SEED)
+        self.assertEqual(rc, 0)
+        self.assertIn(f"이번 판 시드: {self.SEED}", seen["stdout"])
 
     def test_play_reopens_exactly_what_the_seed_describes(self):
         """`--seed`가 되살리는 판에는 변주와 보기 순서가 **둘 다** 들어 있다."""
@@ -2815,14 +2839,18 @@ class PostgresStageTest(unittest.TestCase):
             culprit = next(s for s in st["setup"] if s.get("culprit"))
             victims = next(s for s in st["setup"]
                            if s["type"] == "sessions")
-            locked_to = int(re.search(r"id <= (\d+)", culprit["sql"]).group(1))
+            m = re.search(r"id <= (\d+)", culprit["sql"])
+            self.assertIsNotNone(m, culprit["sql"])
+            locked_to = int(m.group(1))
             ids = []
             for i in range(int(victims["count"])):
                 sql = shooting.render_session_sql(victims["sql"], i)
                 # 렌더링은 문자열 치환일 뿐이라 "id = 1 + {{session_index}}"는
                 # "id = 1 + N"으로 남는다(실제 값은 실행 시점에 PostgreSQL이
                 # 계산한다) — 그래서 산술식을 그대로 읽어 최종 id를 구한다.
-                ids.append(1 + int(re.search(r"id = 1 \+ (\d+)", sql).group(1)))
+                m = re.search(r"id = 1 \+ (\d+)", sql)
+                self.assertIsNotNone(m, sql)
+                ids.append(1 + int(m.group(1)))
             self.assertEqual(len(set(ids)), len(ids), (seed, ids))
             self.assertTrue(all(1 <= v <= locked_to for v in ids),
                             (seed, ids, locked_to))
@@ -2845,12 +2873,16 @@ class PostgresStageTest(unittest.TestCase):
         예약어 하나만 걷어내고 나머지는 원래대로 전수 검사한다 — `{{이름}}`
         모양(`\\w+`)으로 좁히면 `{{pool.from}}`(점 표기 span) 같은 실제로 쓰이는
         형태나 `{{ rows }}`(공백 포함) 가 남아도 통과해버려, 검사가 실제
-        `_PLACEHOLDER_RE`(`\\{\\{\\s*([^{}]+?)\\s*\\}\\}`)보다 좁아진다.
+        `_PLACEHOLDER_RE`(`\\{\\{\\s*([^{}]+?)\\s*\\}\\}`)보다 좁아진다. 예약어를
+        걷어낼 때도 같은 정규식을 써야 한다 — 리터럴 `"{{session_index}}"`만
+        지우면 `{{ session_index }}`(공백 포함)처럼 엔진이 인정하는 다른
+        표기를 쓴 정상 스테이지가 오경보를 낸다.
         """
-        needle = "{{" + shooting.SESSION_INDEX_VAR + "}}"
+        needle_re = re.compile(
+            r"\{\{\s*" + re.escape(shooting.SESSION_INDEX_VAR) + r"\s*\}\}")
         for st in self.stages:
             out = json.dumps(shooting.render_stage(st, random.Random(5)))
-            out = out.replace(needle, "")
+            out = needle_re.sub("", out)
             self.assertNotIn("{{", out, st["id"])
 
     def test_state_objectives_hold_before_clearing(self):
