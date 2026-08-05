@@ -11,7 +11,6 @@
     "02-intermediate/03-performance-monitoring.md",
     "01-beginner/06-basic-monitoring.md"
   ],
-  "connect_hint": "MYSQL_PWD=shoot mysql -h127.0.0.1 -P3306 -udba",
   "setup": [
     {
       "type": "sql",

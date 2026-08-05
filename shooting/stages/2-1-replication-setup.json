@@ -10,7 +10,6 @@
   "chapters": [
     "02-intermediate/05-replication-basics.md"
   ],
-  "connect_hint": "MYSQL_PWD=shoot mysql -h127.0.0.1 -P3307 -udba   (replica / 리포팅 서버)",
   "setup": [
     {
       "type": "sql",

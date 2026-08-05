@@ -11,7 +11,6 @@
     "01-beginner/01-rdbms-fundamentals.md",
     "02-intermediate/06-schema-change-management.md"
   ],
-  "connect_hint": "MYSQL_PWD=shoot mysql -h127.0.0.1 -P3306 -udba",
   "vars": {
     "retries": {
       "type": "int",

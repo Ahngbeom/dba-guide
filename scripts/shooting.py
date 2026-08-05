@@ -1058,6 +1058,12 @@ def validate_stage(stage, repo_root=None):
         if not stage.get(field):
             errs.append(f"필수 필드 누락: {field}")
 
+    if "connect_hint" in stage:
+        # 조용히 무시하면 적어 넣은 사람은 왜 화면에 안 뜨는지 알 길이 없다.
+        errs.append("connect_hint: 더 이상 쓰지 않습니다 — 접속 명령은 "
+                    "PLAYER_* 상수에서 만들어집니다(손으로 적은 13벌이 "
+                    "전부 어긋나 있었습니다)")
+
     dbms = stage.get("dbms")
     if dbms and dbms not in VENDORS:
         errs.append(f"알 수 없는 dbms '{dbms}' (가능: {', '.join(VENDORS)})")
@@ -2190,10 +2196,14 @@ def summarize(stage, session):
 # 라인 모드 (curses 폴백)
 # --------------------------------------------------------------------------- #
 def _connect_hint(stage):
-    """수동 접속 명령. 접속 정보의 단일 출처는 위 PLAYER_* 상수다."""
-    hint = stage.get("connect_hint")
-    if hint:
-        return hint
+    """수동 접속 명령. 접속 정보의 단일 출처는 위 PLAYER_* 상수다.
+
+    스테이지가 이 명령을 직접 적을 수 없다. 예전에는 `connect_hint` 필드로
+    덮어쓸 수 있었고, 13개 스테이지가 저마다 한 벌씩 들고 있다가 **13개 전부**
+    여기서 만드는 것과 어긋났다(전부 `-D` 가 빠져, 안내대로 붙은 플레이어는 기본
+    데이터베이스 없이 시작했다). 포트·계정이 바뀌면 조용히 썩는 자리라
+    `validate_stage`가 그 필드를 아예 거부한다.
+    """
     first = default_target(stage)
     if vendor_of(first) == "postgresql":
         hint = (f"PGPASSWORD={PLAYER_PASSWORD} psql -h{PLAYER_HOST} "

@@ -11,7 +11,6 @@
     "02-intermediate/01-transaction-and-locking.md",
     "03-advanced/01-advanced-performance-tuning.md"
   ],
-  "connect_hint": "MYSQL_PWD=shoot mysql -h127.0.0.1 -P3306 -udba",
   "vars": {
     "base": {
       "type": "int",

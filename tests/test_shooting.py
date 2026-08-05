@@ -642,7 +642,7 @@ class ClientTargetTest(unittest.TestCase):
                           shooting.PLAYER_PORTS["replica"]])
 
     def test_connect_hint_mentions_the_replica_port(self):
-        # 2-2는 connect_hint를 직접 주므로 그 값이 replica를 안내해야 한다.
+        # 서버가 둘인 스테이지에서 primary 명령만 띄우면 현장을 놓친다.
         self.assertIn(shooting.PLAYER_PORTS["replica"],
                       shooting._connect_hint(self.multi))
 
@@ -1555,6 +1555,46 @@ class SessionIndexValidationTest(unittest.TestCase):
              "sql": "SELECT {{session_index}}"}])
         self.assertFalse([e for e in self._errs(stage) if "정의되지 않은" in e],
                          self._errs(stage))
+
+
+class ConnectHintIsGeneratedTest(unittest.TestCase):
+    """접속 명령의 단일 출처는 `PLAYER_*` 상수다.
+
+    스테이지 13개가 같은 명령을 손으로 들고 있었고, **13개 전부** 자동 생성본과
+    어긋나 있었다 — 전부 `-Dshop`이 빠져서, 안내대로 붙은 플레이어는 기본
+    데이터베이스 없이 시작했다. 포트나 계정이 바뀌면 13곳이 조용히 썩는 구조였다.
+    """
+
+    def test_no_stage_carries_a_hand_written_connect_command(self):
+        offenders = [p.name for p in shooting.discover_stages()
+                     if "connect_hint" in json.loads(
+                         Path(p).read_text(encoding="utf-8"))]
+        self.assertEqual(offenders, [])
+
+    def test_the_field_is_rejected_so_it_cannot_come_back_silently(self):
+        # 지원을 뗀 필드를 조용히 무시하면 적어 넣은 사람은 왜 안 뜨는지 모른다.
+        errs = shooting.validate_stage(
+            _minimal_stage(connect_hint="mysql -uroot"))
+        self.assertTrue(any("connect_hint" in e for e in errs), errs)
+
+    def test_every_stage_gets_a_usable_generated_hint(self):
+        for path in shooting.discover_stages():
+            stage = shooting.load_stage(path)
+            hint = shooting._connect_hint(stage)
+            first = shooting.default_target(stage)
+            self.assertIn(shooting.PLAYER_HOST, hint, path.name)
+            self.assertIn(shooting.PLAYER_PORTS[first], hint, path.name)
+            self.assertIn(shooting.PLAYER_USER, hint, path.name)
+            self.assertIn(shooting.PLAYER_PASSWORD, hint, path.name)
+            # 명령 이름은 그 스테이지가 실제로 띄우는 클라이언트여야 한다.
+            self.assertIn(shooting.client_name(stage), hint, path.name)
+
+    def test_a_second_server_is_still_pointed_at(self):
+        # 범인이 replica에 있는 스테이지에서 primary만 안내하면 현장을 놓친다.
+        stage = shooting.load_stage(
+            REPO_ROOT / "shooting" / "stages" / "2-1-replication-setup.json")
+        self.assertIn(shooting.PLAYER_PORTS["replica"],
+                      shooting._connect_hint(stage))
 
 
 class ClientLabelTest(unittest.TestCase):
