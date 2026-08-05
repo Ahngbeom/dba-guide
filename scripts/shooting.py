@@ -581,8 +581,13 @@ def client_targets(stage):
     return [first] + sorted(t for t in targets if t != first)
 
 
-def client_command(stage, pager=None, target="primary"):
+def client_command(stage, pager=None, target="primary", default_db=True):
     """대화형 DB 클라이언트 인자 목록. target 에 따라 mysql / psql 이 된다.
+
+    `default_db=False`면 `-D`를 붙이지 않는다. **없는 데이터베이스를 `-D`로
+    지정하면 접속 자체가 거부되기 때문이다**(`ERROR 1049`) — 붙고 나서 고르면
+    되는 옵션이 아니다. 판단은 `database_exists()`가 하고 여기는 순수하게 남는다
+    (매 프레임 그려지는 화면 코드가 이 함수를 부른다).
 
     직접 만든 콘솔을 대체한다. readline·히스토리·컬럼 완성·페이저·자동 세로
     출력을 전부 클라이언트가 제공하므로 우리가 다시 만들 이유가 없다.
@@ -607,10 +612,10 @@ def client_command(stage, pager=None, target="primary"):
             "-v", f"PROMPT1=[{label}] psql> ",
             "-v", f"PROMPT2=[{label}] psql| ",
         ]
-    cmd = [
-        "mysql",
-        f"-h{PLAYER_HOST}", f"-P{port}",
-        f"-u{PLAYER_USER}", f"-D{PLAYER_DB}",
+    cmd = ["mysql", f"-h{PLAYER_HOST}", f"-P{port}", f"-u{PLAYER_USER}"]
+    if default_db:
+        cmd.append(f"-D{PLAYER_DB}")
+    cmd += [
         # 행이 터미널보다 넓으면 알아서 \G 세로 출력으로 바꾼다.
         "--auto-vertical-output",
         f"--prompt=[{label}] mysql> ",
@@ -1366,8 +1371,13 @@ def open_db_client(stdscr, curses, stage, session, target="primary"):
     어느 서버로 붙든 마찬가지다: 명령 로그는 이미 서버별로 읽는다.
     """
     pager = CLIENT_PAGER if shutil.which("less") else None
+    # 기본 데이터베이스는 **있을 때만** 지정한다 — 없으면 접속 자체가 거부된다.
+    # 2-1의 replica 가 그렇다(setup 이 shop 을 드롭하고, 되살리는 것이 과제다).
+    # 여기서 한 번 물어보는 비용(docker 호출 1회)은 `c` 키를 누를 때뿐이다.
     return run_in_terminal(
-        stdscr, curses, client_command(stage, pager, target),
+        stdscr, curses,
+        client_command(stage, pager, target,
+                       default_db=database_exists(target)),
         env=client_env(target, pager),
         banner=client_banner(stage, session, target),
         on_error=client_error_hint(target))
@@ -1664,6 +1674,28 @@ def container_running(target):
     except LabError:
         return False
     return p.returncode == 0 and p.stdout.strip() == "true"
+
+
+def database_exists(target, name=PLAYER_DB):
+    """대상 서버에 그 데이터베이스가 있는가 → bool.
+
+    `mysql -D`는 접속 핸드셰이크에서 평가되므로, 없는 이름을 주면 "붙었는데 DB만
+    없다"가 아니라 **접속 자체가 거부**된다. 2-1은 setup이 replica의 `shop`을
+    드롭하고 복제를 붙이는 것이 플레이어의 과제라, 스테이지 대부분 동안 그 서버에
+    `shop`이 없다.
+
+    조회가 실패하면 '없다'로 본다 — 틀리는 방향을 고른 것이다. 없다고 잘못 보면
+    기본 데이터베이스 없이 붙을 뿐이지만, 있다고 잘못 보면 접속이 아예 안 된다.
+    """
+    if vendor_of(target) == "postgresql":
+        return True          # psql 은 -d postgres 로 붙고 그건 항상 있다
+    try:
+        rows = db_query(target,
+                        "SELECT count(*) FROM information_schema.schemata "
+                        f"WHERE schema_name = '{name}'")
+    except LabError:
+        return False
+    return coerce(first_scalar(rows)) == 1
 
 
 def container_healthy(target):

@@ -1557,6 +1557,104 @@ class SessionIndexValidationTest(unittest.TestCase):
                          self._errs(stage))
 
 
+class DefaultDatabaseTest(unittest.TestCase):
+    """없는 데이터베이스를 `-D`로 지정하면 접속 자체가 거부된다.
+
+    실측(2-1의 setup 을 그대로 실행한 replica):
+        mysql -h127.0.0.1 -P3307 -udba -Dshop
+        → ERROR 1049 (42000): Unknown database 'shop'
+        -D 를 빼면 → 접속 성공
+
+    2-1은 setup 이 replica 에서 `DROP DATABASE IF EXISTS shop` 을 하고, 그 서버에
+    복제를 붙이는 것이 **플레이어의 과제**다. 그래서 `shop` 은 스테이지 대부분
+    동안 없고, 하필 replica 접속이 과제의 전부인 그 스테이지에서 `c` 키가 죽었다.
+    """
+
+    @contextlib.contextmanager
+    def _db_query(self, rows=None, boom=False):
+        real = shooting.db_query
+        asked = []
+
+        def fake(target, sql, **kw):
+            asked.append((target, sql))
+            if boom:
+                raise shooting.LabError("서버가 대답하지 않습니다")
+            return rows
+
+        shooting.db_query = fake
+        try:
+            yield asked
+        finally:
+            shooting.db_query = real
+
+    def test_reports_a_present_database(self):
+        with self._db_query(rows=[["1"]]) as asked:
+            self.assertTrue(shooting.database_exists("primary"))
+        self.assertIn(shooting.PLAYER_DB, asked[0][1])
+
+    def test_reports_a_missing_database(self):
+        with self._db_query(rows=[["0"]]):
+            self.assertFalse(shooting.database_exists("replica"))
+
+    def test_a_failed_probe_counts_as_missing(self):
+        # 틀리는 방향을 고른다 — '기본 DB 없이 접속'이 '접속 불가'보다 낫다.
+        with self._db_query(boom=True):
+            self.assertFalse(shooting.database_exists("replica"))
+
+    def test_postgres_needs_no_probe(self):
+        # psql 은 -d postgres 로 붙고 그 데이터베이스는 항상 있다.
+        with self._db_query(rows=[["0"]]) as asked:
+            self.assertTrue(shooting.database_exists("postgres"))
+        self.assertEqual(asked, [])
+
+    def test_command_can_drop_the_default_database(self):
+        stage = _minimal_stage()
+        with_db = shooting.client_command(stage, target="primary")
+        without = shooting.client_command(stage, target="primary",
+                                          default_db=False)
+        self.assertIn(f"-D{shooting.PLAYER_DB}", with_db)
+        self.assertNotIn(f"-D{shooting.PLAYER_DB}", without)
+        # 나머지는 그대로여야 한다 — 뺀 것이 하나뿐인지 확인한다.
+        self.assertEqual([a for a in with_db
+                          if a != f"-D{shooting.PLAYER_DB}"], without)
+
+    def test_the_client_drops_it_when_the_database_is_gone(self):
+        """배선 테스트 — 순수 함수만 맞고 호출부가 안 쓰면 아무것도 안 고쳐진다."""
+        launched = {}
+        real = {n: getattr(shooting, n)
+                for n in ("run_in_terminal", "database_exists")}
+        shooting.run_in_terminal = (
+            lambda stdscr, curses, cmd, **kw: launched.setdefault("cmd", cmd))
+        shooting.database_exists = lambda target, *a, **k: False
+        try:
+            stage = shooting.load_stage(
+                REPO_ROOT / "shooting" / "stages" / "2-1-replication-setup.json")
+            shooting.open_db_client(None, None, stage,
+                                    shooting.init_session(stage), "replica")
+        finally:
+            for n, fn in real.items():
+                setattr(shooting, n, fn)
+        self.assertNotIn(f"-D{shooting.PLAYER_DB}", launched["cmd"])
+        self.assertIn(f"-P{shooting.PLAYER_PORTS['replica']}", launched["cmd"])
+
+    def test_the_client_keeps_it_when_the_database_is_there(self):
+        launched = {}
+        real = {n: getattr(shooting, n)
+                for n in ("run_in_terminal", "database_exists")}
+        shooting.run_in_terminal = (
+            lambda stdscr, curses, cmd, **kw: launched.setdefault("cmd", cmd))
+        shooting.database_exists = lambda target, *a, **k: True
+        try:
+            stage = shooting.load_stage(
+                REPO_ROOT / "shooting" / "stages" / "1-1-runaway-query.json")
+            shooting.open_db_client(None, None, stage,
+                                    shooting.init_session(stage), "primary")
+        finally:
+            for n, fn in real.items():
+                setattr(shooting, n, fn)
+        self.assertIn(f"-D{shooting.PLAYER_DB}", launched["cmd"])
+
+
 class ReadmeStageTableTest(unittest.TestCase):
     """README의 스테이지 표는 목록 화면과 같은 것을 말해야 한다.
 
