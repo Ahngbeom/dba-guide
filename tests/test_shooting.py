@@ -1491,6 +1491,70 @@ class SetupStageSessionIndexTest(unittest.TestCase):
         self.assertEqual(spawned, ["SELECT 1"] * 3)
 
 
+class SessionIndexValidationTest(unittest.TestCase):
+    """치환되지 않을 자리에 쓴 `{{session_index}}`는 로드 시점에 잡아야 한다.
+
+    놓치면 원문 `{{session_index}}`가 그대로 SQL이나 화면에 나간다 — 이 저장소가
+    치환자 이름에 ASCII 제한을 두지 않은 것도 같은 이유였다(치환도 안 되고 오류도
+    안 나는 상태가 최악이다).
+    """
+
+    def _errs(self, stage):
+        return shooting.validate_stage(stage)
+
+    def test_allowed_inside_a_sessions_sql(self):
+        stage = _minimal_stage(setup=[
+            {"type": "sessions", "on": "primary", "count": 2,
+             "sql": "UPDATE t SET s='P' WHERE id = {{session_index}}"}])
+        self.assertEqual(self._errs(stage), [])
+
+    def test_rejected_in_a_singular_session_step(self):
+        # 단수 session 은 하나뿐이라 번호에 의미가 없다.
+        stage = _minimal_stage(setup=[
+            {"type": "session", "on": "primary",
+             "sql": "UPDATE t SET s='P' WHERE id = {{session_index}}"}])
+        self.assertTrue(any("session_index" in e for e in self._errs(stage)),
+                        self._errs(stage))
+
+    def test_rejected_in_a_state_objective(self):
+        stage = _minimal_stage(objectives=[
+            {"id": "o", "type": "state", "on": "primary",
+             "query": "SELECT count(*) FROM t WHERE id = {{session_index}}",
+             "expect": {"op": "eq", "value": 0}}])
+        self.assertTrue(any("session_index" in e for e in self._errs(stage)),
+                        self._errs(stage))
+
+    def test_rejected_in_prose(self):
+        # brief·hints·debrief 에 쓰면 플레이어 화면에 원문이 그대로 뜬다.
+        stage = _minimal_stage(hints=["{{session_index}}번 세션을 보라"])
+        self.assertTrue(any("session_index" in e for e in self._errs(stage)),
+                        self._errs(stage))
+
+    def test_rejected_in_another_field_of_the_sessions_step(self):
+        # 허용되는 것은 sql 필드 하나뿐이다.
+        stage = _minimal_stage(setup=[
+            {"type": "sessions", "on": "primary", "count": 2,
+             "name": "victim-{{session_index}}", "sql": "SELECT 1"}])
+        self.assertTrue(any("session_index" in e for e in self._errs(stage)),
+                        self._errs(stage))
+
+    def test_vars_cannot_shadow_the_reserved_name(self):
+        stage = _minimal_stage(
+            vars={"session_index": {"type": "int", "min": 1, "max": 3}},
+            setup=[{"type": "sessions", "on": "primary", "count": 2,
+                    "sql": "SELECT {{session_index}}"}])
+        self.assertTrue(any("예약" in e for e in self._errs(stage)),
+                        self._errs(stage))
+
+    def test_the_reserved_name_is_not_reported_as_undefined(self):
+        # vars 에 없다고 '정의되지 않은 변수'로 잡히면 스테이지를 못 쓴다.
+        stage = _minimal_stage(setup=[
+            {"type": "sessions", "on": "primary", "count": 2,
+             "sql": "SELECT {{session_index}}"}])
+        self.assertFalse([e for e in self._errs(stage) if "정의되지 않은" in e],
+                         self._errs(stage))
+
+
 class SessionShuffleTest(unittest.TestCase):
     """진단 문항의 보기 순서는 시드에서 갈라져야 한다.
 

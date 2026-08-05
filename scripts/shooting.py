@@ -897,6 +897,19 @@ def _placeholders_in(node):
     return set()
 
 
+def _stage_outside_session_sql(stage):
+    """`sessions` 단계의 `sql`만 뺀 스테이지 사본.
+
+    `{{session_index}}`가 허용되는 자리는 그 하나뿐이므로, 그 자리를 지운 사본에서
+    이름이 또 나오면 전부 잘못 쓴 것이다. 자리 정보를 잃는 `_placeholders_in`을
+    그대로 재사용하기 위한 방법이다.
+    """
+    setup = [{k: v for k, v in step.items() if k != "sql"}
+             if step.get("type") == "sessions" else step
+             for step in stage.get("setup") or []]
+    return dict(stage, setup=setup)
+
+
 def _validate_vars(stage):
     """`vars` 선언과 `{{...}}` 참조의 형식 오류 목록."""
     spec = stage.get("vars")
@@ -925,9 +938,20 @@ def _validate_vars(stage):
         elif kind == "int" and int(decl.get("min", 0)) > int(decl.get("max", 0)):
             errs.append(f"vars '{name}': int의 min이 max보다 큽니다")
 
-    known = _var_names(spec)
+    if SESSION_INDEX_VAR in (spec or {}):
+        errs.append(f"vars '{SESSION_INDEX_VAR}': 엔진이 예약한 이름입니다 "
+                    f"(sessions 단계가 세션 번호로 채웁니다)")
+
+    # 예약 이름은 vars 에 없어도 '정의되지 않은 변수'가 아니다.
+    known = _var_names(spec) | {SESSION_INDEX_VAR}
     for ref in sorted(_placeholders_in(stage) - known):
         errs.append(f"정의되지 않은 변수를 참조합니다: {{{{{ref}}}}}")
+
+    # 대신 자리를 좁게 막는다 — 허용된 자리 밖에서는 영원히 치환되지 않으므로,
+    # 원문 `{{session_index}}`가 그대로 SQL이나 플레이어 화면에 나간다.
+    if SESSION_INDEX_VAR in _placeholders_in(_stage_outside_session_sql(stage)):
+        errs.append(f"{{{{{SESSION_INDEX_VAR}}}}}는 type이 sessions인 setup 단계의 "
+                    f"sql 에서만 쓸 수 있습니다 (다른 자리에서는 치환되지 않습니다)")
     return errs
 
 
