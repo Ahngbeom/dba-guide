@@ -1924,7 +1924,13 @@ def save_progress(stage, rank, score, elapsed, hints_used, violations):
 # 게임 세션 상태
 # --------------------------------------------------------------------------- #
 def init_session(stage, rng=None):
-    """플레이 런타임 상태를 만든다."""
+    """플레이 런타임 상태를 만든다.
+
+    `rng`를 주면 mcq 보기를 섞는다 — 스테이지 문항도 `exam.py`의 작성 규약을
+    따라 정답을 `answer: 0`에 적으므로, 섞지 않으면 정답이 항상 1번이 된다.
+    `exam.py`와 같은 스키마이므로 문항별 `shuffle: false` 탈출구도 그대로 받는다
+    ('위 모두 정답' 류 보기가 있으면 순서를 고정해야 한다).
+    """
     states = {}
     for obj in stage["objectives"]:
         st = {"done": False, "hold": {"since": None}, "value": None,
@@ -1933,7 +1939,7 @@ def init_session(stage, rng=None):
               "skipped": False}
         if obj["type"] == "quiz" and obj["question"].get("type") == "mcq":
             q = obj["question"]
-            if rng is not None:
+            if rng is not None and q.get("shuffle", True):
                 # order = 표시순서(원본 인덱스), answer = 섞인 뒤의 표시 인덱스
                 _, answer, order = shuffle_choices(q["choices"], q["answer"], rng)
             else:
@@ -3099,7 +3105,16 @@ def cmd_play(target=None, force_line=False, seed=None, dbms=None):
         print(f"장애 주입 실패: {e}")
         return 1
 
-    session = init_session(stage)
+    # 세션은 **장애 주입이 끝난 뒤에** 만든다 — `init_session`이 등급 타이머를
+    # 시작하므로, 앞에서 만들면 setup에 걸린 시간이 소요 시간에 얹힌다(복제
+    # 스테이지는 binlog를 처음부터 재생하느라 분 단위다).
+    #
+    # 시드는 변주와 **똑같이** 넘긴다. 이게 없으면 보기가 한 번도 섞이지 않고,
+    # 저장소의 mcq 문항은 전부 `answer: 0`으로 작성되므로 진단 문항의 정답이
+    # 항상 1번이 된다 — 등급 네 항목 중 '진단 정확도'가 공짜가 된다.
+    # 새 `Random`을 주는 이유는 하나를 돌려 쓰면 소비 순서가 서로에게 새어 나가,
+    # 스테이지에 변수를 하나 추가한 것만으로 지난 판의 보기 순서가 바뀌기 때문이다.
+    session = init_session(stage, random.Random(seed))
     use_curses = sys.stdin.isatty() and sys.stdout.isatty() and not force_line
     try:
         if use_curses:

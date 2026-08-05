@@ -17,6 +17,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import time
 import types
 import unittest
 from pathlib import Path
@@ -1397,6 +1398,162 @@ class RenderStageTest(unittest.TestCase):
         before = json.dumps(self.STAGE, ensure_ascii=False)
         shooting.render_stage(self.STAGE, random.Random(1))
         self.assertEqual(json.dumps(self.STAGE, ensure_ascii=False), before)
+
+
+class SessionShuffleTest(unittest.TestCase):
+    """진단 문항의 보기 순서는 시드에서 갈라져야 한다.
+
+    섞지 않으면 정답이 작성된 자리에 그대로 남는다. 이 저장소의 mcq 문항은
+    시험·스테이지를 통틀어 전부 `answer: 0`으로 쓰여 있으므로(작성 규약이 그렇고
+    `exam.py`가 출제할 때 섞는다), 섞지 않으면 **진단 문항의 정답이 항상 1번**이
+    된다. 그러면 등급 네 항목 중 '진단 정확도'가 공짜가 되고, 두 번째 판부터
+    상황 보고가 읽지 않고 누르는 화면이 된다.
+    """
+
+    def _mcqs(self, stage):
+        return [o for o in stage["objectives"]
+                if o["type"] == "quiz" and o["question"]["type"] == "mcq"]
+
+    def test_choices_do_not_always_keep_the_authored_order(self):
+        for path in shooting.discover_stages():
+            stage = shooting.load_stage(path)
+            if not self._mcqs(stage):
+                continue
+            graded = set()
+            for seed in range(30):
+                session = shooting.init_session(stage, random.Random(seed))
+                for obj in self._mcqs(stage):
+                    graded.add(session["states"][obj["id"]]["answer"])
+            self.assertGreater(len(graded), 1, path.name)
+
+    def test_the_graded_index_still_points_at_the_authored_answer(self):
+        # 섞고 나서 채점이 어긋나면 정답을 고른 사람이 오답 처리된다.
+        for path in shooting.discover_stages():
+            stage = shooting.load_stage(path)
+            for seed in range(20):
+                session = shooting.init_session(stage, random.Random(seed))
+                for obj in self._mcqs(stage):
+                    st = session["states"][obj["id"]]
+                    self.assertEqual(st["order"][st["answer"]],
+                                     obj["question"]["answer"],
+                                     (path.name, seed))
+
+    def test_same_seed_reproduces_the_same_order(self):
+        # `--seed`/`replay`가 되살리는 '같은 판'에는 보기 순서도 포함된다.
+        stage = shooting.load_stage(
+            REPO_ROOT / "shooting" / "stages" / "1-3-lock-contention.json")
+        orders = [{k: v.get("order") for k, v in
+                   shooting.init_session(stage, random.Random(4821))["states"].items()}
+                  for _ in range(2)]
+        self.assertEqual(orders[0], orders[1])
+
+    def test_shuffle_false_pins_the_order(self):
+        """`exam.py`와 같은 스키마라고 문서가 약속했으므로 탈출구도 같아야 한다.
+
+        '위 모두 정답' 류 보기가 있으면 섞는 순간 문항이 말이 안 된다. `exam.py`는
+        `shuffle: false`로 그 자리를 고정할 수 있는데, 슈팅 쪽만 무시하면 스테이지
+        작성자가 적어둔 것이 조용히 아무 일도 하지 않는다.
+        """
+        stage = _minimal_stage(objectives=[
+            {"id": "q", "type": "quiz",
+             "question": {"type": "mcq", "shuffle": False,
+                          "q": "?", "choices": ["a", "b", "c", "d"],
+                          "answer": 0}}])
+        for seed in range(20):
+            st = shooting.init_session(stage, random.Random(seed))["states"]["q"]
+            self.assertEqual(st["order"], [0, 1, 2, 3], seed)
+            self.assertEqual(st["answer"], 0, seed)
+
+    def test_without_an_rng_the_authored_order_is_kept(self):
+        # 라인 모드 테스트와 문항 화면 테스트가 이 결정적 동작에 기대고 있다.
+        stage = shooting.load_stage(
+            REPO_ROOT / "shooting" / "stages" / "1-1-runaway-query.json")
+        st = shooting.init_session(stage)["states"]["diagnose-symptom"]
+        self.assertEqual(st["order"], [0, 1, 2, 3])
+        self.assertEqual(st["answer"], 0)
+
+
+class CmdPlayWiringTest(unittest.TestCase):
+    """`cmd_play`가 실제로 시드를 세션까지 넘겨 판을 여는지.
+
+    원래 버그가 정확히 이 자리였다 — `init_session`은 rng를 받을 줄 알았고
+    `shuffle_choices`도 import되어 있었는데, `cmd_play`가 넘기지 않아 보기가
+    한 번도 섞이지 않았다. 순수 함수만 검증하면 그 배선 누락은 계속 보이지 않는다.
+
+    도커 경계(랩 기동·장애 주입·화면)만 대신하고, 확인하는 것은 `cmd_play`가
+    **실제로 만들어 넘긴 세션**이다.
+    """
+
+    SEED = 1          # 이 시드에서 보기 순서는 [3, 0, 2, 1] — 원본 순서가 아니다
+
+    @contextlib.contextmanager
+    def _fake_lab(self):
+        """랩 대신 화면 함수가 받은 (stage, session)을 붙잡는다."""
+        seen = {}
+        real = {name: getattr(shooting, name) for name in
+                ("lab_running", "lab_healthy", "setup_stage", "teardown_stage",
+                 "offer_note", "run_line")}
+
+        def fake_run_line(stage, session, baseline):
+            seen["stage"], seen["session"] = stage, session
+            return None                       # 포기 — 결과 화면·기록을 건너뛴다
+
+        def fake_setup(stage, log=print):
+            seen["setup_done"] = time.monotonic()
+            return {"allowed_pids": set(), "started_at": {}}
+
+        shooting.lab_running = lambda: True
+        shooting.lab_healthy = lambda: True
+        shooting.setup_stage = fake_setup
+        shooting.teardown_stage = lambda stage: None
+        shooting.offer_note = lambda stage, session, result: None
+        shooting.run_line = fake_run_line
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                yield seen
+        finally:
+            for name, fn in real.items():
+                setattr(shooting, name, fn)
+
+    def test_play_shuffles_the_choices_it_shows(self):
+        with self._fake_lab() as seen:
+            rc = shooting.cmd_play("1-1-runaway-query", force_line=True,
+                                   seed=self.SEED)
+        self.assertEqual(rc, 0)
+        st = seen["session"]["states"]["diagnose-symptom"]
+        # 원본 순서 그대로면 정답이 늘 1번에 놓인다 — 그게 고치려던 버그다.
+        self.assertNotEqual(st["order"], sorted(st["order"]))
+        self.assertNotEqual(st["answer"], 0)
+
+    def test_the_clock_starts_after_the_fault_is_injected(self):
+        """장애 주입에 걸린 시간은 플레이 시간이 아니다.
+
+        `setup_stage`는 복제 스테이지에서 binlog를 처음부터 재생하느라 분 단위로
+        걸린다. 세션을 그보다 먼저 만들면 그 시간이 전부 소요 시간에 얹혀
+        `target_seconds` 보너스가 구조적으로 불가능해진다.
+        """
+        with self._fake_lab() as seen:
+            shooting.cmd_play("1-1-runaway-query", force_line=True,
+                              seed=self.SEED)
+        self.assertGreaterEqual(seen["session"]["started"], seen["setup_done"])
+
+    def test_play_reopens_exactly_what_the_seed_describes(self):
+        """`--seed`가 되살리는 판에는 변주와 보기 순서가 **둘 다** 들어 있다."""
+        base = shooting.load_stage(
+            REPO_ROOT / "shooting" / "stages" / "1-1-runaway-query.json")
+        expected_stage = dict(
+            shooting.render_stage(base, random.Random(self.SEED)),
+            _seed=self.SEED)
+        expected = shooting.init_session(expected_stage,
+                                         random.Random(self.SEED))
+        with self._fake_lab() as seen:
+            shooting.cmd_play("1-1-runaway-query", force_line=True,
+                              seed=self.SEED)
+        self.assertEqual(json.dumps(seen["stage"], ensure_ascii=False),
+                         json.dumps(expected_stage, ensure_ascii=False))
+        self.assertEqual(
+            {k: v.get("order") for k, v in seen["session"]["states"].items()},
+            {k: v.get("order") for k, v in expected["states"].items()})
 
 
 class SeedRecordTest(unittest.TestCase):
