@@ -840,6 +840,23 @@ def _render_value(node, values):
     return node
 
 
+# `sessions` 단계가 세션마다 채워 주는 이름. 스테이지의 `vars` 이름과 부딪히지
+# 않도록 길게 잡았다 — `{{i}}` 였다면 흔한 변수 이름과 겹친다.
+SESSION_INDEX_VAR = "session_index"
+
+
+def render_session_sql(sql, index):
+    """`sessions` 단계 SQL의 `{{session_index}}`를 세션 번호(0-기반)로 바꾼다.
+
+    `render_stage`는 로드 시점에 `vars`만 치환하고 **모르는 자리는 원문 그대로
+    통과시킨다.** 그래서 이 이름은 손대지 않은 채 `setup_stage`까지 살아남고,
+    세션을 실제로 띄우는 그 자리에서야 자기 번호를 받는다.
+
+    남은 다른 자리는 건드리지 않는다 — 먹어버리면 SQL이 조용히 깨진다.
+    """
+    return _render_value(sql, {SESSION_INDEX_VAR: index})
+
+
 def render_stage(stage, rng):
     """`vars`를 뽑아 스테이지 사본의 `{{...}}`를 실제 값으로 바꾼다.
 

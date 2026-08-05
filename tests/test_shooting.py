@@ -1400,6 +1400,40 @@ class RenderStageTest(unittest.TestCase):
         self.assertEqual(json.dumps(self.STAGE, ensure_ascii=False), before)
 
 
+class RenderSessionSqlTest(unittest.TestCase):
+    """`sessions` 단계는 세션마다 다른 SQL을 받을 수 있어야 한다.
+
+    이게 없으면 '각자 다른 대상을 잡는 세션 N개'를 선언적으로 쓸 수 없어,
+    스테이지가 SQL 안의 random() 같은 것으로 때우게 된다(pg-1-1이 그랬다).
+    """
+
+    def test_substitutes_the_session_number(self):
+        sql = "UPDATE orders SET status='PAID' WHERE id = 1 + {{session_index}}"
+        self.assertEqual(
+            shooting.render_session_sql(sql, 0),
+            "UPDATE orders SET status='PAID' WHERE id = 1 + 0")
+        self.assertEqual(
+            shooting.render_session_sql(sql, 3),
+            "UPDATE orders SET status='PAID' WHERE id = 1 + 3")
+
+    def test_leaves_other_placeholders_alone(self):
+        # 이 함수가 도는 시점에 vars 는 이미 render_stage 가 치환했다. 그런데도
+        # 남은 자리를 먹어버리면 SQL이 조용히 깨지므로, 모르는 이름은 건드리지 않는다.
+        sql = "SELECT {{rows}} + {{session_index}}"
+        self.assertEqual(shooting.render_session_sql(sql, 2),
+                         "SELECT {{rows}} + 2")
+
+    def test_sql_without_the_placeholder_is_unchanged(self):
+        # sessions 를 쓰는 기존 스테이지 넷은 세션별 차이가 필요 없다.
+        sql = "CALL shop.recent_orders_worker()"
+        self.assertEqual(shooting.render_session_sql(sql, 7), sql)
+
+    def test_the_reserved_name_is_what_the_engine_substitutes(self):
+        # 상수와 치환자 문자열이 어긋나면 검증은 통과하는데 치환이 안 된다.
+        sql = "SELECT {{" + shooting.SESSION_INDEX_VAR + "}}"
+        self.assertEqual(shooting.render_session_sql(sql, 5), "SELECT 5")
+
+
 class SessionShuffleTest(unittest.TestCase):
     """진단 문항의 보기 순서는 시드에서 갈라져야 한다.
 
