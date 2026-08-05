@@ -1433,6 +1433,63 @@ class RenderSessionSqlTest(unittest.TestCase):
         sql = "SELECT {{" + shooting.SESSION_INDEX_VAR + "}}"
         self.assertEqual(shooting.render_session_sql(sql, 5), "SELECT 5")
 
+class SetupStageSessionIndexTest(unittest.TestCase):
+    """세션 기동 루프가 번호를 넘기는지.
+
+    순수 함수만 검증하면 배선 누락은 보이지 않는다 — 진단 문항 셔플이 정확히
+    그렇게 오래 살아남았다(cmd_play 가 init_session 에 rng 를 안 넘겼다).
+    """
+
+    STAGE = {
+        "id": "t-1-x", "title": "t",
+        "setup": [{"type": "sessions", "on": "primary", "name": "victims",
+                   "count": 4,
+                   "sql": "UPDATE t SET s='P' WHERE id = 1 + {{session_index}}"}],
+        "objectives": [{"id": "o", "type": "state", "on": "primary",
+                        "query": "SELECT 1", "expect": {"op": "eq", "value": 0}}],
+    }
+
+    @contextlib.contextmanager
+    def _fake_lab(self):
+        """db_spawn 이 받은 SQL만 모으고, 나머지 도커 호출은 무해하게 만든다."""
+        spawned = []
+        names = ("kill_app_sessions", "reset_player_log", "app_session_pids",
+                 "db_spawn", "_wait_for_new_sessions", "_wait_for_incident",
+                 "container_started_at")
+        real = {n: getattr(shooting, n) for n in names}
+        shooting.kill_app_sessions = lambda target: None
+        shooting.reset_player_log = lambda target: None
+        shooting.app_session_pids = lambda target: set()
+        shooting.db_spawn = (lambda target, user, password, sql, idle_seconds=0:
+                             spawned.append(sql))
+        shooting._wait_for_new_sessions = (
+            lambda target, before, count, timeout=20: set(range(count)))
+        shooting._wait_for_incident = lambda stage, timeout=30: True
+        shooting.container_started_at = lambda target: "t0"
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                yield spawned
+        finally:
+            for n, fn in real.items():
+                setattr(shooting, n, fn)
+
+    def test_each_session_gets_its_own_number(self):
+        with self._fake_lab() as spawned:
+            shooting.setup_stage(self.STAGE, log=lambda *a: None)
+        self.assertEqual(spawned, [
+            "UPDATE t SET s='P' WHERE id = 1 + 0",
+            "UPDATE t SET s='P' WHERE id = 1 + 1",
+            "UPDATE t SET s='P' WHERE id = 1 + 2",
+            "UPDATE t SET s='P' WHERE id = 1 + 3",
+        ])
+
+    def test_sessions_without_the_placeholder_are_untouched(self):
+        stage = dict(self.STAGE, setup=[
+            dict(self.STAGE["setup"][0], count=3, sql="SELECT 1")])
+        with self._fake_lab() as spawned:
+            shooting.setup_stage(stage, log=lambda *a: None)
+        self.assertEqual(spawned, ["SELECT 1"] * 3)
+
 
 class SessionShuffleTest(unittest.TestCase):
     """진단 문항의 보기 순서는 시드에서 갈라져야 한다.

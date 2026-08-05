@@ -1671,9 +1671,12 @@ def setup_stage(stage, log=print):
         name = step.get("name", stype)
         before = app_session_pids(target)
         log(f"[setup] {target}: '{name}' 세션 {count}개 기동")
-        for _ in range(count):
+        for i in range(count):
+            # 세션 번호를 여기서 넣는다 — `render_stage`가 로드 시점에 할 수 없는
+            # 유일한 치환이다(그때는 몇 번째 세션인지가 아직 없다).
             db_spawn(target, step.get("user", "app"),
-                        step.get("password", "app"), sql,
+                        step.get("password", "app"),
+                        render_session_sql(sql, i),
                         step.get("idle_seconds", 0))
         spawned = _wait_for_new_sessions(target, before, count)
         if step.get("culprit"):
