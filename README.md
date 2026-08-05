@@ -198,3 +198,4 @@ PostgreSQL 스테이지는 선택 화면에서 따로 고른다(`./shoot --dbms 
 - 명령어는 기본적으로 **PostgreSQL → MySQL → Oracle** 순서로 병기하며, 차이가 클 때는 별도로 표기한다. 용어나 명령어가 헷갈리면 [DBMS 비교표](appendix/dbms-comparison-matrix.md)를 확인한다.
 - 낯선 용어가 나오면 [용어집](appendix/glossary.md)에서 찾아보고, 관련 챕터로 이동해 더 깊이 학습한다.
 - 각 단계의 `00-overview.md`에 있는 체크리스트로 스스로 단계 이동 준비가 되었는지 점검한다.
+- 지금 보고 있는 것이 어느 시점의 학습서인지는 [릴리스](https://github.com/Ahngbeom/dba-guide/releases) 페이지에서 확인한다. 버전을 매기는 기준과 릴리스 절차는 [`docs/release-policy.md`](docs/release-policy.md)에 정리돼 있다.
