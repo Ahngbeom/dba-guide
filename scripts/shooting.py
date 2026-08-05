@@ -1826,9 +1826,14 @@ def setup_stage(stage, log=print):
         for i in range(count):
             # 세션 번호를 여기서 넣는다 — `render_stage`가 로드 시점에 할 수 없는
             # 유일한 치환이다(그때는 몇 번째 세션인지가 아직 없다).
+            #
+            # `sessions` 단계에서만 치환한다. 검증기가 허용하는 자리도 정확히
+            # 거기뿐이므로(`_stage_outside_session_sql`), 엔진이 단수 `session`
+            # 에서도 치환하면 같은 규칙이 두 곳에 서로 다르게 적힌다.
+            spawn_sql = render_session_sql(sql, i) if stype == "sessions" else sql
             db_spawn(target, step.get("user", "app"),
                         step.get("password", "app"),
-                        render_session_sql(sql, i),
+                        spawn_sql,
                         step.get("idle_seconds", 0))
         spawned = _wait_for_new_sessions(target, before, count)
         if step.get("culprit"):
