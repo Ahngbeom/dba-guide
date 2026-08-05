@@ -541,7 +541,10 @@ def build_note(stage, session, result, today):
             f"진단 정확도 {correct}/{total} · "
             f"금지 행동 {len(session.get('violations') or [])}건 · "
             f"힌트 {session.get('hints_used', 0)}회",
-            "이 노트는 `n` 키로 다음 스테이지에서도 다시 꺼내 볼 수 있습니다."]
+            "이 노트는 `n` 키로 다음 스테이지에서도 다시 꺼내 볼 수 있습니다.",
+            # 포기한 판에는 해설('더 읽을 곳')이 붙지 않는다. 회고를 쓰다 막히는
+            # 것은 그때가 더 흔하므로, 템플릿의 출처는 노트 자체가 들고 있는다.
+            f"위 템플릿과 5 Whys는 {POSTMORTEM_CHAPTER} 의 실습입니다."]
     return "\n".join(out) + "\n"
 
 
@@ -578,8 +581,13 @@ def client_targets(stage):
     return [first] + sorted(t for t in targets if t != first)
 
 
-def client_command(stage, pager=None, target="primary"):
+def client_command(stage, pager=None, target="primary", default_db=True):
     """대화형 DB 클라이언트 인자 목록. target 에 따라 mysql / psql 이 된다.
+
+    `default_db=False`면 `-D`를 붙이지 않는다. **없는 데이터베이스를 `-D`로
+    지정하면 접속 자체가 거부되기 때문이다**(`ERROR 1049`) — 붙고 나서 고르면
+    되는 옵션이 아니다. 판단은 `database_exists()`가 하고 여기는 순수하게 남는다
+    (매 프레임 그려지는 화면 코드가 이 함수를 부른다).
 
     직접 만든 콘솔을 대체한다. readline·히스토리·컬럼 완성·페이저·자동 세로
     출력을 전부 클라이언트가 제공하므로 우리가 다시 만들 이유가 없다.
@@ -604,10 +612,10 @@ def client_command(stage, pager=None, target="primary"):
             "-v", f"PROMPT1=[{label}] psql> ",
             "-v", f"PROMPT2=[{label}] psql| ",
         ]
-    cmd = [
-        "mysql",
-        f"-h{PLAYER_HOST}", f"-P{port}",
-        f"-u{PLAYER_USER}", f"-D{PLAYER_DB}",
+    cmd = ["mysql", f"-h{PLAYER_HOST}", f"-P{port}", f"-u{PLAYER_USER}"]
+    if default_db:
+        cmd.append(f"-D{PLAYER_DB}")
+    cmd += [
         # 행이 터미널보다 넓으면 알아서 \G 세로 출력으로 바꾼다.
         "--auto-vertical-output",
         f"--prompt=[{label}] mysql> ",
@@ -615,6 +623,44 @@ def client_command(stage, pager=None, target="primary"):
     if pager:
         cmd.append(f"--pager={pager}")
     return cmd
+
+
+def client_name(stage):
+    """이 스테이지에서 `c` 키가 실제로 띄우는 클라이언트 이름.
+
+    화면 라벨은 반드시 이걸로 만든다 — `client_command()`가 벤더에 따라 고르는
+    바이너리와 라벨이 각자 판단하면 조용히 갈라진다(실제로 갈라져 있었다).
+    """
+    return "psql" if vendor_of(default_target(stage)) == "postgresql" else "mysql"
+
+
+def client_error_hint(target):
+    """클라이언트 실행이 실패했을 때 보여줄 안내(순수 함수).
+
+    MySQL 쪽 함정 — 사용자의 `~/.my.cnf`에 `password=`가 있으면 `MYSQL_PWD`를
+    이겨 인증을 가로챈다 — 은 psql 과 아무 상관이 없다. 없는 함정을 지어내는 대신
+    PostgreSQL 쪽은 확인 가능한 것만 안내한다.
+    """
+    if vendor_of(target) == "postgresql":
+        return ("접속에 실패했습니다. PostgreSQL 랩이 떠 있는지 확인하세요 —\n"
+                "`./shoot doctor` 로 점검하고, 없으면\n"
+                "`./shoot up --with-postgresql` 로 띄웁니다.")
+    return ("접속에 실패했습니다. ~/.my.cnf 에 password= 설정이 있으면\n"
+            "MYSQL_PWD 보다 우선해 인증을 가로챌 수 있습니다\n"
+            "(MySQL 옵션 우선순위: 명령줄 > 옵션 파일 > 환경변수).")
+
+
+def play_footer(stage, session):
+    """플레이 화면 하단 바 문구(순수 함수).
+
+    문자열을 `_draw_play` 안에 두면 "화면이 실제로 무엇을 안내하는가"를 테스트할
+    수 없다 — 라벨이 벤더를 따라가는지 지키려면 밖으로 꺼내야 한다.
+    """
+    hints = stage.get("hints") or []
+    notes = session.get("notes_count", 0)
+    return (f" c {client_name(stage)} 접속   r 상황 보고   "
+            f"n 지난 기록({notes})   "
+            f"h 힌트({session['hints_used']}/{len(hints)})   q 포기 ")
 
 
 def client_env(target, pager=None):
@@ -840,6 +886,23 @@ def _render_value(node, values):
     return node
 
 
+# `sessions` 단계가 세션마다 채워 주는 이름. 스테이지의 `vars` 이름과 부딪히지
+# 않도록 길게 잡았다 — `{{i}}` 였다면 흔한 변수 이름과 겹친다.
+SESSION_INDEX_VAR = "session_index"
+
+
+def render_session_sql(sql, index):
+    """`sessions` 단계 SQL의 `{{session_index}}`를 세션 번호(0-기반)로 바꾼다.
+
+    `render_stage`는 로드 시점에 `vars`만 치환하고 **모르는 자리는 원문 그대로
+    통과시킨다.** 그래서 이 이름은 손대지 않은 채 `setup_stage`까지 살아남고,
+    세션을 실제로 띄우는 그 자리에서야 자기 번호를 받는다.
+
+    남은 다른 자리는 건드리지 않는다 — 먹어버리면 SQL이 조용히 깨진다.
+    """
+    return _render_value(sql, {SESSION_INDEX_VAR: index})
+
+
 def render_stage(stage, rng):
     """`vars`를 뽑아 스테이지 사본의 `{{...}}`를 실제 값으로 바꾼다.
 
@@ -880,6 +943,19 @@ def _placeholders_in(node):
     return set()
 
 
+def _stage_outside_session_sql(stage):
+    """`sessions` 단계의 `sql`만 뺀 스테이지 사본.
+
+    `{{session_index}}`가 허용되는 자리는 그 하나뿐이므로, 그 자리를 지운 사본에서
+    이름이 또 나오면 전부 잘못 쓴 것이다. 자리 정보를 잃는 `_placeholders_in`을
+    그대로 재사용하기 위한 방법이다.
+    """
+    setup = [{k: v for k, v in step.items() if k != "sql"}
+             if step.get("type") == "sessions" else step
+             for step in stage.get("setup") or []]
+    return dict(stage, setup=setup)
+
+
 def _validate_vars(stage):
     """`vars` 선언과 `{{...}}` 참조의 형식 오류 목록."""
     spec = stage.get("vars")
@@ -908,10 +984,29 @@ def _validate_vars(stage):
         elif kind == "int" and int(decl.get("min", 0)) > int(decl.get("max", 0)):
             errs.append(f"vars '{name}': int의 min이 max보다 큽니다")
 
-    known = _var_names(spec)
+    if SESSION_INDEX_VAR in (spec or {}):
+        errs.append(f"vars '{SESSION_INDEX_VAR}': 엔진이 예약한 이름입니다 "
+                    f"(sessions 단계가 세션 번호로 채웁니다)")
+
+    # 예약 이름은 vars 에 없어도 '정의되지 않은 변수'가 아니다.
+    known = _var_names(spec) | {SESSION_INDEX_VAR}
     for ref in sorted(_placeholders_in(stage) - known):
         errs.append(f"정의되지 않은 변수를 참조합니다: {{{{{ref}}}}}")
+
+    # 대신 자리를 좁게 막는다 — 허용된 자리 밖에서는 영원히 치환되지 않으므로,
+    # 원문 `{{session_index}}`가 그대로 SQL이나 플레이어 화면에 나간다.
+    if SESSION_INDEX_VAR in _placeholders_in(_stage_outside_session_sql(stage)):
+        errs.append(f"{{{{{SESSION_INDEX_VAR}}}}}는 type이 sessions인 setup 단계의 "
+                    f"sql 에서만 쓸 수 있습니다 (다른 자리에서는 치환되지 않습니다)")
     return errs
+
+
+# 모든 스테이지가 끝나면 회고를 쓴다 — `build_note()`가 만드는 초안의 템플릿과
+# 빈칸으로 남긴 5 Whys가 바로 이 챕터의 실습이다. 그래서 이 링크는 어느 한
+# 스테이지의 주제가 아니라 **게임의 구조**에 딸려 있다. 스테이지 14개의
+# `chapters`에 적어 넣으면 같은 상수를 14벌 복사하는 것이고, `connect_hint`가
+# 정확히 그렇게 썩었다.
+POSTMORTEM_CHAPTER = "03-advanced/09-incident-response-and-postmortem.md"
 
 
 def chapter_title(repo_root, rel):
@@ -930,14 +1025,17 @@ def chapter_title(repo_root, rel):
 
 
 def chapter_reading_list(stage, repo_root=None):
-    """클리어 후 보여줄 '더 읽을 곳'. `chapters`가 없으면 None.
+    """클리어 후 보여줄 '더 읽을 곳'.
 
     읽기(챕터) → 확인(`./exam`) → 겪기(`./shoot`)에서 마지막 축만 앞의 둘과
     끊겨 있었다. 장애를 막 겪은 직후가 그 주제를 읽기에 가장 좋은 때다.
+
+    회고 챕터는 스테이지가 아니라 **게임의 구조**에 딸려 있어 항상 붙는다
+    (`POSTMORTEM_CHAPTER` 주석 참고).
     """
-    chapters = stage.get("chapters") or []
-    if not chapters:
-        return None
+    chapters = list(stage.get("chapters") or [])
+    if POSTMORTEM_CHAPTER not in chapters:
+        chapters.append(POSTMORTEM_CHAPTER)
     root = repo_root or REPO_ROOT
     lines = []
     for rel in chapters:
@@ -978,6 +1076,12 @@ def validate_stage(stage, repo_root=None):
     for field in ("id", "title", "objectives"):
         if not stage.get(field):
             errs.append(f"필수 필드 누락: {field}")
+
+    if "connect_hint" in stage:
+        # 조용히 무시하면 적어 넣은 사람은 왜 화면에 안 뜨는지 알 길이 없다.
+        errs.append("connect_hint: 더 이상 쓰지 않습니다 — 접속 명령은 "
+                    "PLAYER_* 상수에서 만들어집니다(손으로 적은 13벌이 "
+                    "전부 어긋나 있었습니다)")
 
     dbms = stage.get("dbms")
     if dbms and dbms not in VENDORS:
@@ -1267,13 +1371,16 @@ def open_db_client(stdscr, curses, stage, session, target="primary"):
     어느 서버로 붙든 마찬가지다: 명령 로그는 이미 서버별로 읽는다.
     """
     pager = CLIENT_PAGER if shutil.which("less") else None
+    # 기본 데이터베이스는 **있을 때만** 지정한다 — 없으면 접속 자체가 거부된다.
+    # 2-1의 replica 가 그렇다(setup 이 shop 을 드롭하고, 되살리는 것이 과제다).
+    # 여기서 한 번 물어보는 비용(docker 호출 1회)은 `c` 키를 누를 때뿐이다.
     return run_in_terminal(
-        stdscr, curses, client_command(stage, pager, target),
+        stdscr, curses,
+        client_command(stage, pager, target,
+                       default_db=database_exists(target)),
         env=client_env(target, pager),
         banner=client_banner(stage, session, target),
-        on_error=("접속에 실패했습니다. ~/.my.cnf 에 password= 설정이 있으면\n"
-                  "MYSQL_PWD 보다 우선해 인증을 가로챌 수 있습니다\n"
-                  "(MySQL 옵션 우선순위: 명령줄 > 옵션 파일 > 환경변수)."))
+        on_error=client_error_hint(target))
 
 
 def write_note_draft(stage, session, result):
@@ -1569,6 +1676,64 @@ def container_running(target):
     return p.returncode == 0 and p.stdout.strip() == "true"
 
 
+def database_exists(target, name=PLAYER_DB):
+    """대상 서버에 그 데이터베이스가 있는가 → bool.
+
+    `mysql -D`는 접속 핸드셰이크에서 평가되므로, 없는 이름을 주면 "붙었는데 DB만
+    없다"가 아니라 **접속 자체가 거부**된다. 2-1은 setup이 replica의 `shop`을
+    드롭하고 복제를 붙이는 것이 플레이어의 과제라, 스테이지 대부분 동안 그 서버에
+    `shop`이 없다.
+
+    조회가 실패하면 '없다'로 본다 — 틀리는 방향을 고른 것이다. 없다고 잘못 보면
+    기본 데이터베이스 없이 붙을 뿐이지만, 있다고 잘못 보면 접속이 아예 안 된다.
+    """
+    if vendor_of(target) == "postgresql":
+        return True          # psql 은 -d postgres 로 붙고 그건 항상 있다
+    try:
+        rows = db_query(target,
+                        "SELECT count(*) FROM information_schema.schemata "
+                        f"WHERE schema_name = '{name}'")
+    except LabError:
+        return False
+    return coerce(first_scalar(rows)) == 1
+
+
+def container_healthy(target):
+    """컨테이너 하나가 healthy 인가 → bool. docker 부재도 '아니다'로 흡수한다.
+
+    `container_running`으로는 부족한 자리가 있다 — 컨테이너는 **뜨자마자** running
+    이지만, 그때 postgres는 아직 initdb로 시드를 넣는 중이다. 그 창에서 질의를
+    던지면 실패한다.
+    """
+    try:
+        p = _docker("inspect", "--format", "{{.State.Health.Status}}",
+                    CONTAINERS.get(target, target))
+    except LabError:
+        return False
+    return p.returncode == 0 and p.stdout.strip() == "healthy"
+
+
+def wait_until(predicate, timeout_seconds, poll_seconds=3.0, on_wait=None):
+    """`predicate()`가 참이 될 때까지 기다린다 → 참이 됐는가.
+
+    같은 모양의 폴링 루프가 랩 기동과 플레이 전 대기로 흩어져 있었다. 세 번째
+    사본을 만들기 전에 모은다 — `tui.pick()`이 세 벌로 갈라졌다가 합쳐진 자리와
+    같은 교훈이다.
+
+    `on_wait`는 한 번 쉴 때마다 부른다. 기다리는 동안 화면이 조용하면 멈춘 것처럼
+    보이기 때문이다. 조건을 **먼저** 보므로 timeout이 0이어도 한 번은 확인한다.
+    """
+    deadline = time.monotonic() + timeout_seconds
+    while True:
+        if predicate():
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        if on_wait:
+            on_wait()
+        time.sleep(poll_seconds)
+
+
 def lab_running():
     """primary/replica 컨테이너가 모두 running 인가."""
     return _all_containers_are("{{.State.Running}}", "true")
@@ -1586,13 +1751,17 @@ def lab_up(wait_seconds=300, with_postgres=False):
     p = _compose(*args, "up", "-d")
     if p.returncode != 0:
         raise LabError((p.stderr or p.stdout).strip())
-    deadline = time.monotonic() + wait_seconds
-    while time.monotonic() < deadline:
-        if lab_healthy():
-            print("랩 준비 완료.")
-            return True
-        time.sleep(3)
-        print("  … 초기화 대기 중")
+    # postgres를 함께 띄웠다면 **그것까지** 준비돼야 '준비 완료'다. lab_healthy()는
+    # primary/replica만 보므로, 빼먹으면 `./shoot up --with-postgresql`이 아직
+    # initdb로 시드를 넣고 있는 서버를 두고 완료를 선언한다.
+    def ready():
+        return lab_healthy() and (not with_postgres
+                                  or container_healthy("postgres"))
+
+    if wait_until(ready, wait_seconds,
+                  on_wait=lambda: print("  … 초기화 대기 중")):
+        print("랩 준비 완료.")
+        return True
     raise LabError("랩이 제한 시간 안에 준비되지 않았습니다. "
                    "`docker compose -f shooting/lab/compose.yaml logs`를 확인하세요.")
 
@@ -1654,9 +1823,12 @@ def setup_stage(stage, log=print):
         name = step.get("name", stype)
         before = app_session_pids(target)
         log(f"[setup] {target}: '{name}' 세션 {count}개 기동")
-        for _ in range(count):
+        for i in range(count):
+            # 세션 번호를 여기서 넣는다 — `render_stage`가 로드 시점에 할 수 없는
+            # 유일한 치환이다(그때는 몇 번째 세션인지가 아직 없다).
             db_spawn(target, step.get("user", "app"),
-                        step.get("password", "app"), sql,
+                        step.get("password", "app"),
+                        render_session_sql(sql, i),
                         step.get("idle_seconds", 0))
         spawned = _wait_for_new_sessions(target, before, count)
         if step.get("culprit"):
@@ -1924,7 +2096,13 @@ def save_progress(stage, rank, score, elapsed, hints_used, violations):
 # 게임 세션 상태
 # --------------------------------------------------------------------------- #
 def init_session(stage, rng=None):
-    """플레이 런타임 상태를 만든다."""
+    """플레이 런타임 상태를 만든다.
+
+    `rng`를 주면 mcq 보기를 섞는다 — 스테이지 문항도 `exam.py`의 작성 규약을
+    따라 정답을 `answer: 0`에 적으므로, 섞지 않으면 정답이 항상 1번이 된다.
+    `exam.py`와 같은 스키마이므로 문항별 `shuffle: false` 탈출구도 그대로 받는다
+    ('위 모두 정답' 류 보기가 있으면 순서를 고정해야 한다).
+    """
     states = {}
     for obj in stage["objectives"]:
         st = {"done": False, "hold": {"since": None}, "value": None,
@@ -1933,7 +2111,7 @@ def init_session(stage, rng=None):
               "skipped": False}
         if obj["type"] == "quiz" and obj["question"].get("type") == "mcq":
             q = obj["question"]
-            if rng is not None:
+            if rng is not None and q.get("shuffle", True):
                 # order = 표시순서(원본 인덱스), answer = 섞인 뒤의 표시 인덱스
                 _, answer, order = shuffle_choices(q["choices"], q["answer"], rng)
             else:
@@ -2064,10 +2242,14 @@ def summarize(stage, session):
 # 라인 모드 (curses 폴백)
 # --------------------------------------------------------------------------- #
 def _connect_hint(stage):
-    """수동 접속 명령. 접속 정보의 단일 출처는 위 PLAYER_* 상수다."""
-    hint = stage.get("connect_hint")
-    if hint:
-        return hint
+    """수동 접속 명령. 접속 정보의 단일 출처는 위 PLAYER_* 상수다.
+
+    스테이지가 이 명령을 직접 적을 수 없다. 예전에는 `connect_hint` 필드로
+    덮어쓸 수 있었고, 13개 스테이지가 저마다 한 벌씩 들고 있다가 **13개 전부**
+    여기서 만드는 것과 어긋났다(전부 `-D` 가 빠져, 안내대로 붙은 플레이어는 기본
+    데이터베이스 없이 시작했다). 포트·계정이 바뀌면 조용히 썩는 자리라
+    `validate_stage`가 그 필드를 아예 거부한다.
+    """
     first = default_target(stage)
     if vendor_of(first) == "postgresql":
         hint = (f"PGPASSWORD={PLAYER_PASSWORD} psql -h{PLAYER_HOST} "
@@ -2367,7 +2549,7 @@ def _draw_play(stdscr, curses, stage, session, watch=None):
 
     row = 2
     put(stdscr, curses, row, 1, "접속", w - 2, curses.A_DIM)
-    put(stdscr, curses, row, 8, "c 키로 mysql 접속", w - 9,
+    put(stdscr, curses, row, 8, f"c 키로 {client_name(stage)} 접속", w - 9,
         curses.color_pair(4) | curses.A_BOLD)
     row += 1
     put(stdscr, curses, row, 8, f"또는 {_connect_hint(stage)}", w - 9,
@@ -2434,11 +2616,7 @@ def _draw_play(stdscr, curses, stage, session, watch=None):
                 f"{spinner_frame(watch)} 감시 중 · {fresh}"
                 f" · {watch.get('current') or ''}", w - 2, curses.A_DIM)
 
-    hints = stage.get("hints") or []
-    notes = session.get("notes_count", 0)
-    bar(stdscr, curses, h - 1, w,
-        f" c mysql 접속   r 상황 보고   n 지난 기록({notes})   "
-        f"h 힌트({session['hints_used']}/{len(hints)})   q 포기 ")
+    bar(stdscr, curses, h - 1, w, play_footer(stage, session))
     stdscr.refresh()
 
 
@@ -2704,7 +2882,7 @@ def cmd_replay(stage_id=None):
         where = f"'{stage_id}'의 " if stage_id else ""
         print(f"\n{where}지난 기록을 찾을 수 없습니다.")
         print("한 판 끝내면 시드가 기록되어 다시 열 수 있습니다.")
-        print("(시드는 변주가 있는 스테이지에만 의미가 있습니다.)\n")
+        print("(시드는 `vars`나 mcq 진단 문항이 있는 스테이지에만 의미가 있습니다.)\n")
         return 1
     sid, seed = found
     print(f"\n지난 판을 다시 엽니다 — {sid}  (시드 {seed})")
@@ -2829,6 +3007,20 @@ def filter_stages_by_dbms(entries, dbms):
 def stage_dbms(stage):
     """스테이지의 DBMS. 적지 않았으면 MySQL이다(기존 스테이지가 그렇다)."""
     return (stage or {}).get("dbms") or "mysql"
+
+
+def stage_seed_matters(stage):
+    """이 스테이지에서 시드가 실제로 판을 가르는가.
+
+    `vars`가 있으면 파라미터가 시드로 갈리고(render_stage), mcq 진단 문항이
+    있으면 보기 순서가 시드로 섞인다(init_session) — 둘 다 없으면 시드는
+    기록될 뿐 아무것도 바꾸지 않는다.
+    """
+    if stage.get("vars"):
+        return True
+    return any(o.get("type") == "quiz"
+               and (o.get("question") or {}).get("type") == "mcq"
+               for o in stage.get("objectives", []))
 
 
 def group_by_dbms(entries):
@@ -3062,22 +3254,35 @@ def cmd_play(target=None, force_line=False, seed=None, dbms=None):
         print(f"스테이지 정의 오류: {e}")
         return 1
 
-    # 시드는 스테이지에 `vars`가 있을 때만 의미가 있지만, 없을 때도 기록해 둔다 —
-    # 나중에 그 스테이지에 변주가 생겨도 지난 기록의 형식이 달라지지 않는다.
+    # 시드는 `vars`가 있을 때뿐 아니라 mcq 진단 문항의 보기 순서도 가른다
+    # (init_session). 둘 다 없을 때도 기록은 남긴다 — 나중에 그 스테이지에
+    # 변주나 mcq가 생겨도 지난 기록의 형식이 달라지지 않는다.
     if seed is None:
         seed = random.randrange(1, 1_000_000)
     stage = dict(render_stage(stage, random.Random(seed)), _seed=seed)
-    if stage.get("vars"):
+    if stage_seed_matters(stage):
         print(f"이번 판 시드: {seed}  "
               f"(같은 판을 다시 하려면 --seed {seed})")
 
     # PostgreSQL 스테이지는 프로파일 뒤에 있는 컨테이너를 쓴다. 기본 `./shoot up`
     # 으로는 뜨지 않으므로, 여기서 걸러 주지 않으면 setup 단계가 docker exec 실패로
     # 무너지고 원인이 드러나지 않는다.
-    if stage.get("dbms") == "postgresql" and not container_running("postgres"):
-        print("이 스테이지는 PostgreSQL 랩이 필요합니다.\n"
-              "  ./shoot up --with-postgresql")
-        return 1
+    if stage.get("dbms") == "postgresql":
+        if not container_running("postgres"):
+            print("이 스테이지는 PostgreSQL 랩이 필요합니다.\n"
+                  "  ./shoot up --with-postgresql")
+            return 1
+        # running 은 컨테이너가 **뜨자마자** 참이 된다. 그 시점의 postgres는 아직
+        # initdb로 시드(20만 행)를 넣는 중이라, 여기서 기다리지 않으면 setup의 첫
+        # `docker exec psql`이 실패하고 플레이어는 자기가 만들지 않은 오류를 본다.
+        if not container_healthy("postgres"):
+            print("PostgreSQL 랩이 아직 준비 중입니다. 잠시 기다립니다…")
+            if not wait_until(lambda: container_healthy("postgres"), 120,
+                              on_wait=lambda: print("  … 초기화 대기 중")):
+                print("PostgreSQL 랩이 제한 시간 안에 준비되지 않았습니다.\n"
+                      "  docker compose -f shooting/lab/compose.yaml"
+                      " --profile postgresql logs postgres")
+                return 1
 
     if not lab_running():
         print("랩이 내려가 있습니다.")
@@ -3088,9 +3293,7 @@ def cmd_play(target=None, force_line=False, seed=None, dbms=None):
             return 1
     elif not lab_healthy():
         print("랩이 아직 준비 중입니다. 잠시 기다립니다…")
-        deadline = time.monotonic() + 120
-        while time.monotonic() < deadline and not lab_healthy():
-            time.sleep(3)
+        wait_until(lab_healthy, 120)
 
     print(f"\n장애를 주입합니다 — {stage.get('title')}")
     try:
@@ -3099,7 +3302,16 @@ def cmd_play(target=None, force_line=False, seed=None, dbms=None):
         print(f"장애 주입 실패: {e}")
         return 1
 
-    session = init_session(stage)
+    # 세션은 **장애 주입이 끝난 뒤에** 만든다 — `init_session`이 등급 타이머를
+    # 시작하므로, 앞에서 만들면 setup에 걸린 시간이 소요 시간에 얹힌다(복제
+    # 스테이지는 binlog를 처음부터 재생하느라 분 단위다).
+    #
+    # 시드는 변주와 **똑같이** 넘긴다. 이게 없으면 보기가 한 번도 섞이지 않고,
+    # 저장소의 mcq 문항은 전부 `answer: 0`으로 작성되므로 진단 문항의 정답이
+    # 항상 1번이 된다 — 등급 네 항목 중 '진단 정확도'가 공짜가 된다.
+    # 새 `Random`을 주는 이유는 하나를 돌려 쓰면 소비 순서가 서로에게 새어 나가,
+    # 스테이지에 변수를 하나 추가한 것만으로 지난 판의 보기 순서가 바뀌기 때문이다.
+    session = init_session(stage, random.Random(seed))
     use_curses = sys.stdin.isatty() and sys.stdout.isatty() and not force_line
     try:
         if use_curses:

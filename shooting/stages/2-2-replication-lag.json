@@ -11,7 +11,6 @@
     "02-intermediate/05-replication-basics.md",
     "03-advanced/02-high-availability-and-failover.md"
   ],
-  "connect_hint": "MYSQL_PWD=shoot mysql -h127.0.0.1 -P3306 -udba   (replica는 -P3307)",
   "vars": {
     "row": {
       "type": "int",

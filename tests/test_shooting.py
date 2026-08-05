@@ -17,6 +17,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import time
 import types
 import unittest
 from pathlib import Path
@@ -641,7 +642,7 @@ class ClientTargetTest(unittest.TestCase):
                           shooting.PLAYER_PORTS["replica"]])
 
     def test_connect_hint_mentions_the_replica_port(self):
-        # 2-2는 connect_hint를 직접 주므로 그 값이 replica를 안내해야 한다.
+        # 서버가 둘인 스테이지에서 primary 명령만 띄우면 현장을 놓친다.
         self.assertIn(shooting.PLAYER_PORTS["replica"],
                       shooting._connect_hint(self.multi))
 
@@ -1154,6 +1155,7 @@ class DoctorTest(unittest.TestCase):
         with self._no_docker():
             self.assertFalse(shooting.lab_running())
             self.assertFalse(shooting.lab_healthy())
+            self.assertFalse(shooting.container_healthy("postgres"))
             self.assertIsNone(shooting.container_started_at("primary"))
 
 
@@ -1397,6 +1399,807 @@ class RenderStageTest(unittest.TestCase):
         before = json.dumps(self.STAGE, ensure_ascii=False)
         shooting.render_stage(self.STAGE, random.Random(1))
         self.assertEqual(json.dumps(self.STAGE, ensure_ascii=False), before)
+
+
+class RenderSessionSqlTest(unittest.TestCase):
+    """`sessions` 단계는 세션마다 다른 SQL을 받을 수 있어야 한다.
+
+    이게 없으면 '각자 다른 대상을 잡는 세션 N개'를 선언적으로 쓸 수 없어,
+    스테이지가 SQL 안의 random() 같은 것으로 때우게 된다(pg-1-1이 그랬다).
+    """
+
+    def test_substitutes_the_session_number(self):
+        sql = "UPDATE orders SET status='PAID' WHERE id = 1 + {{session_index}}"
+        self.assertEqual(
+            shooting.render_session_sql(sql, 0),
+            "UPDATE orders SET status='PAID' WHERE id = 1 + 0")
+        self.assertEqual(
+            shooting.render_session_sql(sql, 3),
+            "UPDATE orders SET status='PAID' WHERE id = 1 + 3")
+
+    def test_leaves_other_placeholders_alone(self):
+        # 이 함수가 도는 시점에 vars 는 이미 render_stage 가 치환했다. 그런데도
+        # 남은 자리를 먹어버리면 SQL이 조용히 깨지므로, 모르는 이름은 건드리지 않는다.
+        sql = "SELECT {{rows}} + {{session_index}}"
+        self.assertEqual(shooting.render_session_sql(sql, 2),
+                         "SELECT {{rows}} + 2")
+
+    def test_sql_without_the_placeholder_is_unchanged(self):
+        # sessions 를 쓰는 기존 스테이지 넷은 세션별 차이가 필요 없다.
+        sql = "CALL shop.recent_orders_worker()"
+        self.assertEqual(shooting.render_session_sql(sql, 7), sql)
+
+    def test_the_reserved_name_is_what_the_engine_substitutes(self):
+        # 상수와 치환자 문자열이 어긋나면 검증은 통과하는데 치환이 안 된다.
+        sql = "SELECT {{" + shooting.SESSION_INDEX_VAR + "}}"
+        self.assertEqual(shooting.render_session_sql(sql, 5), "SELECT 5")
+
+
+class SetupStageSessionIndexTest(unittest.TestCase):
+    """세션 기동 루프가 번호를 넘기는지.
+
+    순수 함수만 검증하면 배선 누락은 보이지 않는다 — 진단 문항 셔플이 정확히
+    그렇게 오래 살아남았다(cmd_play 가 init_session 에 rng 를 안 넘겼다).
+    """
+
+    STAGE = {
+        "id": "t-1-x", "title": "t",
+        "setup": [{"type": "sessions", "on": "primary", "name": "victims",
+                   "count": 4,
+                   "sql": "UPDATE t SET s='P' WHERE id = 1 + {{session_index}}"}],
+        "objectives": [{"id": "o", "type": "state", "on": "primary",
+                        "query": "SELECT 1", "expect": {"op": "eq", "value": 0}}],
+    }
+
+    @contextlib.contextmanager
+    def _fake_lab(self):
+        """db_spawn 이 받은 SQL만 모으고, 나머지 도커 호출은 무해하게 만든다."""
+        spawned = []
+        names = ("kill_app_sessions", "reset_player_log", "app_session_pids",
+                 "db_spawn", "_wait_for_new_sessions", "_wait_for_incident",
+                 "container_started_at")
+        real = {n: getattr(shooting, n) for n in names}
+        shooting.kill_app_sessions = lambda target: None
+        shooting.reset_player_log = lambda target: None
+        shooting.app_session_pids = lambda target: set()
+        shooting.db_spawn = (lambda target, user, password, sql, idle_seconds=0:
+                             spawned.append(sql))
+        shooting._wait_for_new_sessions = (
+            lambda target, before, count, timeout=20: set(range(count)))
+        shooting._wait_for_incident = lambda stage, timeout=30: True
+        shooting.container_started_at = lambda target: "t0"
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                yield spawned
+        finally:
+            for n, fn in real.items():
+                setattr(shooting, n, fn)
+
+    def test_each_session_gets_its_own_number(self):
+        with self._fake_lab() as spawned:
+            shooting.setup_stage(self.STAGE, log=lambda *a: None)
+        self.assertEqual(spawned, [
+            "UPDATE t SET s='P' WHERE id = 1 + 0",
+            "UPDATE t SET s='P' WHERE id = 1 + 1",
+            "UPDATE t SET s='P' WHERE id = 1 + 2",
+            "UPDATE t SET s='P' WHERE id = 1 + 3",
+        ])
+
+    def test_sessions_without_the_placeholder_are_untouched(self):
+        stage = dict(self.STAGE, setup=[
+            dict(self.STAGE["setup"][0], count=3, sql="SELECT 1")])
+        with self._fake_lab() as spawned:
+            shooting.setup_stage(stage, log=lambda *a: None)
+        self.assertEqual(spawned, ["SELECT 1"] * 3)
+
+
+class SessionIndexValidationTest(unittest.TestCase):
+    """치환되지 않을 자리에 쓴 `{{session_index}}`는 로드 시점에 잡아야 한다.
+
+    놓치면 원문 `{{session_index}}`가 그대로 SQL이나 화면에 나간다 — 이 저장소가
+    치환자 이름에 ASCII 제한을 두지 않은 것도 같은 이유였다(치환도 안 되고 오류도
+    안 나는 상태가 최악이다).
+    """
+
+    def _errs(self, stage):
+        return shooting.validate_stage(stage)
+
+    def test_allowed_inside_a_sessions_sql(self):
+        stage = _minimal_stage(setup=[
+            {"type": "sessions", "on": "primary", "count": 2,
+             "sql": "UPDATE t SET s='P' WHERE id = {{session_index}}"}])
+        self.assertEqual(self._errs(stage), [])
+
+    def test_rejected_in_a_singular_session_step(self):
+        # 단수 session 은 하나뿐이라 번호에 의미가 없다.
+        stage = _minimal_stage(setup=[
+            {"type": "session", "on": "primary",
+             "sql": "UPDATE t SET s='P' WHERE id = {{session_index}}"}])
+        self.assertTrue(any("session_index" in e for e in self._errs(stage)),
+                        self._errs(stage))
+
+    def test_rejected_in_a_state_objective(self):
+        stage = _minimal_stage(objectives=[
+            {"id": "o", "type": "state", "on": "primary",
+             "query": "SELECT count(*) FROM t WHERE id = {{session_index}}",
+             "expect": {"op": "eq", "value": 0}}])
+        self.assertTrue(any("session_index" in e for e in self._errs(stage)),
+                        self._errs(stage))
+
+    def test_rejected_in_prose(self):
+        # brief·hints·debrief 에 쓰면 플레이어 화면에 원문이 그대로 뜬다.
+        stage = _minimal_stage(hints=["{{session_index}}번 세션을 보라"])
+        self.assertTrue(any("session_index" in e for e in self._errs(stage)),
+                        self._errs(stage))
+
+    def test_rejected_in_another_field_of_the_sessions_step(self):
+        # 허용되는 것은 sql 필드 하나뿐이다.
+        stage = _minimal_stage(setup=[
+            {"type": "sessions", "on": "primary", "count": 2,
+             "name": "victim-{{session_index}}", "sql": "SELECT 1"}])
+        self.assertTrue(any("session_index" in e for e in self._errs(stage)),
+                        self._errs(stage))
+
+    def test_vars_cannot_shadow_the_reserved_name(self):
+        stage = _minimal_stage(
+            vars={"session_index": {"type": "int", "min": 1, "max": 3}},
+            setup=[{"type": "sessions", "on": "primary", "count": 2,
+                    "sql": "SELECT {{session_index}}"}])
+        self.assertTrue(any("예약" in e for e in self._errs(stage)),
+                        self._errs(stage))
+
+    def test_the_reserved_name_is_not_reported_as_undefined(self):
+        # vars 에 없다고 '정의되지 않은 변수'로 잡히면 스테이지를 못 쓴다.
+        stage = _minimal_stage(setup=[
+            {"type": "sessions", "on": "primary", "count": 2,
+             "sql": "SELECT {{session_index}}"}])
+        self.assertFalse([e for e in self._errs(stage) if "정의되지 않은" in e],
+                         self._errs(stage))
+
+
+class DefaultDatabaseTest(unittest.TestCase):
+    """없는 데이터베이스를 `-D`로 지정하면 접속 자체가 거부된다.
+
+    실측(2-1의 setup 을 그대로 실행한 replica):
+        mysql -h127.0.0.1 -P3307 -udba -Dshop
+        → ERROR 1049 (42000): Unknown database 'shop'
+        -D 를 빼면 → 접속 성공
+
+    2-1은 setup 이 replica 에서 `DROP DATABASE IF EXISTS shop` 을 하고, 그 서버에
+    복제를 붙이는 것이 **플레이어의 과제**다. 그래서 `shop` 은 스테이지 대부분
+    동안 없고, 하필 replica 접속이 과제의 전부인 그 스테이지에서 `c` 키가 죽었다.
+    """
+
+    @contextlib.contextmanager
+    def _db_query(self, rows=None, boom=False):
+        real = shooting.db_query
+        asked = []
+
+        def fake(target, sql, **kw):
+            asked.append((target, sql))
+            if boom:
+                raise shooting.LabError("서버가 대답하지 않습니다")
+            return rows
+
+        shooting.db_query = fake
+        try:
+            yield asked
+        finally:
+            shooting.db_query = real
+
+    def test_reports_a_present_database(self):
+        with self._db_query(rows=[["1"]]) as asked:
+            self.assertTrue(shooting.database_exists("primary"))
+        self.assertIn(shooting.PLAYER_DB, asked[0][1])
+
+    def test_reports_a_missing_database(self):
+        with self._db_query(rows=[["0"]]):
+            self.assertFalse(shooting.database_exists("replica"))
+
+    def test_a_failed_probe_counts_as_missing(self):
+        # 틀리는 방향을 고른다 — '기본 DB 없이 접속'이 '접속 불가'보다 낫다.
+        with self._db_query(boom=True):
+            self.assertFalse(shooting.database_exists("replica"))
+
+    def test_postgres_needs_no_probe(self):
+        # psql 은 -d postgres 로 붙고 그 데이터베이스는 항상 있다.
+        with self._db_query(rows=[["0"]]) as asked:
+            self.assertTrue(shooting.database_exists("postgres"))
+        self.assertEqual(asked, [])
+
+    def test_command_can_drop_the_default_database(self):
+        stage = _minimal_stage()
+        with_db = shooting.client_command(stage, target="primary")
+        without = shooting.client_command(stage, target="primary",
+                                          default_db=False)
+        self.assertIn(f"-D{shooting.PLAYER_DB}", with_db)
+        self.assertNotIn(f"-D{shooting.PLAYER_DB}", without)
+        # 나머지는 그대로여야 한다 — 뺀 것이 하나뿐인지 확인한다.
+        self.assertEqual([a for a in with_db
+                          if a != f"-D{shooting.PLAYER_DB}"], without)
+
+    def test_the_client_drops_it_when_the_database_is_gone(self):
+        """배선 테스트 — 순수 함수만 맞고 호출부가 안 쓰면 아무것도 안 고쳐진다."""
+        launched = {}
+        real = {n: getattr(shooting, n)
+                for n in ("run_in_terminal", "database_exists")}
+        shooting.run_in_terminal = (
+            lambda stdscr, curses, cmd, **kw: launched.setdefault("cmd", cmd))
+        shooting.database_exists = lambda target, *a, **k: False
+        try:
+            stage = shooting.load_stage(
+                REPO_ROOT / "shooting" / "stages" / "2-1-replication-setup.json")
+            shooting.open_db_client(None, None, stage,
+                                    shooting.init_session(stage), "replica")
+        finally:
+            for n, fn in real.items():
+                setattr(shooting, n, fn)
+        self.assertNotIn(f"-D{shooting.PLAYER_DB}", launched["cmd"])
+        self.assertIn(f"-P{shooting.PLAYER_PORTS['replica']}", launched["cmd"])
+
+    def test_the_client_keeps_it_when_the_database_is_there(self):
+        launched = {}
+        real = {n: getattr(shooting, n)
+                for n in ("run_in_terminal", "database_exists")}
+        shooting.run_in_terminal = (
+            lambda stdscr, curses, cmd, **kw: launched.setdefault("cmd", cmd))
+        shooting.database_exists = lambda target, *a, **k: True
+        try:
+            stage = shooting.load_stage(
+                REPO_ROOT / "shooting" / "stages" / "1-1-runaway-query.json")
+            shooting.open_db_client(None, None, stage,
+                                    shooting.init_session(stage), "primary")
+        finally:
+            for n, fn in real.items():
+                setattr(shooting, n, fn)
+        self.assertIn(f"-D{shooting.PLAYER_DB}", launched["cmd"])
+
+
+class ReadmeStageTableTest(unittest.TestCase):
+    """README의 스테이지 표는 목록 화면과 같은 것을 말해야 한다.
+
+    표 한가운데 빈 줄이 하나 들어가 4-3·4-2 두 줄이 머리글에서 떨어져 나간 적이
+    있다. GFM에서 머리글 없는 행은 표가 아니라 본문 텍스트로 렌더링되므로,
+    저장소를 웹에서 보는 사람에게는 파이프 문자가 그대로 노출된다. 마크다운은
+    깨져도 조용하다 — 그래서 테스트가 본다.
+    """
+
+    def _readme(self):
+        return (REPO_ROOT / "README.md").read_text(encoding="utf-8").splitlines()
+
+    def _stage_rows(self):
+        """`| 🔥 **1-1 …** |` 꼴 행을 (줄번호, 스테이지번호)로."""
+        rx = re.compile(r"^\|\s*[🔥🔧]\s*\*\*([\d-]+)\s")
+        return [(i, m.group(1))
+                for i, line in enumerate(self._readme())
+                if (m := rx.match(line))]
+
+    def test_every_stage_has_a_row(self):
+        listed = {num for _, num in self._stage_rows()}
+        for path in shooting.discover_stages():
+            stage = shooting.load_stage(path)
+            num = f"{stage['world']}-{stage['stage']}"
+            self.assertIn(num, listed, stage["id"])
+
+    def test_rows_never_drift_away_from_their_header(self):
+        # 행이 속한 파이프 블록 안에 구분행(|---|)이 있어야 표로 렌더링된다.
+        lines = self._readme()
+        for i, num in self._stage_rows():
+            top = i
+            while top > 0 and lines[top - 1].startswith("|"):
+                top -= 1
+            block = []
+            j = top
+            while j < len(lines) and lines[j].startswith("|"):
+                block.append(lines[j])
+                j += 1
+            self.assertTrue(any(set(b) <= set("|- :") for b in block),
+                            f"{num} 행(README:{i + 1})이 머리글 없는 표에 있다")
+
+    def test_rows_are_in_stage_order(self):
+        """목록 화면은 world·stage 순으로 정렬한다. 문서만 뒤바뀌면 서로 다르다.
+
+        표가 둘(MySQL·PostgreSQL)이고 PostgreSQL 월드 번호는 다시 1부터
+        시작하므로, 전체가 아니라 **한 표 안의** 순서를 본다.
+        """
+        lines = self._readme()
+        blocks = {}
+        for i, num in self._stage_rows():
+            top = i
+            while top > 0 and lines[top - 1].startswith("|"):
+                top -= 1
+            blocks.setdefault(top, []).append(num)
+        self.assertTrue(blocks, "README에서 스테이지 표를 찾지 못했다")
+        key = lambda n: [int(x) for x in n.split("-")]      # noqa: E731
+        for top, nums in blocks.items():
+            self.assertEqual(nums, sorted(nums, key=key),
+                             f"README:{top + 1} 표의 순서가 스테이지 번호와 다르다")
+
+
+class PostmortemChapterTest(unittest.TestCase):
+    """회고 챕터는 스테이지 하나가 아니라 **게임의 구조**에 딸려 있다.
+
+    README는 "모든 스테이지가 고급 09의 회고 루프와 이어진다"고 하고
+    `build_note`도 그 챕터의 템플릿을 따른다고 적어두었는데, 정작 그 경로를
+    `chapters`에 넣은 스테이지가 하나도 없어 '더 읽을 곳'에 한 번도 뜨지 않았다.
+    14벌로 복사해 넣으면 connect_hint 처럼 썩으므로 엔진이 붙인다.
+    """
+
+    def test_the_chapter_file_exists(self):
+        self.assertTrue((REPO_ROOT / shooting.POSTMORTEM_CHAPTER).is_file(),
+                        shooting.POSTMORTEM_CHAPTER)
+
+    def test_every_stage_points_at_it_after_the_run(self):
+        for path in shooting.discover_stages():
+            stage = shooting.load_stage(path)
+            self.assertIn(shooting.POSTMORTEM_CHAPTER,
+                          shooting.chapter_reading_list(stage), path.name)
+
+    def test_it_is_not_listed_twice(self):
+        stage = _minimal_stage(chapters=[shooting.POSTMORTEM_CHAPTER])
+        listing = shooting.chapter_reading_list(stage)
+        self.assertEqual(listing.count(shooting.POSTMORTEM_CHAPTER), 1)
+
+    def test_the_note_points_at_it_too(self):
+        """포기해도 노트는 쓴다 — 해설(더 읽을 곳)이 붙지 않는 그 경로가 특히."""
+        stage = shooting.load_stage(
+            REPO_ROOT / "shooting" / "stages" / "1-1-runaway-query.json")
+        session = shooting.init_session(stage)
+        result = shooting.summarize(stage, session)
+        note = shooting.build_note(stage, session, result, "2026-08-05")
+        self.assertIn(shooting.POSTMORTEM_CHAPTER, note)
+
+
+class ConnectHintIsGeneratedTest(unittest.TestCase):
+    """접속 명령의 단일 출처는 `PLAYER_*` 상수다.
+
+    스테이지 13개가 같은 명령을 손으로 들고 있었고, **13개 전부** 자동 생성본과
+    어긋나 있었다 — 전부 `-Dshop`이 빠져서, 안내대로 붙은 플레이어는 기본
+    데이터베이스 없이 시작했다. 포트나 계정이 바뀌면 13곳이 조용히 썩는 구조였다.
+    """
+
+    def test_no_stage_carries_a_hand_written_connect_command(self):
+        offenders = [p.name for p in shooting.discover_stages()
+                     if "connect_hint" in json.loads(
+                         Path(p).read_text(encoding="utf-8"))]
+        self.assertEqual(offenders, [])
+
+    def test_the_field_is_rejected_so_it_cannot_come_back_silently(self):
+        # 지원을 뗀 필드를 조용히 무시하면 적어 넣은 사람은 왜 안 뜨는지 모른다.
+        errs = shooting.validate_stage(
+            _minimal_stage(connect_hint="mysql -uroot"))
+        self.assertTrue(any("connect_hint" in e for e in errs), errs)
+
+    def test_every_stage_gets_a_usable_generated_hint(self):
+        for path in shooting.discover_stages():
+            stage = shooting.load_stage(path)
+            hint = shooting._connect_hint(stage)
+            first = shooting.default_target(stage)
+            self.assertIn(shooting.PLAYER_HOST, hint, path.name)
+            self.assertIn(shooting.PLAYER_PORTS[first], hint, path.name)
+            self.assertIn(shooting.PLAYER_USER, hint, path.name)
+            self.assertIn(shooting.PLAYER_PASSWORD, hint, path.name)
+            # 명령 이름은 그 스테이지가 실제로 띄우는 클라이언트여야 한다.
+            self.assertIn(shooting.client_name(stage), hint, path.name)
+
+    def test_a_second_server_is_still_pointed_at(self):
+        # 범인이 replica에 있는 스테이지에서 primary만 안내하면 현장을 놓친다.
+        stage = shooting.load_stage(
+            REPO_ROOT / "shooting" / "stages" / "2-1-replication-setup.json")
+        self.assertIn(shooting.PLAYER_PORTS["replica"],
+                      shooting._connect_hint(stage))
+
+
+class ClientLabelTest(unittest.TestCase):
+    """화면이 안내하는 클라이언트 이름은 실제로 뜨는 것과 같아야 한다.
+
+    `client_command()`는 처음부터 벤더에 따라 `mysql`/`psql`을 골랐는데 HUD의
+    라벨만 `mysql`로 굳어 있었다. PostgreSQL 스테이지에서 화면은 "c 키로 mysql
+    접속"이라 하고 `c`를 누르면 psql이 뜬다 — 게다가 바로 아랫줄의 접속 명령
+    (`_connect_hint`)은 psql을 제대로 안내해서, 한 화면이 서로 다른 두 클라이언트를
+    가리켰다.
+    """
+
+    def _stage(self, name):
+        return shooting.load_stage(
+            REPO_ROOT / "shooting" / "stages" / name)
+
+    def test_names_the_client_each_vendor_actually_launches(self):
+        self.assertEqual(
+            shooting.client_name(self._stage("1-1-runaway-query.json")),
+            "mysql")
+        self.assertEqual(
+            shooting.client_name(
+                self._stage("pg-1-1-idle-in-transaction.json")),
+            "psql")
+
+    def test_every_stage_footer_names_the_binary_that_will_run(self):
+        """라벨과 명령이 각자 벤더를 판단하면 또 갈라진다 — 묶어서 고정한다."""
+        for path in shooting.discover_stages():
+            stage = shooting.load_stage(path)
+            session = shooting.init_session(stage)
+            target = shooting.default_target(stage)
+            binary = shooting.client_command(stage, None, target)[0]
+            self.assertIn(f"c {binary} 접속",
+                          shooting.play_footer(stage, session), path.name)
+
+    def test_footer_still_carries_the_other_keys(self):
+        stage = self._stage("pg-1-1-idle-in-transaction.json")
+        session = shooting.init_session(stage)
+        session["notes_count"] = 2
+        footer = shooting.play_footer(stage, session)
+        for piece in ("r 상황 보고", "지난 기록(2)", "q 포기",
+                      f"h 힌트(0/{len(stage['hints'])})"):
+            self.assertIn(piece, footer)
+
+    def test_connect_failure_hint_is_vendor_specific(self):
+        # MySQL 쪽 함정(~/.my.cnf 가 MYSQL_PWD 를 이긴다)은 psql 과 무관하다.
+        mysql_hint = shooting.client_error_hint("primary")
+        self.assertIn(".my.cnf", mysql_hint)
+        pg_hint = shooting.client_error_hint("postgres")
+        self.assertNotIn(".my.cnf", pg_hint)
+        self.assertNotIn("MYSQL_PWD", pg_hint)
+        self.assertIn("--with-postgresql", pg_hint)
+
+
+class WaitUntilTest(unittest.TestCase):
+    """폴링 대기를 한 군데로 모은 헬퍼.
+
+    같은 모양이 랩 기동과 플레이 전 대기로 흩어져 있었다. `tui.pick()`이
+    세 벌로 갈라졌다가 합쳐진 것과 같은 자리다 — 세 번째 사본을 만들기 전에 모은다.
+    """
+
+    @contextlib.contextmanager
+    def _no_sleep(self):
+        """실제로 자지 않는다. 잔 횟수만 센다."""
+        real = shooting.time.sleep
+        naps = []
+        shooting.time.sleep = naps.append
+        try:
+            yield naps
+        finally:
+            shooting.time.sleep = real
+
+    def test_true_at_once_does_not_sleep(self):
+        with self._no_sleep() as naps:
+            self.assertTrue(shooting.wait_until(lambda: True, 10))
+        self.assertEqual(naps, [])
+
+    def test_polls_until_the_condition_holds(self):
+        calls = []
+
+        def ready():
+            calls.append(1)
+            return len(calls) >= 3
+
+        with self._no_sleep() as naps:
+            self.assertTrue(shooting.wait_until(ready, 10, poll_seconds=0.1))
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(naps, [0.1, 0.1])
+
+    def test_gives_up_at_the_deadline(self):
+        with self._no_sleep():
+            self.assertFalse(
+                shooting.wait_until(lambda: False, 0, poll_seconds=0.01))
+
+    def test_calls_on_wait_once_per_rest(self):
+        # 기다리는 동안 화면이 조용하면 멈춘 것처럼 보인다.
+        calls, ticks = [], []
+
+        def ready():
+            calls.append(1)
+            return len(calls) >= 3
+
+        with self._no_sleep():
+            shooting.wait_until(ready, 10, poll_seconds=0.1,
+                                on_wait=lambda: ticks.append(1))
+        self.assertEqual(len(ticks), 2)
+
+
+class PostgresReadinessTest(unittest.TestCase):
+    """PostgreSQL 랩은 **준비될 때까지** 기다려야 한다.
+
+    `container_running`은 컨테이너가 뜨자마자 참이 되는데, 그 시점의 postgres는
+    아직 initdb로 20만 행을 넣는 중이다(`shooting/lab/pg-seed/01-schema.sql`).
+    그 창에서 출발하면 `setup_stage`의 첫 `docker exec psql`이 실패하고,
+    플레이어는 자기가 만들지 않은 오류를 본다. MySQL 경로에는 이미 healthy
+    대기가 있는데 PostgreSQL 경로에만 없었다.
+    """
+
+    PG_STAGE = "pg-1-1-idle-in-transaction"
+
+    @contextlib.contextmanager
+    def _lab(self, pg_running=True, healthy_after=0):
+        """랩을 흉내낸다. postgres는 `healthy_after`번 물어본 뒤에야 healthy."""
+        seen = {"health_polls": 0}
+        names = ("lab_running", "lab_healthy", "setup_stage", "teardown_stage",
+                 "offer_note", "run_line", "container_running",
+                 "container_healthy", "lab_up")
+        real = {n: getattr(shooting, n) for n in names}
+        real_sleep = shooting.time.sleep
+
+        def fake_container_healthy(target):
+            if target != "postgres":
+                return True
+            seen["health_polls"] += 1
+            return seen["health_polls"] > healthy_after
+
+        def fake_setup(stage, log=print):
+            # 출발 시점에 postgres가 실제로 준비돼 있었는지를 붙잡는다.
+            seen["pg_ready_at_setup"] = fake_container_healthy("postgres")
+            seen["health_polls"] -= 1          # 이 조회는 계측용이라 세지 않는다
+            return {"allowed_pids": set(), "started_at": {}}
+
+        def fake_run_line(stage, session, baseline):
+            seen["played"] = True
+            return None
+
+        shooting.lab_running = lambda: True
+        shooting.lab_healthy = lambda: True
+        shooting.container_running = lambda t: (pg_running if t == "postgres"
+                                                else True)
+        shooting.container_healthy = fake_container_healthy
+        shooting.lab_up = lambda *a, **k: True
+        shooting.setup_stage = fake_setup
+        shooting.teardown_stage = lambda stage: None
+        shooting.offer_note = lambda stage, session, result: None
+        shooting.run_line = fake_run_line
+        shooting.time.sleep = lambda s: None
+        buf = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(buf):
+                yield seen
+        finally:
+            seen["stdout"] = buf.getvalue()
+            shooting.time.sleep = real_sleep
+            for n, fn in real.items():
+                setattr(shooting, n, fn)
+
+    def test_waits_until_postgres_is_healthy_before_injecting(self):
+        with self._lab(healthy_after=3) as seen:
+            rc = shooting.cmd_play(self.PG_STAGE, force_line=True, seed=1)
+        self.assertEqual(rc, 0)
+        self.assertTrue(seen.get("played"))
+        self.assertTrue(seen.get("pg_ready_at_setup"),
+                        "postgres가 준비되기 전에 장애를 주입했다")
+
+    def test_a_healthy_lab_starts_without_waiting(self):
+        with self._lab(healthy_after=0) as seen:
+            shooting.cmd_play(self.PG_STAGE, force_line=True, seed=1)
+        self.assertTrue(seen.get("pg_ready_at_setup"))
+        self.assertNotIn("준비 중", seen["stdout"])
+
+    def test_a_lab_that_is_down_is_told_to_come_up_not_waited_on(self):
+        # 안 떠 있는 것을 기다리면 영원히 기다린다. 그건 안내할 일이다.
+        with self._lab(pg_running=False) as seen:
+            rc = shooting.cmd_play(self.PG_STAGE, force_line=True, seed=1)
+        self.assertEqual(rc, 1)
+        self.assertIn("--with-postgresql", seen["stdout"])
+        self.assertIsNone(seen.get("played"))
+
+    def test_lab_up_with_postgres_waits_for_it_too(self):
+        """`./shoot up --with-postgresql` 이 '준비 완료'라고 거짓말하면 안 된다."""
+        polls = {"n": 0}
+        names = ("_compose", "lab_healthy", "container_healthy")
+        real = {n: getattr(shooting, n) for n in names}
+        real_sleep = shooting.time.sleep
+
+        def fake_pg_healthy(target):
+            if target != "postgres":
+                return True
+            polls["n"] += 1
+            return polls["n"] > 2
+
+        shooting._compose = lambda *a, **k: types.SimpleNamespace(
+            returncode=0, stdout="", stderr="")
+        shooting.lab_healthy = lambda: True
+        shooting.container_healthy = fake_pg_healthy
+        shooting.time.sleep = lambda s: None
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                shooting.lab_up(wait_seconds=30, with_postgres=True)
+        finally:
+            shooting.time.sleep = real_sleep
+            for n, fn in real.items():
+                setattr(shooting, n, fn)
+        self.assertGreater(polls["n"], 2,
+                           "postgres healthy 를 기다리지 않고 끝냈다")
+
+    def test_lab_up_without_postgres_ignores_it(self):
+        # MySQL만 하는 사람이 뜨지도 않은 컨테이너를 기다릴 이유가 없다.
+        asked = []
+        names = ("_compose", "lab_healthy", "container_healthy")
+        real = {n: getattr(shooting, n) for n in names}
+        shooting._compose = lambda *a, **k: types.SimpleNamespace(
+            returncode=0, stdout="", stderr="")
+        shooting.lab_healthy = lambda: True
+        shooting.container_healthy = lambda t: asked.append(t) or True
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                shooting.lab_up(wait_seconds=30, with_postgres=False)
+        finally:
+            for n, fn in real.items():
+                setattr(shooting, n, fn)
+        self.assertEqual(asked, [])
+
+
+class SessionShuffleTest(unittest.TestCase):
+    """진단 문항의 보기 순서는 시드에서 갈라져야 한다.
+
+    섞지 않으면 정답이 작성된 자리에 그대로 남는다. 이 저장소의 mcq 문항은
+    시험·스테이지를 통틀어 전부 `answer: 0`으로 쓰여 있으므로(작성 규약이 그렇고
+    `exam.py`가 출제할 때 섞는다), 섞지 않으면 **진단 문항의 정답이 항상 1번**이
+    된다. 그러면 등급 네 항목 중 '진단 정확도'가 공짜가 되고, 두 번째 판부터
+    상황 보고가 읽지 않고 누르는 화면이 된다.
+    """
+
+    def _mcqs(self, stage):
+        return [o for o in stage["objectives"]
+                if o["type"] == "quiz" and o["question"]["type"] == "mcq"]
+
+    def test_choices_do_not_always_keep_the_authored_order(self):
+        for path in shooting.discover_stages():
+            stage = shooting.load_stage(path)
+            if not self._mcqs(stage):
+                continue
+            graded = set()
+            for seed in range(30):
+                session = shooting.init_session(stage, random.Random(seed))
+                for obj in self._mcqs(stage):
+                    graded.add(session["states"][obj["id"]]["answer"])
+            self.assertGreater(len(graded), 1, path.name)
+
+    def test_the_graded_index_still_points_at_the_authored_answer(self):
+        # 섞고 나서 채점이 어긋나면 정답을 고른 사람이 오답 처리된다.
+        for path in shooting.discover_stages():
+            stage = shooting.load_stage(path)
+            for seed in range(20):
+                session = shooting.init_session(stage, random.Random(seed))
+                for obj in self._mcqs(stage):
+                    st = session["states"][obj["id"]]
+                    self.assertEqual(st["order"][st["answer"]],
+                                     obj["question"]["answer"],
+                                     (path.name, seed))
+
+    def test_same_seed_reproduces_the_same_order(self):
+        # `--seed`/`replay`가 되살리는 '같은 판'에는 보기 순서도 포함된다.
+        stage = shooting.load_stage(
+            REPO_ROOT / "shooting" / "stages" / "1-3-lock-contention.json")
+        orders = [{k: v.get("order") for k, v in
+                   shooting.init_session(stage, random.Random(4821))["states"].items()}
+                  for _ in range(2)]
+        self.assertEqual(orders[0], orders[1])
+
+    def test_shuffle_false_pins_the_order(self):
+        """`exam.py`와 같은 스키마라고 문서가 약속했으므로 탈출구도 같아야 한다.
+
+        '위 모두 정답' 류 보기가 있으면 섞는 순간 문항이 말이 안 된다. `exam.py`는
+        `shuffle: false`로 그 자리를 고정할 수 있는데, 슈팅 쪽만 무시하면 스테이지
+        작성자가 적어둔 것이 조용히 아무 일도 하지 않는다.
+        """
+        stage = _minimal_stage(objectives=[
+            {"id": "q", "type": "quiz",
+             "question": {"type": "mcq", "shuffle": False,
+                          "q": "?", "choices": ["a", "b", "c", "d"],
+                          "answer": 0}}])
+        for seed in range(20):
+            st = shooting.init_session(stage, random.Random(seed))["states"]["q"]
+            self.assertEqual(st["order"], [0, 1, 2, 3], seed)
+            self.assertEqual(st["answer"], 0, seed)
+
+    def test_without_an_rng_the_authored_order_is_kept(self):
+        # 라인 모드 테스트와 문항 화면 테스트가 이 결정적 동작에 기대고 있다.
+        stage = shooting.load_stage(
+            REPO_ROOT / "shooting" / "stages" / "1-1-runaway-query.json")
+        st = shooting.init_session(stage)["states"]["diagnose-symptom"]
+        self.assertEqual(st["order"], [0, 1, 2, 3])
+        self.assertEqual(st["answer"], 0)
+
+
+class CmdPlayWiringTest(unittest.TestCase):
+    """`cmd_play`가 실제로 시드를 세션까지 넘겨 판을 여는지.
+
+    원래 버그가 정확히 이 자리였다 — `init_session`은 rng를 받을 줄 알았고
+    `shuffle_choices`도 import되어 있었는데, `cmd_play`가 넘기지 않아 보기가
+    한 번도 섞이지 않았다. 순수 함수만 검증하면 그 배선 누락은 계속 보이지 않는다.
+
+    도커 경계(랩 기동·장애 주입·화면)만 대신하고, 확인하는 것은 `cmd_play`가
+    **실제로 만들어 넘긴 세션**이다.
+    """
+
+    SEED = 1          # 이 시드에서 보기 순서는 [3, 0, 2, 1] — 원본 순서가 아니다
+
+    @contextlib.contextmanager
+    def _fake_lab(self):
+        """랩 대신 화면 함수가 받은 (stage, session)을 붙잡는다.
+
+        표준출력도 `seen["stdout"]`에 남긴다 — 지워 없애기만 하면 "시드가
+        화면에 뜨는가" 같은 출력 자체를 검증하는 테스트를 못 짠다.
+        """
+        seen = {}
+        real = {name: getattr(shooting, name) for name in
+                ("lab_running", "lab_healthy", "setup_stage", "teardown_stage",
+                 "offer_note", "run_line")}
+
+        def fake_run_line(stage, session, baseline):
+            seen["stage"], seen["session"] = stage, session
+            return None                       # 포기 — 결과 화면·기록을 건너뛴다
+
+        def fake_setup(stage, log=print):
+            seen["setup_done"] = time.monotonic()
+            return {"allowed_pids": set(), "started_at": {}}
+
+        shooting.lab_running = lambda: True
+        shooting.lab_healthy = lambda: True
+        shooting.setup_stage = fake_setup
+        shooting.teardown_stage = lambda stage: None
+        shooting.offer_note = lambda stage, session, result: None
+        shooting.run_line = fake_run_line
+        buf = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(buf):
+                yield seen
+        finally:
+            seen["stdout"] = buf.getvalue()
+            for name, fn in real.items():
+                setattr(shooting, name, fn)
+
+    def test_play_shuffles_the_choices_it_shows(self):
+        with self._fake_lab() as seen:
+            rc = shooting.cmd_play("1-1-runaway-query", force_line=True,
+                                   seed=self.SEED)
+        self.assertEqual(rc, 0)
+        st = seen["session"]["states"]["diagnose-symptom"]
+        # 원본 순서 그대로면 정답이 늘 1번에 놓인다 — 그게 고치려던 버그다.
+        self.assertNotEqual(st["order"], sorted(st["order"]))
+        self.assertNotEqual(st["answer"], 0)
+
+    def test_the_clock_starts_after_the_fault_is_injected(self):
+        """장애 주입에 걸린 시간은 플레이 시간이 아니다.
+
+        `setup_stage`는 복제 스테이지에서 binlog를 처음부터 재생하느라 분 단위로
+        걸린다. 세션을 그보다 먼저 만들면 그 시간이 전부 소요 시간에 얹혀
+        `target_seconds` 보너스가 구조적으로 불가능해진다.
+        """
+        with self._fake_lab() as seen:
+            shooting.cmd_play("1-1-runaway-query", force_line=True,
+                              seed=self.SEED)
+        self.assertGreaterEqual(seen["session"]["started"], seen["setup_done"])
+
+    def test_seed_is_shown_for_an_mcq_stage_without_vars(self):
+        """시드는 `vars`가 없어도 mcq 진단 문항이 있으면 판을 가른다
+        (init_session이 그 시드로 보기를 섞는다) — 화면에도 그만큼 떠야 한다.
+
+        2-1-replication-setup은 `vars` 없이 mcq 문항만 있는 스테이지다.
+        `vars`로만 게이트를 걸면 이런 스테이지에서는 시드가 한 번도 화면에
+        뜨지 않는다.
+        """
+        stage = shooting.load_stage(
+            REPO_ROOT / "shooting" / "stages" / "2-1-replication-setup.json")
+        self.assertFalse(stage.get("vars"))
+        with self._fake_lab() as seen:
+            rc = shooting.cmd_play("2-1-replication-setup", force_line=True,
+                                   seed=self.SEED)
+        self.assertEqual(rc, 0)
+        self.assertIn(f"이번 판 시드: {self.SEED}", seen["stdout"])
+
+    def test_play_reopens_exactly_what_the_seed_describes(self):
+        """`--seed`가 되살리는 판에는 변주와 보기 순서가 **둘 다** 들어 있다."""
+        base = shooting.load_stage(
+            REPO_ROOT / "shooting" / "stages" / "1-1-runaway-query.json")
+        expected_stage = dict(
+            shooting.render_stage(base, random.Random(self.SEED)),
+            _seed=self.SEED)
+        expected = shooting.init_session(expected_stage,
+                                         random.Random(self.SEED))
+        with self._fake_lab() as seen:
+            shooting.cmd_play("1-1-runaway-query", force_line=True,
+                              seed=self.SEED)
+        self.assertEqual(json.dumps(seen["stage"], ensure_ascii=False),
+                         json.dumps(expected_stage, ensure_ascii=False))
+        self.assertEqual(
+            {k: v.get("order") for k, v in seen["session"]["states"].items()},
+            {k: v.get("order") for k, v in expected["states"].items()})
 
 
 class SeedRecordTest(unittest.TestCase):
@@ -2010,8 +2813,15 @@ class ChapterLinkTest(unittest.TestCase):
         self.assertIn("트랜잭션", text)          # 파일명이 아니라 제목이 보인다
         self.assertIn("02-intermediate", text)   # 경로도 함께
 
-    def test_no_chapters_means_no_section(self):
-        self.assertIsNone(shooting.chapter_reading_list({}))
+    def test_the_section_is_never_empty(self):
+        """예전에는 `chapters`가 없으면 None이었다 — 빈 섹션을 띄우지 않으려고.
+
+        회고 챕터가 항상 붙게 되면서 목록이 빌 수 없어졌으므로, 지키려던 것
+        ("내용 없는 '더 읽을 곳'을 보여주지 않는다")을 그대로 다시 적는다.
+        """
+        listing = shooting.chapter_reading_list({})
+        self.assertTrue(listing and listing.strip())
+        self.assertIn(shooting.POSTMORTEM_CHAPTER, listing)
 
 
 class StageMenuTest(unittest.TestCase):
@@ -2440,36 +3250,113 @@ class PostgresStageTest(unittest.TestCase):
             for step in st.get("setup") or []:
                 self.assertEqual(step.get("on"), "postgres", st["id"])
 
+    # 감시가 돌려주는 것은 플레이어가 **친 그대로**의 문장이다(개행·탭만 공백으로
+    # 눌린다). 그러니 패턴은 한 가지 표기가 아니라 사람이 실제로 쓰는 폭을 감당해야
+    # 한다 — 특히 괄호 안팎의 공백은 붙여넣기에서 흔하다.
+    SWEEPS = (
+        "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+        "WHERE state like 'idle%'",
+        "SELECT pg_terminate_backend( pid ) FROM pg_stat_activity",
+        "SELECT pg_terminate_backend(a.pid) FROM pg_stat_activity a",
+        "select pg_terminate_backend (pid) from pg_stat_activity",
+    )
+    PRECISE_KILLS = (
+        "SELECT pg_terminate_backend(2108)",
+        "SELECT pg_terminate_backend( 2108 )",
+        "SELECT pg_terminate_backend(2108);",
+        "select pg_terminate_backend (2108);",
+        "SELECT pg_terminate_backend(  2108  );",
+    )
+
     def test_sweep_pattern_catches_the_blanket_kill(self):
         """2단계에서 확인한 구멍(pid 없는 쓸기)을 스테이지가 직접 막아야 한다."""
         for st in self.stages:
             pats = [c["pattern"] for c in st.get("constraints") or []
                     if c.get("detect") == "forbidden_command"]
             self.assertTrue(pats, st["id"])
-            sweep = ("SELECT pg_terminate_backend(pid) "
-                     "FROM pg_stat_activity WHERE state like 'idle%'")
-            self.assertTrue(any(re.search(p, sweep) for p in pats), st["id"])
+            for sweep in self.SWEEPS:
+                self.assertTrue(any(re.search(p, sweep) for p in pats),
+                                (st["id"], sweep))
 
     def test_sweep_pattern_lets_a_precise_kill_through(self):
-        """정확한 복구가 감점되면 스테이지가 거짓말을 하는 것이다."""
+        """정확한 복구가 감점되면 스테이지가 거짓말을 하는 것이다.
+
+        pid를 짚어 끊는 것은 이 스테이지가 가르치려는 **정답**이다. 괄호 뒤에
+        공백을 하나 넣었다고 감점되면, 플레이어는 자기가 뭘 잘못했는지 알 길이
+        없는 채로 등급을 잃는다.
+        """
         for st in self.stages:
             for c in st.get("constraints") or []:
                 if c.get("detect") != "forbidden_command":
                     continue
-                self.assertIsNone(
-                    re.search(c["pattern"],
-                              "SELECT pg_terminate_backend(2108)"), st["id"])
+                for kill in self.PRECISE_KILLS:
+                    self.assertIsNone(re.search(c["pattern"], kill),
+                                      (st["id"], kill))
+
+    def test_victims_take_distinct_rows_inside_the_lock(self):
+        """피해자가 서로 다른 행을 잡아야 pg_blocking_pids 가 범인만 지목한다.
+
+        실측(설계 문서 참고): 넷이 같은 행을 노리면 막힌 네 줄 중 범인이 등장하는
+        것은 한 줄뿐이고, 마지막 대기자의 blockers 에는 범인이 아예 없다.
+        PostgreSQL이 같은 튜플의 대기자를 tuple lock 으로 직렬화하기 때문이다.
+        그 상태에서는 '사슬의 뿌리를 끊어라'라는 이 스테이지의 교훈이 정확히
+        반대를 가리킨다.
+
+        범위 관계도 함께 고정한다 — payments 와 rows 는 따로 선언된 두 변수라,
+        한쪽만 넓히면 피해자가 잠긴 구간 밖으로 나가 아무에게도 막히지 않는다.
+        """
+        base = shooting.load_stage(
+            REPO_ROOT / "shooting" / "stages"
+            / "pg-1-1-idle-in-transaction.json")
+        for seed in range(100):
+            st = shooting.render_stage(base, random.Random(seed))
+            culprit = next(s for s in st["setup"] if s.get("culprit"))
+            victims = next(s for s in st["setup"]
+                           if s["type"] == "sessions")
+            m = re.search(r"id <= (\d+)", culprit["sql"])
+            self.assertIsNotNone(m, culprit["sql"])
+            locked_to = int(m.group(1))
+            ids = []
+            for i in range(int(victims["count"])):
+                sql = shooting.render_session_sql(victims["sql"], i)
+                # 렌더링은 문자열 치환일 뿐이라 "id = 1 + {{session_index}}"는
+                # "id = 1 + N"으로 남는다(실제 값은 실행 시점에 PostgreSQL이
+                # 계산한다) — 그래서 산술식을 그대로 읽어 최종 id를 구한다.
+                m = re.search(r"id = 1 \+ (\d+)", sql)
+                self.assertIsNotNone(m, sql)
+                ids.append(1 + int(m.group(1)))
+            self.assertEqual(len(set(ids)), len(ids), (seed, ids))
+            self.assertTrue(all(1 <= v <= locked_to for v in ids),
+                            (seed, ids, locked_to))
 
     def test_variables_are_all_declared(self):
-        """{{이름}}이 vars에 없으면 그대로 SQL에 실려 나간다."""
+        """{{이름}}이 vars에 없으면 그대로 SQL에 실려 나간다.
+
+        session_index는 예외다 — vars에 선언하면 검증이 거부하는 예약 이름이라
+        (validate_stage), 여기서도 이미 알려진 이름으로 쳐준다.
+        """
         for st in self.stages:
-            declared = set((st.get("vars") or {}))
+            declared = set((st.get("vars") or {})) | {shooting.SESSION_INDEX_VAR}
             used = set(re.findall(r"\{\{(\w+)\}\}", json.dumps(st)))
             self.assertEqual(used - declared, set(), st["id"])
 
     def test_rendering_leaves_no_placeholder(self):
+        """render_stage는 vars만 채운다 — session_index는 setup_stage가 세션을
+        띄우는 시점에야 채워지므로, 렌더링 직후에는 그 자리만 예외적으로 남는다.
+
+        예약어 하나만 걷어내고 나머지는 원래대로 전수 검사한다 — `{{이름}}`
+        모양(`\\w+`)으로 좁히면 `{{pool.from}}`(점 표기 span) 같은 실제로 쓰이는
+        형태나 `{{ rows }}`(공백 포함) 가 남아도 통과해버려, 검사가 실제
+        `_PLACEHOLDER_RE`(`\\{\\{\\s*([^{}]+?)\\s*\\}\\}`)보다 좁아진다. 예약어를
+        걷어낼 때도 같은 정규식을 써야 한다 — 리터럴 `"{{session_index}}"`만
+        지우면 `{{ session_index }}`(공백 포함)처럼 엔진이 인정하는 다른
+        표기를 쓴 정상 스테이지가 오경보를 낸다.
+        """
+        needle_re = re.compile(
+            r"\{\{\s*" + re.escape(shooting.SESSION_INDEX_VAR) + r"\s*\}\}")
         for st in self.stages:
             out = json.dumps(shooting.render_stage(st, random.Random(5)))
+            out = needle_re.sub("", out)
             self.assertNotIn("{{", out, st["id"])
 
     def test_state_objectives_hold_before_clearing(self):

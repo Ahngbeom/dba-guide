@@ -10,7 +10,6 @@
   "chapters": [
     "02-intermediate/01-transaction-and-locking.md"
   ],
-  "connect_hint": "MYSQL_PWD=shoot mysql -h127.0.0.1 -P3306 -udba",
   "vars": {
     "lock": {
       "type": "span",
