@@ -2841,12 +2841,17 @@ class PostgresStageTest(unittest.TestCase):
     def test_rendering_leaves_no_placeholder(self):
         """render_stage는 vars만 채운다 — session_index는 setup_stage가 세션을
         띄우는 시점에야 채워지므로, 렌더링 직후에는 그 자리만 예외적으로 남는다.
+
+        예약어 하나만 걷어내고 나머지는 원래대로 전수 검사한다 — `{{이름}}`
+        모양(`\\w+`)으로 좁히면 `{{pool.from}}`(점 표기 span) 같은 실제로 쓰이는
+        형태나 `{{ rows }}`(공백 포함) 가 남아도 통과해버려, 검사가 실제
+        `_PLACEHOLDER_RE`(`\\{\\{\\s*([^{}]+?)\\s*\\}\\}`)보다 좁아진다.
         """
+        needle = "{{" + shooting.SESSION_INDEX_VAR + "}}"
         for st in self.stages:
             out = json.dumps(shooting.render_stage(st, random.Random(5)))
-            leftover = set(re.findall(r"\{\{(\w+)\}\}", out))
-            self.assertEqual(leftover - {shooting.SESSION_INDEX_VAR}, set(),
-                             st["id"])
+            out = out.replace(needle, "")
+            self.assertNotIn("{{", out, st["id"])
 
     def test_state_objectives_hold_before_clearing(self):
         """hold_seconds 가 없으면 순간적인 빈틈에 클리어된다."""
