@@ -635,6 +635,92 @@ class AnswerLeakLintTest(unittest.TestCase):
                     self.assertTrue(q.get("hint"),
                                     f"{path.name}:{q.get('id')} hint 없음")
 
+    # ------------------------------------------------------------------ #
+    # 보기 길이 단서 (래칫)
+    #
+    # 보기 순서는 출제할 때 섞으므로 위치는 정답을 알려주지 않는다. 그런데 **길이**
+    # 는 알려준다 — 측정 시점 85문항 중 67개(79%)에서 정답이 가장 긴 보기였고,
+    # 정답 평균 37자 대 오답 21자였다. "항상 가장 긴 것을 찍는다"가 79%를 내는데
+    # 통과 기준이 70%라, 한 문제도 읽지 않고 객관식을 통과할 수 있었다.
+    #
+    # 원인은 출제 습관이다 — 정답은 정확하게 쓰려다 길어지고 오답은 짧게 던진다.
+    # 216문항을 손보는 것은 콘텐츠 작업이므로, 그 전에 **더 나빠지지 않게** 못을
+    # 박는다. 아래 수치는 고쳐야 할 빚의 잔액이고 **줄어드는 방향으로만** 바꾼다.
+    # 은행을 개선했으면 그 줄의 숫자를 함께 낮춰라(낮추지 않아도 통과하지만,
+    # 낮춰 두어야 다음 사람이 되돌리는 것을 막는다).
+    # ------------------------------------------------------------------ #
+    LONGEST_ANSWER_BASELINE = {
+        "01-rdbms-fundamentals.json": 1,
+        "02-sql-basics.json": 1,
+        "03-installation-and-access.json": 2,
+        "04-user-and-privilege-management.json": 2,
+        "05-backup-basics.json": 3,
+        "06-basic-monitoring.json": 2,
+        "01-transaction-and-locking.json": 3,
+        "02-indexing-and-query-tuning.json": 3,
+        "03-performance-monitoring.json": 4,
+        "04-backup-recovery-strategies.json": 3,
+        "05-replication-basics.json": 4,
+        "06-schema-change-management.json": 3,
+        "07-cloud-db-infra-and-connection.json": 4,
+        "08-cloud-managed-db-basics.json": 5,
+        "01-advanced-performance-tuning.json": 3,
+        "02-high-availability-and-failover.json": 3,
+        "03-disaster-recovery.json": 3,
+        "04-scaling-and-sharding.json": 3,
+        "05-security-and-compliance.json": 3,
+        "06-automation-and-iac.json": 2,
+        "07-cloud-managed-db-advanced.json": 4,
+        "08-kubernetes-db-operators.json": 3,
+        "09-incident-response-and-postmortem.json": 3,
+    }
+    # 정답 평균 길이 ÷ 오답 평균 길이. 측정 시점 1.7571.
+    LENGTH_RATIO_BASELINE = 1.76
+
+    @staticmethod
+    def _longest_is_answer(q):
+        return (len(q["choices"][q["answer"]])
+                == max(len(c) for c in q["choices"]))
+
+    def _mcq(self, path):
+        return [q for q in json.loads(path.read_text(encoding="utf-8"))
+                ["questions"] if q["type"] == "mcq"]
+
+    def test_no_bank_leaks_more_answers_by_length(self):
+        for path in self._banks():
+            mcq = self._mcq(path)
+            if not mcq:
+                continue
+            hit = sum(1 for q in mcq if self._longest_is_answer(q))
+            cap = self.LONGEST_ANSWER_BASELINE.get(path.name)
+            if cap is None:
+                # 새로 만든 은행은 기존 빚을 물려받을 이유가 없다. 무작위 기대치는
+                # 4지선다에서 25%이므로 절반을 상한으로 둔다.
+                cap = len(mcq) // 2
+                why = f"새 은행은 {len(mcq)}문항 중 {cap}개까지만 허용"
+            else:
+                why = f"기준선 {cap} (줄이는 방향으로만 바꾼다)"
+            with self.subTest(bank=path.name):
+                self.assertLessEqual(
+                    hit, cap,
+                    f"{path.name}: 정답이 가장 긴 보기인 문항 {hit}/{len(mcq)} — {why}")
+
+    def test_the_correct_choice_does_not_grow_longer_overall(self):
+        """'가장 길다'를 피해도 정답만 계속 길어지면 단서는 남는다."""
+        correct, wrong = [], []
+        for path in self._banks():
+            for q in self._mcq(path):
+                for i, c in enumerate(q["choices"]):
+                    (correct if i == q["answer"] else wrong).append(len(c))
+        if not correct or not wrong:
+            self.skipTest("아직 객관식 없음")
+        ratio = (sum(correct) / len(correct)) / (sum(wrong) / len(wrong))
+        self.assertLessEqual(
+            round(ratio, 2), self.LENGTH_RATIO_BASELINE,
+            f"정답/오답 평균 길이 비율 {ratio:.2f} "
+            f"(기준선 {self.LENGTH_RATIO_BASELINE}) — 오답을 정답만큼 "
+            f"구체적으로 쓰거나 정답을 줄여라")
+
 
 class SeedParseTest(unittest.TestCase):
     def test_checklist_and_dbms_tagging(self):
