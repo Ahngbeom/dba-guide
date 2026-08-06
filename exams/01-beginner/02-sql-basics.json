@@ -7,7 +7,12 @@
       "type": "mcq",
       "dbms": "neutral",
       "q": "`CREATE`, `ALTER`, `DROP`처럼 테이블 구조를 만들고 바꾸고 지우는 명령은 어떤 부류인가?",
-      "choices": ["DDL (데이터 정의어)", "DML (데이터 조작어)", "DCL (데이터 제어어)", "TCL (트랜잭션 제어어)"],
+      "choices": [
+        "DDL (데이터 정의어)",
+        "DML (데이터 조작어)",
+        "DCL (데이터 제어어)",
+        "TCL (트랜잭션 제어어)"
+      ],
       "answer": 0,
       "hint": "'구조를 정의(Definition)한다'는 의미의 약어입니다.",
       "explain": "DDL(Data Definition Language)은 구조를 정의한다. 데이터 조작은 DML, 권한은 DCL, 트랜잭션 확정/취소는 TCL이다."
@@ -17,7 +22,12 @@
       "type": "mcq",
       "dbms": "neutral",
       "q": "`GRANT`, `REVOKE`처럼 권한을 주고 회수하는 명령의 부류는?",
-      "choices": ["DCL (데이터 제어어)", "DDL (데이터 정의어)", "DML (데이터 조작어)", "TCL (트랜잭션 제어어)"],
+      "choices": [
+        "DCL (데이터 제어어)",
+        "DDL (데이터 정의어)",
+        "DML (데이터 조작어)",
+        "TCL (트랜잭션 제어어)"
+      ],
       "answer": 0,
       "hint": "접근을 '제어(Control)'하는 명령입니다.",
       "explain": "권한 부여/회수는 DCL(Data Control Language)이다."
@@ -27,7 +37,10 @@
       "type": "short",
       "dbms": "neutral",
       "q": "employees 테이블의 모든 열, 모든 행을 조회하는 SQL을 작성하시오.",
-      "accept": ["select * from employees", "select*from employees"],
+      "accept": [
+        "select * from employees",
+        "select*from employees"
+      ],
       "hint": "모든 컬럼은 별표 기호로 나타냅니다.",
       "explain": "SELECT * FROM employees; — `*`는 전체 컬럼을 의미한다."
     },
@@ -36,7 +49,10 @@
       "type": "short",
       "dbms": "neutral",
       "q": "id가 1인 직원의 salary를 5500으로 바꾸는 UPDATE 문을 작성하시오.",
-      "accept": ["update employees set salary = 5500 where id = 1", "update employees set salary=5500 where id=1"],
+      "accept": [
+        "update employees set salary = 5500 where id = 1",
+        "update employees set salary=5500 where id=1"
+      ],
       "hint": "UPDATE ... SET ... 뒤에 대상 행을 한정하는 절이 반드시 필요합니다.",
       "explain": "UPDATE employees SET salary = 5500 WHERE id = 1; — WHERE로 대상 행을 한정해야 한다."
     },
@@ -47,9 +63,9 @@
       "q": "`UPDATE` 또는 `DELETE` 문에서 `WHERE` 절을 빠뜨리면 어떤 일이 벌어지는가?",
       "choices": [
         "테이블의 모든 행이 영향을 받는다(전체 수정/삭제)",
-        "문법 오류가 나서 실행되지 않는다",
-        "첫 번째 행만 영향을 받는다",
-        "아무 일도 일어나지 않는다"
+        "WHERE 없는 갱신은 문법 오류로 거부되어 실행되지 않는다",
+        "정렬 순서상 첫 번째 행 하나만 영향을 받는다",
+        "조건이 없으므로 아무 행도 매칭되지 않아 0건으로 끝난다"
       ],
       "answer": 0,
       "hint": "대상을 한정하지 않으면 범위가 어디까지 넓어질지 생각해 보세요.",
@@ -60,7 +76,9 @@
       "type": "short",
       "dbms": "neutral",
       "q": "아직 COMMIT하지 않은 트랜잭션의 변경을 취소(되돌리기)하는 명령은?",
-      "accept": ["rollback"],
+      "accept": [
+        "rollback"
+      ],
       "hint": "COMMIT의 반대 동작을 하는 명령입니다.",
       "explain": "ROLLBACK은 COMMIT 전이라면 변경을 되돌린다. 확정하려면 COMMIT을 쓴다."
     },
@@ -69,7 +87,12 @@
       "type": "mcq",
       "dbms": "neutral",
       "q": "트랜잭션의 변경을 영구히 확정하는 명령은?",
-      "choices": ["COMMIT", "ROLLBACK", "SAVE", "FLUSH"],
+      "choices": [
+        "COMMIT",
+        "ROLLBACK",
+        "SAVE",
+        "FLUSH"
+      ],
       "answer": 0,
       "hint": "은행 거래를 '확정'한다는 이미지의 단어입니다.",
       "explain": "COMMIT은 변경을 확정(영구 저장)하고, ROLLBACK은 되돌린다."
@@ -81,7 +104,11 @@
       "q": "Oracle SQL*Plus에서 UPDATE/DELETE 같은 DML을 실행한 뒤 반드시 해야 저장되는 작업은 무엇이며 왜인가?",
       "reference": "COMMIT을 실행해야 한다. Oracle의 SQL*Plus는 DML이 자동 커밋되지 않으므로, COMMIT 전에는 변경이 확정되지 않고 세션을 끊으면 롤백될 수 있다.",
       "hint": "SQL*Plus는 자동 커밋이 되지 않는다는 점이 핵심입니다.",
-      "keywords": ["commit", "자동 커밋", "확정"]
+      "keywords": [
+        "commit",
+        "자동 커밋",
+        "확정"
+      ]
     },
     {
       "id": "sql-ddl-autocommit",
@@ -90,7 +117,11 @@
       "q": "DDL(CREATE/ALTER/DROP)이 대부분 ROLLBACK으로 되돌릴 수 없는 이유를 설명하시오.",
       "reference": "Oracle·MySQL 등에서 DDL은 실행 시 자동으로 커밋되기 때문이다. 구조 변경이 즉시 확정되므로 이후 ROLLBACK을 해도 되돌릴 수 없다. 그래서 DROP 같은 DDL은 특히 신중히 실행해야 한다.",
       "hint": "DDL이 실행되는 순간 자동으로 무엇이 일어나는지 생각해 보세요.",
-      "keywords": ["자동 커밋", "확정", "되돌릴 수 없"]
+      "keywords": [
+        "자동 커밋",
+        "확정",
+        "되돌릴 수 없"
+      ]
     }
   ]
 }

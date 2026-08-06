@@ -653,33 +653,10 @@ class AnswerLeakLintTest(unittest.TestCase):
     # 216문항을 한 번에 손볼 수는 없으므로 남은 빚을 아래에 고정한다.
     # **줄어드는 방향으로만** 바꾼다 — 은행을 고쳤으면 그 줄의 숫자도 함께 낮춰라.
     # ------------------------------------------------------------------ #
-    LONGEST_ANSWER_BASELINE = {
-        "01-rdbms-fundamentals.json": 1,
-        "02-sql-basics.json": 1,
-        "03-installation-and-access.json": 0,
-        "04-user-and-privilege-management.json": 2,
-        "05-backup-basics.json": 3,
-        "06-basic-monitoring.json": 1,
-        "01-transaction-and-locking.json": 3,
-        "02-indexing-and-query-tuning.json": 3,
-        "03-performance-monitoring.json": 4,
-        "04-backup-recovery-strategies.json": 3,
-        "05-replication-basics.json": 0,
-        "06-schema-change-management.json": 3,
-        "07-cloud-db-infra-and-connection.json": 0,
-        "08-cloud-managed-db-basics.json": 0,
-        "01-advanced-performance-tuning.json": 0,
-        "02-high-availability-and-failover.json": 0,
-        "03-disaster-recovery.json": 0,
-        "04-scaling-and-sharding.json": 0,
-        "05-security-and-compliance.json": 0,
-        "06-automation-and-iac.json": 2,
-        "07-cloud-managed-db-advanced.json": 0,
-        "08-kubernetes-db-operators.json": 0,
-        "09-incident-response-and-postmortem.json": 0,
-    }
-    # 정답 평균 길이 ÷ 오답 평균 길이. 처음 1.7571 → 03-advanced 1.3929 → 02-intermediate 1.2357.
-    LENGTH_RATIO_BASELINE = 1.24
+    # 전부 갚았다. 남는 것은 새 은행·새 문항이 다시 빚지지 않게 하는 일이다.
+    LONGEST_ANSWER_BASELINE = {}
+    # 정답 평균 길이 ÷ 오답 평균 길이. 1.7571 → 1.3929 → 1.2384 → 1.1010.
+    LENGTH_RATIO_BASELINE = 1.1
 
     @staticmethod
     def _longest_is_answer(q):
@@ -696,14 +673,12 @@ class AnswerLeakLintTest(unittest.TestCase):
             if not mcq:
                 continue
             hit = sum(1 for q in mcq if self._longest_is_answer(q))
-            cap = self.LONGEST_ANSWER_BASELINE.get(path.name)
-            if cap is None:
-                # 새로 만든 은행은 기존 빚을 물려받을 이유가 없다. 무작위 기대치는
-                # 4지선다에서 25%이므로 절반을 상한으로 둔다.
-                cap = len(mcq) // 2
-                why = f"새 은행은 {len(mcq)}문항 중 {cap}개까지만 허용"
-            else:
-                why = f"기준선 {cap} (줄이는 방향으로만 바꾼다)"
+            # 빚을 다 갚아 기준선이 비었다. 예외를 남겨 둘 이유가 없으므로 0이
+            # 기본이고, 어쩔 수 없는 은행이 생기면 그때 위 표에 사유와 함께 적는다.
+            cap = self.LONGEST_ANSWER_BASELINE.get(path.name, 0)
+            why = (f"기준선 {cap}" if cap else
+                   "정답이 다른 어떤 보기보다 길면 안 된다 — 오답을 정답만큼 "
+                   "구체적으로 써라")
             with self.subTest(bank=path.name):
                 self.assertLessEqual(
                     hit, cap,
