@@ -1083,6 +1083,54 @@ class SessionTest(unittest.TestCase):
         self.assertTrue(shooting.all_done(stage, session))
 
 
+class ClientCheckSymmetryTest(unittest.TestCase):
+    """`doctor` 는 "플레이할 수단이 있는가"를 물어야 한다.
+
+    mysql 이 없으면 실패였고 psql 이 없으면 관대했다. PostgreSQL 스테이지만 할
+    사람에게는 mysql 이 없어도 아무 문제가 없는데 종료 코드 1을 받았고, 반대로
+    둘 다 없어도 "psql 은 선택 사항"이라는 이유로 그 부재는 실패가 아니었다.
+    실패는 **둘 다 없을 때** 다.
+    """
+
+    @contextlib.contextmanager
+    def _clients(self, mysql=True, psql=True):
+        real_which = shooting.shutil.which
+        have = {"mysql": mysql, "psql": psql}
+
+        def fake(name, *a, **k):
+            if name in have:
+                return f"/usr/bin/{name}" if have[name] else None
+            return real_which(name, *a, **k)
+
+        shooting.shutil.which = fake
+        buf = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(buf):
+                yield buf
+        finally:
+            shooting.shutil.which = real_which
+
+    def _run(self, **kw):
+        with self._clients(**kw) as buf:
+            rc = shooting.cmd_doctor()
+        return rc, buf.getvalue()
+
+    def test_only_psql_is_enough_to_play(self):
+        rc, out = self._run(mysql=False, psql=True)
+        self.assertNotIn("[!!] mysql", out)
+        self.assertIn("MySQL 스테이지", out)      # 없는 쪽은 알려 준다
+        self.assertEqual(rc, 0, out)
+
+    def test_only_mysql_is_enough_to_play(self):
+        rc, out = self._run(mysql=True, psql=False)
+        self.assertEqual(rc, 0, out)
+
+    def test_neither_client_fails_the_check(self):
+        rc, out = self._run(mysql=False, psql=False)
+        self.assertNotEqual(rc, 0)
+        self.assertIn("접속할 수단이 없습니다", out)
+
+
 class DoctorTest(unittest.TestCase):
     """docker가 없는 머신에서도 `./shoot doctor`는 진단을 내놔야 한다.
 
@@ -1748,6 +1796,117 @@ class ReadmeStageTableTest(unittest.TestCase):
         for top, nums in blocks.items():
             self.assertEqual(nums, sorted(nums, key=key),
                              f"README:{top + 1} 표의 순서가 스테이지 번호와 다르다")
+
+
+class ChooseStageFilterTest(unittest.TestCase):
+    """`--dbms` 는 스테이지 개수와 무관하게 지켜져야 한다.
+
+    `if len(stages) == 1: return stages[0]` 가 필터보다 먼저 있어서, 스테이지
+    파일이 하나뿐인 저장소에서는 `--dbms mysql` 로도 PostgreSQL 스테이지가 열렸다.
+    """
+
+    def _one(self, name):
+        return [REPO_ROOT / "shooting" / "stages" / name]
+
+    def test_a_single_stage_still_respects_the_filter(self):
+        only_pg = self._one("pg-1-1-idle-in-transaction.json")
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            got = shooting.choose_stage(only_pg, dbms="mysql")
+        self.assertIsNone(got, "MySQL 을 골랐는데 PostgreSQL 스테이지가 나왔다")
+        self.assertIn("MySQL", buf.getvalue())
+
+    def test_a_single_matching_stage_is_returned(self):
+        only_pg = self._one("pg-1-1-idle-in-transaction.json")
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(shooting.choose_stage(only_pg, dbms="postgresql"),
+                             only_pg[0])
+
+    def test_no_filter_still_short_circuits(self):
+        one = self._one("1-1-runaway-query.json")
+        self.assertEqual(shooting.choose_stage(one), one[0])
+
+
+class ExamSuggestionTest(unittest.TestCase):
+    """읽기(챕터) → 확인(`./exam`) → 겪기(`./shoot`)의 마지막 고리.
+
+    `chapter_reading_list`의 독스트링이 그 셋을 잇겠다고 적어두고 실제로는
+    스테이지 → **챕터**만 이었다. 방금 겪은 장애의 주제로 자가진단을 바로 이어
+    할 수 있는데도 클리어 화면에 `./exam` 이 한 번도 나오지 않았다.
+
+    매핑은 기계적이다 — 챕터 `<티어>/<이름>.md` 의 문제은행은
+    `exams/<티어>/<이름>.json` 이고, 스테이지가 가리키는 챕터 25개 전부 존재한다.
+    """
+
+    def test_bank_path_is_derived_from_the_chapter_path(self):
+        self.assertEqual(
+            shooting.exam_bank_for("02-intermediate/01-transaction-and-locking.md"),
+            "exams/02-intermediate/01-transaction-and-locking.json")
+
+    def test_a_chapter_without_a_bank_yields_nothing(self):
+        self.assertIsNone(shooting.exam_bank_for("01-beginner/07-commands-cheatsheet.md"))
+
+    def test_every_stage_chapter_has_a_bank_to_suggest(self):
+        for path in shooting.discover_stages():
+            stage = shooting.load_stage(path)
+            for rel in stage["chapters"]:
+                self.assertIsNotNone(shooting.exam_bank_for(rel),
+                                     f"{path.name}: {rel} 에 대응하는 문제은행이 없다")
+
+    def test_the_suggestion_block_lists_runnable_commands(self):
+        stage = shooting.load_stage(
+            REPO_ROOT / "shooting" / "stages" / "1-3-lock-contention.json")
+        block = shooting.exam_suggestions(stage)
+        self.assertIn("./exam exams/02-intermediate/01-transaction-and-locking.json",
+                      block)
+        # 회고 챕터도 붙으므로 그 은행도 함께 제안된다.
+        self.assertIn(shooting.POSTMORTEM_CHAPTER.replace(".md", ".json"), block)
+
+    def test_the_clear_screen_actually_shows_it(self):
+        """순수 함수만 맞고 화면이 안 쓰면 고리는 그대로 끊겨 있다."""
+        stage = shooting.load_stage(
+            REPO_ROOT / "shooting" / "stages" / "1-1-runaway-query.json")
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            shooting.print_debrief(stage)
+        out = buf.getvalue()
+        self.assertIn("./exam ", out)
+        self.assertIn("더 읽을 곳", out)
+
+
+class LabPredicateTest(unittest.TestCase):
+    """랩 술어는 컨테이너 단위 술어 위에 얹혀야 한다.
+
+    `container_healthy` 를 더하면서 같은 `docker inspect` 를 하는 함수가 셋이
+    됐다. `_all_containers_are` 는 그중 하나의 중복이고, 대상 목록을 자기 안에
+    하드코딩하고 있어 서버가 늘면 또 고쳐야 하는 자리였다.
+    """
+
+    def test_the_duplicated_helper_is_gone(self):
+        self.assertFalse(hasattr(shooting, "_all_containers_are"))
+
+    def test_lab_predicates_are_built_from_container_predicates(self):
+        seen = []
+        real = {n: getattr(shooting, n)
+                for n in ("container_running", "container_healthy")}
+        shooting.container_running = lambda t: seen.append(("run", t)) or True
+        shooting.container_healthy = lambda t: seen.append(("hp", t)) or True
+        try:
+            self.assertTrue(shooting.lab_running())
+            self.assertTrue(shooting.lab_healthy())
+        finally:
+            for n, fn in real.items():
+                setattr(shooting, n, fn)
+        self.assertEqual([t for k, t in seen if k == "run"], ["primary", "replica"])
+        self.assertEqual([t for k, t in seen if k == "hp"], ["primary", "replica"])
+
+    def test_one_unhealthy_container_fails_the_lab(self):
+        real = shooting.container_healthy
+        shooting.container_healthy = lambda t: t != "replica"
+        try:
+            self.assertFalse(shooting.lab_healthy())
+        finally:
+            shooting.container_healthy = real
 
 
 class PostmortemChapterTest(unittest.TestCase):

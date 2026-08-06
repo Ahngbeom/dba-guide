@@ -1024,6 +1024,18 @@ def chapter_title(repo_root, rel):
     return None
 
 
+def _reading_chapters(stage):
+    """클리어 후 안내할 챕터 목록 — 스테이지의 `chapters` + 회고 챕터.
+
+    '더 읽을 곳'과 '확인해 보기'가 같은 목록을 봐야 한다. 각자 만들면 한쪽에만
+    회고 챕터가 붙는 식으로 조용히 갈라진다.
+    """
+    chapters = list(stage.get("chapters") or [])
+    if POSTMORTEM_CHAPTER not in chapters:
+        chapters.append(POSTMORTEM_CHAPTER)
+    return chapters
+
+
 def chapter_reading_list(stage, repo_root=None):
     """클리어 후 보여줄 '더 읽을 곳'.
 
@@ -1033,14 +1045,38 @@ def chapter_reading_list(stage, repo_root=None):
     회고 챕터는 스테이지가 아니라 **게임의 구조**에 딸려 있어 항상 붙는다
     (`POSTMORTEM_CHAPTER` 주석 참고).
     """
-    chapters = list(stage.get("chapters") or [])
-    if POSTMORTEM_CHAPTER not in chapters:
-        chapters.append(POSTMORTEM_CHAPTER)
     root = repo_root or REPO_ROOT
     lines = []
-    for rel in chapters:
+    for rel in _reading_chapters(stage):
         title = chapter_title(root, rel)
         lines.append(f"    - {title} ({rel})" if title else f"    - {rel}")
+    return "\n".join(lines)
+
+
+def exam_bank_for(chapter_rel, repo_root=None):
+    """챕터에 대응하는 문제은행 경로. 없으면 None.
+
+    매핑은 기계적이다 — `<티어>/<이름>.md` 의 은행은 `exams/<티어>/<이름>.json`
+    이고, 스테이지가 가리키는 챕터는 전부 은행을 가진다(치트시트처럼 은행이 없는
+    챕터도 있으므로 존재를 확인한다).
+    """
+    rel = str(Path("exams") / Path(chapter_rel).with_suffix(".json"))
+    return rel if (Path(repo_root or REPO_ROOT) / rel).is_file() else None
+
+
+def exam_suggestions(stage, repo_root=None):
+    """클리어 후 보여줄 '확인해 보기'. 실행 가능한 `./exam` 명령 목록.
+
+    읽기(챕터) → 확인(`./exam`) → 겪기(`./shoot`) 중 마지막 고리다. 챕터 링크는
+    붙였지만 시험은 끊겨 있어서, 방금 겪은 주제로 자가진단을 이어 하려면 경로를
+    직접 찾아야 했다. 은행이 없는 챕터는 조용히 건너뛴다.
+    """
+    root = repo_root or REPO_ROOT
+    lines = []
+    for rel in _reading_chapters(stage):
+        bank = exam_bank_for(rel, root)
+        if bank:
+            lines.append(f"    ./exam {bank}")
     return "\n".join(lines)
 
 
@@ -1649,23 +1685,6 @@ def wait_gtid_sync(target, source, timeout_seconds):
     return first_scalar(rows) == "0"
 
 
-def _all_containers_are(field, want):
-    """두 컨테이너의 inspect 필드가 모두 want 인가 → bool.
-
-    docker 부재도 "아니다"의 한 경우로 흡수한다 — 이 두 술어의 호출자는
-    bool을 기대하므로(`cmd_play`의 `if not lab_running():`) 예외를 올리면
-    트레이스백이 된다. 실제 조치는 그 다음 `lab_up()`이 LabError로 안내한다.
-    """
-    try:
-        for target in ("primary", "replica"):
-            p = _docker("inspect", "--format", field, CONTAINERS[target])
-            if p.returncode != 0 or p.stdout.strip() != want:
-                return False
-    except LabError:
-        return False
-    return True
-
-
 def container_running(target):
     """컨테이너 하나가 떠 있는가 → bool. docker 부재도 '아니다'로 흡수한다."""
     try:
@@ -1734,14 +1753,24 @@ def wait_until(predicate, timeout_seconds, poll_seconds=3.0, on_wait=None):
         time.sleep(poll_seconds)
 
 
+# MySQL 랩을 이루는 두 서버. postgres 는 프로파일 뒤에 있어 여기 없다 —
+# 그쪽 준비 확인은 `cmd_play` 가 `container_healthy("postgres")` 로 따로 한다.
+LAB_CONTAINERS = ("primary", "replica")
+
+
 def lab_running():
-    """primary/replica 컨테이너가 모두 running 인가."""
-    return _all_containers_are("{{.State.Running}}", "true")
+    """MySQL 랩의 두 컨테이너가 모두 running 인가.
+
+    컨테이너 단위 술어 위에 얹는다. 예전에는 같은 `docker inspect` 를 하는
+    헬퍼를 따로 두어, 대상 목록이 그 안에 하드코딩된 채 셋으로 갈라져 있었다.
+    두 술어 모두 docker 부재를 '아니다'로 흡수하므로 호출부는 bool 만 본다.
+    """
+    return all(container_running(t) for t in LAB_CONTAINERS)
 
 
 def lab_healthy():
     """두 컨테이너가 모두 healthy 인가."""
-    return _all_containers_are("{{.State.Health.Status}}", "healthy")
+    return all(container_healthy(t) for t in LAB_CONTAINERS)
 
 
 def lab_up(wait_seconds=300, with_postgres=False):
@@ -2830,6 +2859,12 @@ def print_debrief(stage):
         print("  더 읽을 곳\n")
         print(reading)
         print()
+    # 읽고 나면 확인할 차례다 — 여기까지 이어야 읽기·확인·겪기가 한 줄로 닿는다.
+    checking = exam_suggestions(stage)
+    if checking:
+        print("  읽고 나서 확인해 보기\n")
+        print(checking)
+        print()
 
 
 # --------------------------------------------------------------------------- #
@@ -2923,18 +2958,23 @@ def cmd_doctor():
         ok = False
 
     # `which`를 서브프로세스로 부르지 않는다 — 최소 이미지에는 그것도 없다.
-    mysql_bin = shutil.which("mysql")
-    if mysql_bin:
-        print(f"  [ok] mysql 클라이언트  {mysql_bin}")
-    else:
-        print("  [!!] mysql 클라이언트  없음 — 플레이어가 접속할 수단이 필요합니다")
+    #
+    # 두 클라이언트를 대칭으로 본다. 물어야 할 것은 "플레이할 수단이 있는가"이지
+    # "mysql 이 있는가"가 아니다 — PostgreSQL 스테이지만 할 사람에게 mysql 부재로
+    # 종료 코드 1을 주면 고칠 것이 없는 실패를 보여 주는 셈이다. 하나라도 있으면
+    # 그쪽 스테이지는 할 수 있으니 주의로 알리고, 실패는 **둘 다 없을 때** 다.
+    found = {name: shutil.which(name) for name in ("mysql", "psql")}
+    for name, vendor in (("mysql", "MySQL"), ("psql", "PostgreSQL")):
+        pad = " " * (5 - len(name))
+        if found[name]:
+            print(f"  [ok] {name} 클라이언트{pad}  {found[name]}")
+        else:
+            warn = True
+            print(f"  [--] {name} 클라이언트{pad}  없음 — "
+                  f"{vendor} 스테이지를 하려면 필요합니다")
+    if not any(found.values()):
+        print("  [!!] DB 클라이언트      둘 다 없어 랩에 접속할 수단이 없습니다")
         ok = False
-
-    # PostgreSQL은 아직 선택 사항이다 — 없다고 해서 점검을 실패시키지 않는다.
-    if shutil.which("psql"):
-        print(f"  [ok] psql 클라이언트    {shutil.which('psql')}")
-    else:
-        print("  [--] psql 클라이언트    없음 — PostgreSQL 스테이지를 하려면 필요합니다")
 
     stages = discover_stages()
     bad = 0
@@ -3202,7 +3242,9 @@ def choose_stage(stages, dbms=None):
     `dbms`를 주면 그 DBMS만 남기고 선택 단계도 건너뛴다 — `exam.py`의 `--dbms`가
     해당 선택 화면을 건너뛰는 것과 같다.
     """
-    if len(stages) == 1:
+    # 필터를 개수 판단보다 **먼저** 적용한다. 순서가 뒤바뀌어 있어서 스테이지
+    # 파일이 하나뿐이면 `--dbms` 가 통째로 무시됐다.
+    if len(stages) == 1 and not dbms:
         return stages[0]
     best = best_ranks(read_progress())
     entries = filter_stages_by_dbms([(p, _safe_load(p)) for p in stages], dbms)
