@@ -13,6 +13,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
 
 import exam  # noqa: E402
+import tui  # noqa: E402
 import seed_exam  # noqa: E402
 
 
@@ -660,8 +661,12 @@ class AnswerLeakLintTest(unittest.TestCase):
 
     @staticmethod
     def _longest_is_answer(q):
-        others = [len(c) for i, c in enumerate(q["choices"]) if i != q["answer"]]
-        return len(q["choices"][q["answer"]]) > max(others)
+        # 글자 수가 아니라 **화면에 보이는 폭**으로 잰다. 단서는 눈으로 읽히는
+        # 것이고, 한글은 두 칸이지만 `max_connections` 같은 ASCII는 한 칸이라
+        # 글자 수로 재면 실제로 길어 보이는 보기를 놓친다(실제로 셋을 놓쳤다).
+        w = tui.cwidth
+        return w(q["choices"][q["answer"]]) > max(
+            w(c) for i, c in enumerate(q["choices"]) if i != q["answer"])
 
     def _mcq(self, path):
         return [q for q in json.loads(path.read_text(encoding="utf-8"))
@@ -690,7 +695,7 @@ class AnswerLeakLintTest(unittest.TestCase):
         for path in self._banks():
             for q in self._mcq(path):
                 for i, c in enumerate(q["choices"]):
-                    (correct if i == q["answer"] else wrong).append(len(c))
+                    (correct if i == q["answer"] else wrong).append(tui.cwidth(c))
         if not correct or not wrong:
             self.skipTest("아직 객관식 없음")
         ratio = (sum(correct) / len(correct)) / (sum(wrong) / len(wrong))
