@@ -26,6 +26,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
 
 import shooting  # noqa: E402
+import tui  # noqa: E402
 
 
 class ParseTsvTest(unittest.TestCase):
@@ -2069,7 +2070,13 @@ class DiagnosisChoiceLengthTest(unittest.TestCase):
     같은 규약의 시험 문제은행 쪽 래칫은 `tests/test_exam.py`가 들고 있다.
     """
 
-    BASELINE = 13          # 14문항 중
+    BASELINE = 0           # 전부 갚았다
+    # `_quiz_screen` 은 보기를 **감싸지 않고 자른다**(`put(..., w - 6)`).
+    # 정답이 길다는 것은 곧 정답이 화면에서 잘린다는 뜻이라, 한때 80칸 터미널에서
+    # 잘리는 보기 14개 중 12개가 정답이었다. 그래서 이 스테이지 문항은 시험
+    # 문제은행과 **반대로** — 오답을 늘리는 게 아니라 정답을 줄여 맞춘다.
+    # 잘려 나간 뉘앙스는 `explain` 이 받는다(그쪽은 `wrap()` 으로 감싸진다).
+    MAX_DISPLAY_COLUMNS = 74      # 80칸 터미널: 좌우 여백 6칸을 뺀 값
 
     def _mcqs(self):
         out = []
@@ -2084,13 +2091,27 @@ class DiagnosisChoiceLengthTest(unittest.TestCase):
     def test_no_more_answers_leak_by_being_longest(self):
         mcqs = self._mcqs()
         self.assertTrue(mcqs, "스테이지에 객관식 진단 문항이 없다")
+        # 시험 문제은행 쪽과 같은 기준 — 동점은 세지 않는다. 같은 길이의 오답이
+        # 있으면 "가장 긴 것"을 고를 수 없고, 화면 폭 예산 때문에 오답을 정답보다
+        # 더 길게 만들 수도 없어 동점이 이 형식에서 도달 가능한 최선이다.
         leaky = [name for name, q in mcqs
-                 if len(q["choices"][q["answer"]])
-                 == max(len(c) for c in q["choices"])]
+                 if tui.cwidth(q["choices"][q["answer"]])
+                 > max(tui.cwidth(c) for i, c in enumerate(q["choices"])
+                       if i != q["answer"])]
         self.assertLessEqual(
             len(leaky), self.BASELINE,
             f"정답이 가장 긴 보기인 문항 {len(leaky)}/{len(mcqs)} "
             f"(기준선 {self.BASELINE}) — 새로 늘리지 마라: {sorted(set(leaky))}")
+
+    def test_no_choice_is_cut_off_on_an_80_column_terminal(self):
+        """보기가 잘리면 플레이어는 무엇을 고르는지 모른 채 고른다."""
+        too_wide = []
+        for name, q in self._mcqs():
+            for i, c in enumerate(q["choices"]):
+                w = tui.cwidth(f"{i + 1}) {c}") + 4
+                if w > self.MAX_DISPLAY_COLUMNS:
+                    too_wide.append(f"{name}: {w}칸 — {c[:30]}…")
+        self.assertEqual(too_wide, [])
 
     def test_a_new_stage_does_not_inherit_the_debt(self):
         """빚은 기존 14문항의 것이다. 새 스테이지가 물려받을 이유는 없다."""
@@ -2110,10 +2131,11 @@ class DiagnosisChoiceLengthTest(unittest.TestCase):
         for name, q in self._mcqs():
             if name in graded:
                 continue
-            longest = max(len(c) for c in q["choices"])
+            longest = max(tui.cwidth(c) for i, c in enumerate(q["choices"])
+                           if i != q["answer"])
             with self.subTest(stage=name):
-                self.assertNotEqual(
-                    len(q["choices"][q["answer"]]), longest,
+                self.assertLessEqual(
+                    tui.cwidth(q["choices"][q["answer"]]), longest,
                     f"{name}: 새 스테이지의 정답이 가장 긴 보기다 — "
                     f"오답을 정답만큼 구체적으로 써라")
         self.assertTrue(known)
