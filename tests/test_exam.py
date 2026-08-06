@@ -664,10 +664,10 @@ class AnswerLeakLintTest(unittest.TestCase):
         "02-indexing-and-query-tuning.json": 3,
         "03-performance-monitoring.json": 4,
         "04-backup-recovery-strategies.json": 3,
-        "05-replication-basics.json": 4,
+        "05-replication-basics.json": 0,
         "06-schema-change-management.json": 3,
-        "07-cloud-db-infra-and-connection.json": 4,
-        "08-cloud-managed-db-basics.json": 5,
+        "07-cloud-db-infra-and-connection.json": 0,
+        "08-cloud-managed-db-basics.json": 0,
         "01-advanced-performance-tuning.json": 0,
         "02-high-availability-and-failover.json": 0,
         "03-disaster-recovery.json": 0,
@@ -678,8 +678,8 @@ class AnswerLeakLintTest(unittest.TestCase):
         "08-kubernetes-db-operators.json": 0,
         "09-incident-response-and-postmortem.json": 0,
     }
-    # 정답 평균 길이 ÷ 오답 평균 길이. 처음 1.7571 → 03-advanced 정리 후 1.3929.
-    LENGTH_RATIO_BASELINE = 1.40
+    # 정답 평균 길이 ÷ 오답 평균 길이. 처음 1.7571 → 03-advanced 1.3929 → 02-intermediate 1.2357.
+    LENGTH_RATIO_BASELINE = 1.24
 
     @staticmethod
     def _longest_is_answer(q):
