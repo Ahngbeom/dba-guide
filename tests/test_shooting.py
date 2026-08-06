@@ -2056,6 +2056,69 @@ class PostgresReadinessTest(unittest.TestCase):
         self.assertEqual(asked, [])
 
 
+class DiagnosisChoiceLengthTest(unittest.TestCase):
+    """진단 문항도 `exam.py` 출제 규약을 따르므로 같은 누출을 가진다.
+
+    보기 순서는 그 판의 시드로 섞이니 위치는 정답을 알려주지 않는다. 그런데
+    **길이**는 알려준다 — 측정 시점 14문항 중 13개(93%)에서 정답이 가장 긴 보기였다.
+    스테이지 문항은 등급의 '진단 정확도' 항목을 좌우하므로, 읽지 않고 고를 수 있으면
+    그 항목이 다시 공짜가 된다(셔플로 막은 것과 같은 구멍이 다른 통로로 열린다).
+
+    216문항을 손보는 것은 콘텐츠 작업이라, 그 전에 **더 나빠지지 않게** 못을 박는다.
+    아래 숫자는 갚아야 할 빚의 잔액이고 줄어드는 방향으로만 바꾼다.
+    같은 규약의 시험 문제은행 쪽 래칫은 `tests/test_exam.py`가 들고 있다.
+    """
+
+    BASELINE = 13          # 14문항 중
+
+    def _mcqs(self):
+        out = []
+        for path in shooting.discover_stages():
+            stage = shooting.load_stage(path)
+            for obj in stage["objectives"]:
+                if (obj["type"] == "quiz"
+                        and obj["question"].get("type") == "mcq"):
+                    out.append((path.name, obj["question"]))
+        return out
+
+    def test_no_more_answers_leak_by_being_longest(self):
+        mcqs = self._mcqs()
+        self.assertTrue(mcqs, "스테이지에 객관식 진단 문항이 없다")
+        leaky = [name for name, q in mcqs
+                 if len(q["choices"][q["answer"]])
+                 == max(len(c) for c in q["choices"])]
+        self.assertLessEqual(
+            len(leaky), self.BASELINE,
+            f"정답이 가장 긴 보기인 문항 {len(leaky)}/{len(mcqs)} "
+            f"(기준선 {self.BASELINE}) — 새로 늘리지 마라: {sorted(set(leaky))}")
+
+    def test_a_new_stage_does_not_inherit_the_debt(self):
+        """빚은 기존 14문항의 것이다. 새 스테이지가 물려받을 이유는 없다."""
+        known = {path.name for path in shooting.discover_stages()
+                 if shooting.load_stage(path)}
+        # 기준선을 세운 시점의 스테이지 목록. 여기 없는 파일은 새로 만든 것이다.
+        graded = {
+            "1-1-runaway-query.json", "1-2-deadlock.json",
+            "1-3-lock-contention.json", "1-4-metadata-lock.json",
+            "2-1-replication-setup.json", "2-2-replication-lag.json",
+            "3-1-connection-exhaustion.json",
+            "3-2-long-transaction-undo.json", "3-3-disk-full.json",
+            "3-4-autoincrement-exhausted.json", "4-1-missing-index.json",
+            "4-2-slow-query-log.json", "4-3-implicit-conversion.json",
+            "pg-1-1-idle-in-transaction.json",
+        }
+        for name, q in self._mcqs():
+            if name in graded:
+                continue
+            longest = max(len(c) for c in q["choices"])
+            with self.subTest(stage=name):
+                self.assertNotEqual(
+                    len(q["choices"][q["answer"]]), longest,
+                    f"{name}: 새 스테이지의 정답이 가장 긴 보기다 — "
+                    f"오답을 정답만큼 구체적으로 써라")
+        self.assertTrue(known)
+
+
 class SessionShuffleTest(unittest.TestCase):
     """진단 문항의 보기 순서는 시드에서 갈라져야 한다.
 
