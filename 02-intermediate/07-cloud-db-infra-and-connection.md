@@ -77,15 +77,6 @@ gcloud sql instances create mydb \
   --tier=db-custom-2-8192 --network=default --no-assign-ip
 ```
 
-<!-- dbms:postgresql -->
-### SSL 검증 접속
-
-```bash
-# AWS RDS: 리전 CA 번들 다운로드 후 인증서 검증 접속
-psql "host=mydb.xxxx.ap-northeast-2.rds.amazonaws.com dbname=app \
-      sslmode=verify-full sslrootcert=global-bundle.pem"
-```
-<!-- /dbms:postgresql -->
 
 ### IAM 인증으로 비밀번호 없이 접속
 
@@ -132,46 +123,6 @@ psql -h 127.0.0.1 -p 5432 -U iam_app_user -d app
 
 ## 실습 예제
 
-<!-- dbms:postgresql -->
-**시나리오: "회사 정책상 DB에 퍼블릭 IP를 부여할 수 없다. VPC 내부에서만 접속 가능한 관리형 PostgreSQL 인스턴스를 만들고, 로컬 개발자가 안전하게 접속할 수 있게 하라."**
-
-```bash
-# 1) 서브넷 그룹 생성 (최소 2개 AZ)
-aws rds create-db-subnet-group \
-  --db-subnet-group-name app-subnet-group \
-  --db-subnet-group-description "app db subnets" \
-  --subnet-ids subnet-aaaa1111 subnet-bbbb2222
-
-# 2) 보안 그룹 생성 — 사내 VPN 대역(10.0.0.0/16)에서만 5432 허용
-aws ec2 create-security-group --group-name app-db-sg \
-  --description "app db access" --vpc-id vpc-0123456789
-aws ec2 authorize-security-group-ingress \
-  --group-id sg-app-db --protocol tcp --port 5432 --cidr 10.0.0.0/16
-
-# 3) 퍼블릭 IP 없이 인스턴스 생성
-aws rds create-db-instance \
-  --db-instance-identifier app-db --engine postgres --engine-version 16.3 \
-  --db-instance-class db.t3.medium --allocated-storage 50 \
-  --master-username admin --manage-master-user-password \
-  --db-subnet-group-name app-subnet-group \
-  --vpc-security-group-ids sg-app-db --no-publicly-accessible
-
-# 4) 인스턴스가 available 상태가 될 때까지 대기 후 엔드포인트 확인
-aws rds describe-db-instances --db-instance-identifier app-db \
-  --query 'DBInstances[0].[DBInstanceStatus,Endpoint.Address]'
-
-# 5) 로컬 개발자는 SSM 포트 포워딩으로 터널을 연다 (배스천 서버 불필요)
-aws ssm start-session --target i-0123456789abcdef0 \
-  --document-name AWS-StartPortForwardingSessionToRemoteHost \
-  --parameters '{"host":["<위에서 확인한 엔드포인트>"],"portNumber":["5432"],"localPortNumber":["15432"]}'
-
-# 6) 다른 터미널에서, 비밀번호 대신 IAM 토큰으로 접속
-TOKEN=$(aws rds generate-db-auth-token --hostname <엔드포인트> --port 5432 --username iam_app_user)
-PGPASSWORD="$TOKEN" psql -h localhost -p 15432 -U iam_app_user -d app "sslmode=require"
-```
-
-**GCP Cloud SQL 대응 요약**: 동일한 요구사항을 GCP에서는 `--no-assign-ip`로 퍼블릭 IP 없는 인스턴스를 만들고, 로컬 개발자는 배스천이나 SSM 없이 **Cloud SQL Auth Proxy**를 실행해 `--auto-iam-authn`으로 IAM 인증까지 한 번에 처리한다. 별도의 VPN·서브넷 설계 없이도 IAM 권한만으로 안전한 터널이 열린다는 점이 AWS의 SSM 포트 포워딩 방식과 다르다.
-<!-- /dbms:postgresql -->
 
 **운영 팁**: 퍼블릭 액세스가 꼭 필요한 경우(예: 사내에 VPN이 없는 초기 스타트업)라면, 보안 그룹의 출발지를 `0.0.0.0/0`이 아니라 실제 사무실/사무실 VPN의 고정 IP 대역으로 반드시 좁혀야 한다.
 
@@ -181,9 +132,6 @@ PGPASSWORD="$TOKEN" psql -h localhost -p 15432 -U iam_app_user -d app "sslmode=r
 - [ ] 보안 그룹(상태 저장 방화벽)과 방화벽 규칙의 차이와 공통 목적을 안다.
 - [ ] 퍼블릭 액세스와 프라이빗 액세스의 보안 트레이드오프를 설명하고, 실무에서 어느 쪽을 기본으로 해야 하는지 안다.
 - [ ] AWS CLI/gcloud로 네트워크 설정(서브넷 그룹·보안 그룹/방화벽 규칙)을 포함해 관리형 DB 인스턴스를 생성할 수 있다.
-<!-- dbms:postgresql -->
-- [ ] `sslmode=verify-full` 등으로 서버 인증서를 검증하며 접속할 수 있다.
-<!-- /dbms:postgresql -->
 - [ ] IAM 인증 토큰으로 비밀번호 없이 접속하는 방법을 안다.
 - [ ] SSM 포트 포워딩 또는 Cloud SQL Auth Proxy로 배스천 서버 없이 프라이빗 DB에 접속할 수 있다.
 - [ ] 퍼블릭 엔드포인트를 열어야 할 때 보안 그룹으로 출발지를 좁게 제한하는 방법을 안다.
