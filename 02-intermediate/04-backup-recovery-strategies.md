@@ -29,105 +29,24 @@ PITR의 핵심 전제는 **변경 로그의 연속 아카이빙**이다. Postgre
 
 ### 논리 백업/복원
 
-<!-- dbms:postgresql -->
-**PostgreSQL**
-```bash
-# 백업(커스텀 포맷 권장 — 병렬/선택 복원 가능)
-pg_dump -Fc -d mydb -f mydb.dump
-pg_dumpall -f all.sql            # 전체 클러스터(롤/전역 객체 포함)
 
-# 복원
-pg_restore -d mydb --clean --if-exists mydb.dump
-pg_restore -d mydb -j 4 mydb.dump   # 4-way 병렬 복원
-```
-<!-- /dbms:postgresql -->
 
-<!-- dbms:mysql -->
-**MySQL**
-```bash
-mysqldump --single-transaction --routines --triggers mydb > mydb.sql
-# 복원
-mysql mydb < mydb.sql
-# 논리 백업 고속 대안(8.0+)
-mysqlpump / mysqlsh util.dumpInstance()
-```
-<!-- /dbms:mysql -->
-
-<!-- dbms:oracle -->
 **Oracle (Data Pump)**
 ```bash
 expdp system/pw schemas=hr directory=DP_DIR dumpfile=hr.dmp logfile=hr.log
 impdp system/pw schemas=hr directory=DP_DIR dumpfile=hr.dmp
 ```
-<!-- /dbms:oracle -->
 
 ### 물리 백업
 
-<!-- dbms:postgresql -->
-**PostgreSQL**
-```bash
-# 기준 백업
-pg_basebackup -D /backup/base -Fp -Xs -P
-# 지속 아카이빙 설정 (postgresql.conf)
-#   wal_level = replica
-#   archive_mode = on
-#   archive_command = 'test ! -f /arch/%f && cp %p /arch/%f'
-```
-<!-- /dbms:postgresql -->
 
-<!-- dbms:mysql -->
-**MySQL (Percona XtraBackup)**
-```bash
-xtrabackup --backup --target-dir=/backup/full
-xtrabackup --prepare --target-dir=/backup/full
-```
-<!-- /dbms:mysql -->
 
-<!-- dbms:oracle -->
 **Oracle (RMAN)**
 ```sql
 RMAN> BACKUP DATABASE PLUS ARCHIVELOG;
 RMAN> BACKUP INCREMENTAL LEVEL 1 DATABASE;  -- 증분
 ```
-<!-- /dbms:oracle -->
 
-<!-- dbms:postgresql -->
-## 실습 예제 — PostgreSQL PITR
-
-시나리오: 매일 새벽 물리 백업 + WAL 아카이빙 중, 오후 2시 30분에 실수로 전체 `DELETE`가 발생. 2시 29분 상태로 복구한다.
-
-```bash
-# 사전 준비(평상시): 아카이빙이 켜져 있고 base backup이 있는 상태
-pg_basebackup -D /backup/base_20260715 -Fp -Xs -P
-
-# --- 사고 발생 후 복구 절차 ---
-# 1) DB 정지
-pg_ctl stop -D $PGDATA
-
-# 2) 손상된 데이터 디렉터리를 치우고 base backup 복원
-mv $PGDATA ${PGDATA}.broken
-cp -a /backup/base_20260715 $PGDATA
-
-# 3) 복구 목표 시점 지정 (postgresql.conf 또는 별도 파일)
-cat >> $PGDATA/postgresql.conf <<'EOF'
-restore_command = 'cp /arch/%f %p'
-recovery_target_time = '2026-07-15 14:29:00+09'
-recovery_target_action = 'promote'
-EOF
-touch $PGDATA/recovery.signal   # PG 12+ : 복구 모드 진입 신호
-
-# 4) 기동 → WAL을 목표 시점까지 재생하고 promote
-pg_ctl start -D $PGDATA
-
-# 5) 데이터 확인 후 정상 서비스로 전환
-```
-
-MySQL의 PITR은 "가장 가까운 전체 백업 복원 → 그 이후 binlog를 `mysqlbinlog`로 목표 시점까지 재적용"하는 동일한 개념으로 수행한다.
-
-```bash
-mysqlbinlog --stop-datetime="2026-07-15 14:29:00" binlog.000123 | mysql
-```
-<!-- /dbms:postgresql -->
 
 ## 백업 주기/보관 정책 설계
 
@@ -145,8 +64,5 @@ mysqlbinlog --stop-datetime="2026-07-15 14:29:00" binlog.000123 | mysql
 - [ ] 각 DBMS에서 논리 백업(`pg_dump`/`mysqldump`/`expdp`)을 수행하고 복원할 수 있다.
 - [ ] 물리 백업 도구(`pg_basebackup`/XtraBackup/RMAN)의 용도를 안다.
 - [ ] PITR의 원리(기준 백업 + 연속 로그 아카이빙)를 설명할 수 있다.
-<!-- dbms:postgresql -->
-- [ ] PostgreSQL에서 특정 시점까지 PITR 복구 절차를 수행할 수 있다.
-<!-- /dbms:postgresql -->
 - [ ] 3-2-1 원칙에 따른 백업 주기·보관·원격 저장 정책을 설계할 수 있다.
 - [ ] 백업 암호화와 정기 복구 훈련의 필요성을 이해한다.

@@ -26,39 +26,12 @@
 
 ### 전송 구간 암호화 (TLS)
 
-<!-- dbms:postgresql -->
-**PostgreSQL**
-```ini
-# postgresql.conf
-ssl = on
-ssl_cert_file = 'server.crt'
-ssl_key_file = 'server.key'
-```
-```conf
-# pg_hba.conf — TLS 강제 (hostssl), 비암호화 연결 거부
-hostssl  all  all  0.0.0.0/0  scram-sha-256
-```
-```bash
-# 클라이언트: 서버 인증서까지 검증
-psql "host=db.example.com sslmode=verify-full sslrootcert=root.crt dbname=app"
-```
-<!-- /dbms:postgresql -->
 
-<!-- dbms:mysql -->
-**MySQL**
-```sql
--- 특정 계정에 TLS 연결 강제
-ALTER USER 'app'@'%' REQUIRE SSL;      -- 또는 REQUIRE X509 (인증서 검증)
-```
-<!-- /dbms:mysql -->
 
-<!-- dbms:oracle -->
 **Oracle** — `sqlnet.ora`/`listener.ora`에 TCPS(TLS) 설정, 지갑(wallet) 기반 인증서 관리.
-<!-- /dbms:oracle -->
 
 ### 저장 데이터 암호화 (TDE)
 
-<!-- dbms:oracle -->
 **Oracle (네이티브 TDE)**
 ```sql
 -- 키스토어 구성 후 테이블스페이스 암호화
@@ -67,23 +40,8 @@ CREATE TABLESPACE enc_ts ... ENCRYPTION USING 'AES256' ENCRYPT;
 -- 컬럼 단위 암호화
 CREATE TABLE members (id NUMBER, ssn VARCHAR2(13) ENCRYPT);
 ```
-<!-- /dbms:oracle -->
 
-<!-- dbms:mysql -->
-**MySQL (InnoDB 테이블스페이스 암호화)**
-```sql
-ALTER TABLE members ENCRYPTION='Y';
-```
-<!-- /dbms:mysql -->
 
-<!-- dbms:postgresql -->
-**PostgreSQL** — 코어 TDE는 없고, 통상 **스토리지/파일시스템 암호화**(LUKS, 클라우드 볼륨 암호화)로 대체하거나 `pgcrypto`로 컬럼 암호화.
-```sql
--- 컬럼 암호화 (pgcrypto)
-INSERT INTO members(ssn_enc) VALUES (pgp_sym_encrypt('900101-1234567', :key));
-SELECT pgp_sym_decrypt(ssn_enc, :key) FROM members WHERE id = 1;
-```
-<!-- /dbms:postgresql -->
 
 **클라우드 (관리형 KMS 기반, 사실상 표준)**
 ```bash
@@ -96,42 +54,15 @@ gcloud sql instances create proddb --disk-encryption-key=projects/.../cryptoKeys
 
 ### 감사 로그
 
-<!-- dbms:postgresql -->
-**PostgreSQL (pgAudit 확장)**
-```ini
-shared_preload_libraries = 'pgaudit'
-pgaudit.log = 'ddl, role, write'   # DDL·권한변경·쓰기 감사 (read는 부하 커서 선별)
-```
-<!-- /dbms:postgresql -->
 
-<!-- dbms:mysql -->
-**MySQL** (Enterprise Audit 또는 MariaDB audit plugin)
-```sql
-SET GLOBAL audit_log_policy = 'ALL';   -- 또는 LOGINS/QUERIES 선별
-```
-<!-- /dbms:mysql -->
 
-<!-- dbms:oracle -->
 **Oracle (Unified Auditing)**
 ```sql
 CREATE AUDIT POLICY sensitive_access
   ACTIONS SELECT, UPDATE, DELETE ON app.members;
 AUDIT POLICY sensitive_access;
 ```
-<!-- /dbms:oracle -->
 
-<!-- dbms:postgresql -->
-### 최소 권한 (PostgreSQL 예)
-
-```sql
--- 읽기 전용 역할을 만들어 필요한 계정에만 부여
-CREATE ROLE readonly;
-GRANT CONNECT ON DATABASE app TO readonly;
-GRANT USAGE ON SCHEMA public TO readonly;
-GRANT SELECT ON ALL TABLES IN SCHEMA public TO readonly;
-GRANT readonly TO analyst_kim;
-```
-<!-- /dbms:postgresql -->
 
 ---
 
