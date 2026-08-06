@@ -1,22 +1,9 @@
 # DBA 학습서 — 예비 DBA부터 시니어 DBA/아키텍트까지
 
-<!-- dbms:postgresql -->
 이 저장소는 DBA(Database Administrator)로 성장하기 위한 단계별 학습 자료다. 이 브랜치는 [vendor-neutral 원본](https://github.com/Ahngbeom/dba-guide/tree/main)에서 **PostgreSQL 명령어만 걸러낸 뷰**이며, main 브랜치에서 자동 재생성된다(자세한 내용은 `docs/dbms-branch-strategy.md` 참고).
-<!-- /dbms:postgresql -->
 
-<!-- dbms:mysql -->
-이 저장소는 DBA(Database Administrator)로 성장하기 위한 단계별 학습 자료다. 이 브랜치는 [vendor-neutral 원본](https://github.com/Ahngbeom/dba-guide/tree/main)에서 **MySQL 명령어만 걸러낸 뷰**이며, main 브랜치에서 자동 재생성된다(자세한 내용은 `docs/dbms-branch-strategy.md` 참고).
-<!-- /dbms:mysql -->
 
-<!-- dbms:oracle -->
-이 저장소는 DBA(Database Administrator)로 성장하기 위한 단계별 학습 자료다. 이 브랜치는 [vendor-neutral 원본](https://github.com/Ahngbeom/dba-guide/tree/main)에서 **Oracle 명령어만 걸러낸 뷰**이며, main 브랜치에서 자동 재생성된다(자세한 내용은 `docs/dbms-branch-strategy.md` 참고).
-<!-- /dbms:oracle -->
 
-<!-- dbms:neutral -->
-이 저장소는 DBA(Database Administrator)로 성장하기 위한 단계별 학습 자료다. 특정 DBMS 벤더에 종속되지 않고 관계형 데이터베이스 공통 이론을 다루되, 주요 DBMS(PostgreSQL / MySQL / Oracle, 필요시 MSSQL)의 명령어를 함께 병기·비교한다.
-
-> **특정 DBMS만 보고 싶다면** — [`postgresql`](https://github.com/Ahngbeom/dba-guide/tree/postgresql) / [`mysql`](https://github.com/Ahngbeom/dba-guide/tree/mysql) / [`oracle`](https://github.com/Ahngbeom/dba-guide/tree/oracle) 브랜치에서 해당 DBMS 명령어만 걸러낸 뷰를 볼 수 있다. 이 브랜치들은 `main`에서 자동 생성되는 파생 뷰이며 직접 수정하지 않는다 — 자세한 내용은 [`docs/dbms-branch-strategy.md`](docs/dbms-branch-strategy.md) 참고.
-<!-- /dbms:neutral -->
 
 ## 학습 로드맵
 

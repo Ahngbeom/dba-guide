@@ -30,7 +30,6 @@
 
 ### 리드 리플리카 생성
 
-<!-- dbms:postgresql -->
 **PostgreSQL (스트리밍 리플리카)** — 02장과 동일 메커니즘, 읽기 오프로드 용도
 ```ini
 # 리플리카에서 읽기 허용 (기본으로 hot standby)
@@ -42,14 +41,7 @@ hot_standby = on
 SELECT client_addr, pg_wal_lsn_diff(pg_current_wal_lsn(), replay_lsn) AS lag_bytes
 FROM pg_stat_replication;
 ```
-<!-- /dbms:postgresql -->
 
-<!-- dbms:mysql -->
-**MySQL**
-```sql
-SHOW REPLICA STATUS\G   -- Seconds_Behind_Source
-```
-<!-- /dbms:mysql -->
 
 **클라우드**
 ```bash
@@ -60,7 +52,6 @@ gcloud sql instances create proddb-ro-1 --master-instance-name=proddb --region=a
 
 ### 애플리케이션 레벨 커넥션 풀링 / 라우팅
 
-<!-- dbms:postgresql -->
 **PgBouncer (PostgreSQL, 커넥션 풀)**
 ```ini
 [pgbouncer]
@@ -68,20 +59,7 @@ pool_mode = transaction
 max_client_conn = 10000
 default_pool_size = 50
 ```
-<!-- /dbms:postgresql -->
 
-<!-- dbms:mysql -->
-**ProxySQL (MySQL, 풀 + 읽기/쓰기 분리 라우팅)**
-```sql
--- 호스트그룹: 10=writer(Primary), 20=reader(리플리카들)
-INSERT INTO mysql_servers(hostgroup_id,hostname) VALUES (10,'primary'),(20,'replica1'),(20,'replica2');
--- SELECT는 20으로, 그 외는 10으로 라우팅
-INSERT INTO mysql_query_rules(rule_id,active,match_digest,destination_hostgroup,apply)
-VALUES (1,1,'^SELECT.*FOR UPDATE',10,1),   -- 잠금 SELECT는 writer로
-       (2,1,'^SELECT',20,1);
-LOAD MYSQL SERVERS TO RUNTIME; LOAD MYSQL QUERY RULES TO RUNTIME;
-```
-<!-- /dbms:mysql -->
 
 ### 샤딩 (개념적 예시)
 ```text
@@ -90,19 +68,11 @@ LOAD MYSQL SERVERS TO RUNTIME; LOAD MYSQL QUERY RULES TO RUNTIME;
   → shard_id 로 해당 DB 커넥션 풀 선택 후 쿼리 실행
 ```
 
-<!-- dbms:postgresql -->
 ```text
 Postgres 계열 확장:
   - Citus: 분산 테이블 (SELECT create_distributed_table('events','tenant_id'))
 ```
-<!-- /dbms:postgresql -->
 
-<!-- dbms:mysql -->
-```text
-MySQL 계열 확장:
-  - Vitess: VSchema로 샤드 키/라우팅 규칙 정의
-```
-<!-- /dbms:mysql -->
 
 ---
 
@@ -136,10 +106,5 @@ MySQL 계열 확장:
 - [ ] 해시/범위/디렉터리/지역 샤딩의 트레이드오프를 설명할 수 있다.
 - [ ] 좋은 샤드 키의 3가지 조건(고른 분산·단일 샤드 처리·낮은 리샤딩 빈도)으로 키를 평가할 수 있다.
 - [ ] 크로스 샤드 조인·트랜잭션·집계의 어려움과 대안(scatter-gather, Saga)을 안다.
-<!-- dbms:postgresql -->
 - [ ] PgBouncer로 커넥션 풀링을 구성할 수 있다.
-<!-- /dbms:postgresql -->
-<!-- dbms:mysql -->
-- [ ] ProxySQL로 커넥션 풀링과 읽기/쓰기 라우팅을 구성할 수 있다.
-<!-- /dbms:mysql -->
 - [ ] 샤딩 도입 전 "정말 필요한가"를 비용·복잡성 관점에서 판단할 수 있다.

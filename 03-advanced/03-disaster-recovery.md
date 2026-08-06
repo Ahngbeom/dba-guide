@@ -29,7 +29,6 @@
 
 ## 2. 주요 명령어/문법
 
-<!-- dbms:postgresql -->
 ### PostgreSQL — PITR + 원격 아카이빙 (Cold/Warm의 기반)
 ```ini
 # postgresql.conf — WAL을 원격(다른 리전 오브젝트 스토리지)로 아카이빙
@@ -42,26 +41,8 @@ archive_command = 'aws s3 cp %p s3://dr-wal-bucket/%f'
 restore_command = 'aws s3 cp s3://dr-wal-bucket/%f %p'
 recovery_target_time = '2026-07-15 03:59:00+09'
 ```
-<!-- /dbms:postgresql -->
 
-<!-- dbms:mysql -->
-### MySQL — binlog 기반 PITR
-```bash
-# 풀백업 복원 후, binlog를 특정 시점까지 재적용
-mysqlbinlog --stop-datetime="2026-07-15 03:59:00" \
-  mysql-bin.000042 | mysql -u root -p
-```
-<!-- /dbms:mysql -->
 
-<!-- dbms:oracle -->
-### Oracle — Data Guard 원격 Standby + Flashback
-```sql
--- 원격 리전 물리 Standby 로 지속 적용 (Warm/Hot)
-DGMGRL> SHOW CONFIGURATION;
--- 인적 실수 대비: 데이터베이스 전체를 특정 시점으로 되감기
-FLASHBACK DATABASE TO TIMESTAMP TO_TIMESTAMP('2026-07-15 03:59:00','YYYY-MM-DD HH24:MI:SS');
-```
-<!-- /dbms:oracle -->
 
 ### 클라우드 매니지드 — 크로스리전 복제/복구
 ```bash
