@@ -24,12 +24,21 @@ class ModeTableTest(unittest.TestCase):
         self.assertEqual([m.key for m in guide.MODES], ["exam", "shoot"])
 
     def test_scale_reports_the_real_counts(self):
+        """`exam.discover_banks()`와 같은 재귀 글롭으로 세어야 한다.
+
+        `exams/*/*.json`(비재귀)은 지금은 은행이 모두 한 단계 깊이라 우연히
+        같은 수를 내지만, 구현(`exam.discover_banks`)은
+        `exams/**/*.json`(recursive=True)이라 은행이 더 깊어지면 갈라진다.
+        """
         import glob
-        n = sum(len(json.load(open(p))["questions"])
-                for p in glob.glob(str(REPO_ROOT / "exams" / "*" / "*.json")))
-        self.assertIn(f"{n}문항", guide.exam_scale())
+        n = 0
+        for p in glob.glob(str(REPO_ROOT / "exams" / "**" / "*.json"),
+                            recursive=True):
+            with open(p, encoding="utf-8") as f:
+                n += len(json.load(f)["questions"])
+        self.assertEqual(f"{n}문항", guide.exam_scale())
         stages = len(list((REPO_ROOT / "shooting" / "stages").glob("*.json")))
-        self.assertIn(f"{stages}스테이지", guide.shoot_scale())
+        self.assertEqual(f"{stages}스테이지", guide.shoot_scale())
 
     def test_labels_carry_title_and_scale(self):
         labels = guide.menu_labels()
@@ -39,12 +48,44 @@ class ModeTableTest(unittest.TestCase):
         self.assertIn("장애 대응", labels[1])
         self.assertIn("스테이지", labels[1])
 
+    def test_labels_align_by_display_width_not_char_count(self):
+        """`str.ljust`는 글자 수로 세는데 한글은 화면에서 두 칸이다.
+
+        제목 길이가 우연히 같은 두 모드만으로는 이 버그가 드러나지 않는다.
+        가상의 세 번째 모드('챕터 읽기')를 붙여, 표시 폭이 다른 제목들이
+        섞여도 규모 열의 시작 위치가 모두 같은지 확인한다.
+        """
+        from tui import cwidth
+        fake_modes = (
+            guide.Mode("a", "학습 점검 (퀴즈/시험)", lambda: "0문항", lambda: 0),
+            guide.Mode("b", "장애 대응 (실전 훈련)", lambda: "0스테이지", lambda: 0),
+            guide.Mode("c", "챕터 읽기", lambda: "0챕터", lambda: 0),
+        )
+        real = guide.MODES
+        guide.MODES = fake_modes
+        try:
+            labels = guide.menu_labels()
+        finally:
+            guide.MODES = real
+        # 규모가 시작하는 화면 열 = 제목의 표시 폭 + 뒤따르는 공백 수(각 1칸).
+        # "   "로 나누면 패딩 자체가 공백 3개 이상을 포함할 때 잘못 잘린다.
+        columns = []
+        for mode, label in zip(fake_modes, labels):
+            rest = label[len(mode.title):]
+            gap = len(rest) - len(rest.lstrip(" "))
+            columns.append(cwidth(mode.title) + gap)
+        self.assertEqual(len(set(columns)), 1, labels)
+
     def test_a_broken_bank_does_not_blank_the_menu(self):
-        """은행 하나가 깨졌다고 메뉴가 비면 고칠 방법도 사라진다."""
+        """은행 하나가 깨졌다고 메뉴가 비면 고칠 방법도 사라진다.
+
+        기대값은 정확히 "0문항"이어야 한다 — "문항"만 있어도 통과하는
+        느슨한 단언은 예외가 새는 경우까지 가려낼 수 없다.
+        """
         real = guide.exam.load_bank
         guide.exam.load_bank = lambda p: (_ for _ in ()).throw(ValueError("깨짐"))
         try:
-            self.assertIn("문항", guide.exam_scale())
+            self.assertEqual("0문항", guide.exam_scale())
         finally:
             guide.exam.load_bank = real
 
@@ -53,8 +94,11 @@ class ModeIsolationTest(unittest.TestCase):
     """모드가 끝나는 것이 런처를 죽이면 안 된다.
 
     두 `main()`은 끝나는 방식이 다르다(실측):
-      exam.main      SystemExit 을 5곳에서 올린다. KeyboardInterrupt 는 스스로
-                     잡아 130 을 반환한다.
+      exam.main      SystemExit 을 6곳(341, 1102, 1124, 1144, 1224, 1265)에서
+                     올리지만, `main([])`로 실제 도달 가능한 것은 4곳뿐이다
+                     (1124, 1144, 1224, 1265) — 341 은 target 인자를 줄 때만,
+                     1102 는 --keydebug 일 때만 거친다. KeyboardInterrupt 는
+                     스스로 잡아 130 을 반환한다.
       shooting.main  KeyboardInterrupt 를 잡지 않는다 — 지금까지는 모듈의
                      __main__ 블록이 마지막 방어선이었다.
 
@@ -108,6 +152,81 @@ class ModeIsolationTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             with contextlib.redirect_stdout(io.StringIO()):
                 guide.run_mode(self._mode(boom))
+
+
+class PauseAfterModeTest(unittest.TestCase):
+    """모드가 남긴 평문 출력을 메뉴 리프레시가 곧바로 지워선 안 된다.
+
+    tty면 다음 프레임에 `choose_menu`→curses가 화면을 지운다. 그 직전에
+    `run_mode`가 찍은 것(예: `SystemExit`이 물고 온 사유, shoot의 등급표·
+    후일담)이 한 프레임도 못 읽히고 사라지므로, tty에서만 한 번 멈춰야 한다.
+    비-tty(파이프)에서 멈추면 `input()`이 다음 입력 줄을 삼켜 파이프 실행이
+    깨지므로, 거기서는 멈추면 안 된다.
+    """
+
+    def _patch_tty(self, is_tty):
+        real_in, real_out = sys.stdin.isatty, sys.stdout.isatty
+        sys.stdin.isatty = lambda: is_tty
+        sys.stdout.isatty = lambda: True
+
+        def _restore():
+            sys.stdin.isatty, sys.stdout.isatty = real_in, real_out
+        return _restore
+
+    def test_it_does_not_pause_when_not_a_tty(self):
+        restore = self._patch_tty(False)
+        called = []
+        guide.input = lambda *a, **k: called.append(1)
+        try:
+            guide.pause_after_mode()
+        finally:
+            del guide.input
+            restore()
+        self.assertEqual(called, [])
+
+    def test_it_pauses_when_a_tty(self):
+        restore = self._patch_tty(True)
+        called = []
+        guide.input = lambda *a, **k: called.append(1)
+        try:
+            guide.pause_after_mode()
+        finally:
+            del guide.input
+            restore()
+        self.assertEqual(called, [1])
+
+    def test_it_swallows_eof_and_keyboard_interrupt(self):
+        restore = self._patch_tty(True)
+        try:
+            for exc in (EOFError, KeyboardInterrupt):
+                def boom(*a, exc=exc, **k):
+                    raise exc
+                guide.input = boom
+                guide.pause_after_mode()  # 예외 없이 돌아와야 한다
+        finally:
+            del guide.input
+            restore()
+
+    def test_main_pauses_after_each_mode_but_not_after_quitting(self):
+        """배선 테스트: `main()`이 `run_mode` 뒤에 `pause_after_mode`를 부르는가.
+
+        마지막에 메뉴에서 바로 종료(`None`)할 때는 `run_mode`가 안 불리므로
+        `pause_after_mode`도 불리면 안 된다.
+        """
+        real_choose, real_run, real_pause = (
+            guide.choose_menu, guide.run_mode, guide.pause_after_mode)
+        seq = iter([0, 1, None])
+        paused = []
+        guide.choose_menu = lambda labels: next(seq)
+        guide.run_mode = lambda mode: None
+        guide.pause_after_mode = lambda: paused.append(1)
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                guide.main([])
+        finally:
+            guide.choose_menu, guide.run_mode, guide.pause_after_mode = (
+                real_choose, real_run, real_pause)
+        self.assertEqual(paused, [1, 1])
 
 
 class LineFallbackTest(unittest.TestCase):

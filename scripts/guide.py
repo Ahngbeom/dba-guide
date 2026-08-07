@@ -21,7 +21,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import exam  # noqa: E402
 import shooting  # noqa: E402
-from tui import pick  # noqa: E402
+from tui import cwidth, pick  # noqa: E402
 
 # key   프로그램 안에서 쓰는 짧은 이름
 # title 메뉴에 보이는 이름
@@ -56,9 +56,15 @@ MODES = (
 
 
 def menu_labels():
-    """메뉴에 뿌릴 줄 목록. 제목을 왼쪽에 맞춰 규모가 세로로 정렬되게 한다."""
-    width = max(len(m.title) for m in MODES)
-    return [f"{m.title.ljust(width)}   {m.scale()}" for m in MODES]
+    """메뉴에 뿌릴 줄 목록. 제목을 왼쪽에 맞춰 규모가 세로로 정렬되게 한다.
+
+    `str.ljust`는 글자 수로 맞추는데 한글은 화면 표시 폭이 2칸이라, 제목
+    길이가 우연히 같지 않은 이상 규모 열이 어긋난다. 표시 폭 기준으로
+    맞춰야 한다.
+    """
+    width = max(cwidth(m.title) for m in MODES)
+    return [f"{m.title}{' ' * (width - cwidth(m.title))}   {m.scale()}"
+            for m in MODES]
 
 
 def run_mode(mode):
@@ -84,6 +90,30 @@ def run_mode(mode):
                   else f"모드가 코드 {e.code} 로 끝났습니다.")
     except KeyboardInterrupt:
         print("\n중단했습니다.")
+
+
+def pause_after_mode():
+    """모드가 남긴 평문 출력을 메뉴가 곧바로 지우지 못하게 한 번 멈춘다.
+
+    tty에서만 멈춘다. `choose_menu`가 tty면 다음 프레임에 `curses.wrapper`→
+    `tui.pick()`을 열고 `stdscr.erase()`부터 하므로, 방금 `run_mode`가 평문으로
+    찍은 것(예: exam이 SystemExit으로 올린 "출제할 문항이 없습니다" 같은 사유,
+    shoot이 curses를 내린 뒤 찍는 등급표·후일담·`./exam` 제안)이 한 프레임도
+    못 읽히고 사라진다.
+
+    비-tty(파이프)에서는 폴백 메뉴도 평문이라 지워질 것이 없고, 여기서
+    `input()`을 부르면 다음 입력 줄을 삼켜 파이프로 돌리는 실행(테스트 포함)이
+    깨지므로 멈추지 않는다.
+
+    `EOFError`·`KeyboardInterrupt`도 삼킨다 — 여기서 새면 `run_mode`가 애써
+    격리해 둔 것이 무의미해진다.
+    """
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        return
+    try:
+        input("\n계속하려면 Enter를 누르세요...")
+    except (EOFError, KeyboardInterrupt):
+        pass
 
 
 def choose_line(labels, prompt=input):
@@ -140,6 +170,7 @@ def main(argv=None):
         if idx is None:
             return 0
         run_mode(MODES[idx])
+        pause_after_mode()
 
 
 if __name__ == "__main__":
