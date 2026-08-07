@@ -84,3 +84,63 @@ def run_mode(mode):
                   else f"모드가 코드 {e.code} 로 끝났습니다.")
     except KeyboardInterrupt:
         print("\n중단했습니다.")
+
+
+def choose_line(labels, prompt=input):
+    """평문 폴백 → 고른 인덱스(취소면 None).
+
+    `pick()`은 curses를 요구하므로 파이프로 돌리면 쓸 수 없다. 같은 모양이
+    `exam._pick_line`과 `shooting._choose_stage_line`에도 있지만, 셋을 합치려면
+    `CLAUDE.md`가 손대지 말라고 못박은 `exam.py`를 건드려야 해서 여기 따로 둔다.
+    """
+    print("\n무엇을 할까요\n")
+    for i, label in enumerate(labels, 1):
+        print(f"  {i}) {label}")
+    print()
+    while True:
+        try:
+            raw = prompt("번호 (q=종료): ").strip()
+        except (EOFError, KeyboardInterrupt):
+            return None
+        if raw in ("q", "Q"):
+            return None
+        if raw.isdigit() and 1 <= int(raw) <= len(labels):
+            return int(raw) - 1
+        print("잘못된 입력입니다.")
+
+
+def choose_menu(labels):
+    """최상위 메뉴 → 고른 인덱스(종료면 None). tty가 아니면 평문으로 묻는다."""
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        return choose_line(labels)
+    import curses
+
+    def _driver(stdscr):
+        curses.curs_set(0)
+        return pick(stdscr, curses, "무엇을 할까요", labels,
+                    footer=" ↑↓ 또는 숫자 선택   Enter 시작   Esc/q 종료 ")
+
+    return curses.wrapper(_driver)
+
+
+def main(argv=None):
+    """메뉴 → 모드 → 메뉴. 프로그램을 끝내는 곳은 메뉴 하나뿐이다.
+
+    모드 안의 '종료'는 그 모드만 끝낸다 — 여러 모드를 오갈 수 있어야 하므로
+    끝내는 자리를 한 곳으로 모은다. 같은 이유로 모드의 종료 코드는 전파하지
+    않는다: 여러 번 돌 수 있어 대표할 코드가 없다.
+    """
+    argparse.ArgumentParser(
+        prog="guide",
+        description="DBA 학습 가이드 — 학습 점검과 장애 대응을 한 자리에서"
+    ).parse_args(argv)
+
+    while True:
+        idx = choose_menu(menu_labels())
+        if idx is None:
+            return 0
+        run_mode(MODES[idx])
+
+
+if __name__ == "__main__":
+    sys.exit(main())

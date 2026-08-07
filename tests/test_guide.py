@@ -108,3 +108,69 @@ class ModeIsolationTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             with contextlib.redirect_stdout(io.StringIO()):
                 guide.run_mode(self._mode(boom))
+
+
+class LineFallbackTest(unittest.TestCase):
+    """`pick()`은 curses가 필요하다. 파이프로 돌릴 때도 고를 수 있어야 한다."""
+
+    def _choose(self, typed):
+        it = iter(typed)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            got = guide.choose_line(["가", "나"], prompt=lambda _: next(it))
+        return got, buf.getvalue()
+
+    def test_a_number_selects(self):
+        self.assertEqual(self._choose(["2"])[0], 1)
+
+    def test_q_cancels(self):
+        self.assertIsNone(self._choose(["q"])[0])
+
+    def test_a_bad_entry_asks_again(self):
+        got, out = self._choose(["9", "x", "1"])
+        self.assertEqual(got, 0)
+        self.assertIn("잘못된 입력", out)
+
+    def test_closed_input_cancels(self):
+        def eof(_):
+            raise EOFError
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            self.assertIsNone(guide.choose_line(["가"], prompt=eof))
+
+
+class MainLoopTest(unittest.TestCase):
+    """고른 모드가 실제로 불려야 한다.
+
+    순수 함수만 맞고 호출부가 안 쓰는 누락을 이 저장소에서 세 번 겪었다
+    (진단 문항 셔플, play_footer, database_exists). 그래서 배선을 따로 잡는다.
+    """
+
+    @contextlib.contextmanager
+    def _menu(self, picks):
+        """고를 인덱스를 순서대로 돌려주고, 마지막에 None(종료)을 준다."""
+        seq = iter(list(picks) + [None])
+        ran = []
+        real_choose, real_run = guide.choose_menu, guide.run_mode
+        guide.choose_menu = lambda labels: next(seq)
+        guide.run_mode = lambda mode: ran.append(mode.key)
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                yield ran
+        finally:
+            guide.choose_menu, guide.run_mode = real_choose, real_run
+
+    def test_picking_a_mode_runs_that_runner(self):
+        with self._menu([1]) as ran:
+            self.assertEqual(guide.main([]), 0)
+        self.assertEqual(ran, ["shoot"])
+
+    def test_the_menu_comes_back_until_you_quit(self):
+        with self._menu([0, 1, 0]) as ran:
+            guide.main([])
+        self.assertEqual(ran, ["exam", "shoot", "exam"])
+
+    def test_quitting_at_the_menu_ends_the_program(self):
+        with self._menu([]) as ran:
+            self.assertEqual(guide.main([]), 0)
+        self.assertEqual(ran, [])
