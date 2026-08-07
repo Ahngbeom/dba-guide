@@ -174,3 +174,32 @@ class MainLoopTest(unittest.TestCase):
         with self._menu([]) as ran:
             self.assertEqual(guide.main([]), 0)
         self.assertEqual(ran, [])
+
+
+class LauncherTest(unittest.TestCase):
+    """런처가 없으면 `./guide` 는 존재하지 않는 것과 같다."""
+
+    def test_the_launcher_exists_and_is_executable(self):
+        import os
+        p = REPO_ROOT / "guide"
+        self.assertTrue(p.is_file(), "저장소 루트에 guide 런처가 없다")
+        self.assertTrue(os.access(p, os.X_OK), "guide 에 실행 권한이 없다")
+
+    def test_the_launcher_points_at_the_script(self):
+        body = (REPO_ROOT / "guide").read_text(encoding="utf-8")
+        self.assertIn("scripts/guide.py", body)
+        self.assertIn("#!/usr/bin/env bash", body)
+
+    def test_it_runs_and_offers_both_modes(self):
+        """실제로 실행해 메뉴가 뜨는지 본다 — 파이프라 평문 폴백으로 돈다."""
+        import subprocess
+        p = subprocess.run([str(REPO_ROOT / "guide")], input="q\n",
+                           capture_output=True, text=True, timeout=60)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn("학습 점검", p.stdout)
+        self.assertIn("장애 대응", p.stdout)
+
+    def test_the_docs_mention_it(self):
+        for name in ("README.md", "CLAUDE.md"):
+            body = (REPO_ROOT / name).read_text(encoding="utf-8")
+            self.assertIn("./guide", body, f"{name} 에 ./guide 안내가 없다")
