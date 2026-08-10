@@ -684,7 +684,7 @@ is_repo_root() {
 - [ ] **Step 4: 통과를 확인한다**
 
 Run: `python3 -m unittest tests.test_install -v`
-Expected: PASS (14 tests)
+Expected: PASS (15 tests — 14 from the brief plus the outer-repo regression added in this task's fix round)
 
 - [ ] **Step 5: 커밋**
 
@@ -818,7 +818,7 @@ install_inplace() {
 - [ ] **Step 4: 통과를 확인한다**
 
 Run: `python3 -m unittest tests.test_install -v`
-Expected: PASS (16 tests)
+Expected: PASS (17 tests)
 
 - [ ] **Step 5: 커밋**
 
@@ -974,7 +974,7 @@ uninstall() {
 - [ ] **Step 4: 통과를 확인한다**
 
 Run: `python3 -m unittest tests.test_install -v`
-Expected: PASS (20 tests)
+Expected: PASS (21 tests)
 
 - [ ] **Step 5: 커밋**
 
@@ -1070,7 +1070,7 @@ cd dba-guide && ./guide
 - [ ] **Step 4: 전체 스위트와 문서 링크를 확인한다**
 
 Run: `python3 -m unittest discover -s tests`
-Expected: 이전 557건 + 신규 20건 = **577 tests, OK**
+Expected: 이전 557건 + 신규 21건 = **578 tests, OK**
 
 Run: `./shoot doctor`
 Expected: 통과 (문서 변경이 스테이지 파싱을 깨지 않았는지)
