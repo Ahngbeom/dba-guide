@@ -21,6 +21,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import exam  # noqa: E402
 import shooting  # noqa: E402
+import reading  # noqa: E402
 from tui import cwidth, pick, pick_line  # noqa: E402
 
 # key   프로그램 안에서 쓰는 짧은 이름
@@ -52,6 +53,7 @@ def shoot_scale():
 MODES = (
     Mode("exam", "학습 점검 (퀴즈/시험)", exam_scale, lambda: exam.main([])),
     Mode("shoot", "장애 대응 (실전 훈련)", shoot_scale, lambda: shooting.main([])),
+    Mode("read", "챕터 읽기", reading.read_scale, lambda: reading.main([])),
 )
 
 

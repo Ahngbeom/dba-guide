@@ -20,8 +20,9 @@ import guide  # noqa: E402
 class ModeTableTest(unittest.TestCase):
     """메뉴는 모드 목록 데이터다 — 후속의 '챕터 읽기'가 한 줄로 붙어야 한다."""
 
-    def test_both_runners_are_offered(self):
-        self.assertEqual([m.key for m in guide.MODES], ["exam", "shoot"])
+    def test_all_three_modes_are_offered(self):
+        self.assertEqual([m.key for m in guide.MODES],
+                         ["exam", "shoot", "read"])
 
     def test_scale_reports_the_real_counts(self):
         """`exam.discover_banks()`와 같은 재귀 글롭으로 세어야 한다.
@@ -293,3 +294,22 @@ class LauncherTest(unittest.TestCase):
         for name in ("README.md", "CLAUDE.md"):
             body = (REPO_ROOT / name).read_text(encoding="utf-8")
             self.assertIn("./guide", body, f"{name} 에 ./guide 안내가 없다")
+
+
+class ReadingModeWiringTest(unittest.TestCase):
+    """세 번째 모드를 고르면 읽기 러너가 실제로 불려야 한다."""
+
+    def test_the_read_mode_runs_the_reading_runner(self):
+        ran = []
+        real = guide.reading.main
+        guide.reading.main = lambda argv: ran.append(argv) or 0
+        try:
+            mode = next(m for m in guide.MODES if m.key == "read")
+            mode.run()
+        finally:
+            guide.reading.main = real
+        self.assertEqual(ran, [[]])
+
+    def test_its_scale_counts_chapters(self):
+        mode = next(m for m in guide.MODES if m.key == "read")
+        self.assertIn("챕터", mode.scale())
