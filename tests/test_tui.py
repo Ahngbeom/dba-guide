@@ -385,5 +385,34 @@ class PageTextCharacterizationTest(unittest.TestCase):
         self.assertEqual(rc, 0)
 
 
+class PickLineTest(unittest.TestCase):
+    """`pick()`의 평문 짝. 파이프로 돌릴 때도 고를 수 있어야 한다."""
+
+    def _choose(self, typed):
+        it = iter(typed)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            got = tui.pick_line("무엇을 할까요", ["가", "나"],
+                                ask=lambda _: next(it))
+        return got, buf.getvalue()
+
+    def test_a_number_selects(self):
+        self.assertEqual(self._choose(["2"])[0], 1)
+
+    def test_q_cancels(self):
+        self.assertIsNone(self._choose(["q"])[0])
+
+    def test_a_bad_entry_asks_again(self):
+        got, out = self._choose(["9", "x", "1"])
+        self.assertEqual(got, 0)
+        self.assertIn("잘못된 입력", out)
+
+    def test_closed_input_cancels(self):
+        def eof(_):
+            raise EOFError
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertIsNone(tui.pick_line("제목", ["가"], ask=eof))
+
+
 if __name__ == "__main__":
     unittest.main()

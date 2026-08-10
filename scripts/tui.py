@@ -424,6 +424,40 @@ def describe_key(curses, kind, val):
     return f"{kind} + {name}"
 
 
+def pick_line(title, labels, ask=None):
+    """번호로 하나 고른다 → 고른 인덱스(취소면 None).
+
+    `pick()`의 평문 짝이다. curses를 쓸 수 없을 때(파이프·비-tty) 쓴다.
+
+    같은 모양이 러너 세 곳에 따로 있었고 네 번째가 생길 참이었다 — `pick()`이
+    여기 모인 이유가 정확히 그것이었는데(`CLAUDE.md`) 평문 짝만 남아 있었다.
+
+    입력 함수를 `ask`로 받는다. `prompt`라고 하면 `exam._pick_line(prompt,
+    labels)`의 첫 인자(제목)와 이름이 겹쳐 호출부가 읽히지 않는다. 기본값을
+    `input`으로 **박아 두지 않는 것**은 의도다 — 기본 인자는 def 시점에 한 번
+    평가되어 빌트인을 붙들므로, 그렇게 두면 `tui.input` 을 바꿔 넣는 테스트가
+    통하지 않는다. 호출 시점에 찾는다.
+
+    취소를 **None**으로 알린다. 예외로 알리던 호출부(`exam`)는 얇은 어댑터로
+    자기 계약을 지킨다 — 공용이 가장 단순한 계약을 갖는 편이 낫다.
+    """
+    ask = ask or input
+    print(f"\n{title}\n")
+    for i, label in enumerate(labels, 1):
+        print(f"  {i}) {label}")
+    print()
+    while True:
+        try:
+            raw = ask(f"번호 (1-{len(labels)}, q=종료): ").strip()
+        except (EOFError, KeyboardInterrupt):
+            return None
+        if raw in ("q", "Q"):
+            return None
+        if raw.isdigit() and 1 <= int(raw) <= len(labels):
+            return int(raw) - 1
+        print("잘못된 입력입니다.")
+
+
 # --------------------------------------------------------------------------- #
 # 외부 도구 위임
 # --------------------------------------------------------------------------- #

@@ -45,7 +45,7 @@ NOTES_DIR = PROGRESS_DIR / "notes"                # 포스트모템 노트(비�
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from tui import (  # noqa: E402
     bar, cwidth, is_affirmative, is_backspace, is_enter, is_idle, key_char,
-    page_text, pick, put, read_key, wrap,
+    page_text, pick, pick_line, put, read_key, wrap,
 )
 from exam import grade_mcq, grade_short, shuffle_choices  # noqa: E402
 
@@ -3133,21 +3133,12 @@ def _choose_stage_curses(labels):
 
 
 def _choose_stage_line(stages, labels):
-    """평문 폴백. tty가 아니거나 curses를 쓸 수 없을 때."""
-    print("\n스테이지를 고르세요\n")
-    for i, label in enumerate(labels, 1):
-        print(f"  {i}) {label}")
-    print()
-    while True:
-        try:
-            raw = input("번호 (q=종료): ").strip()
-        except (EOFError, KeyboardInterrupt):
-            return None
-        if raw in ("q", "Q"):
-            return None
-        if raw.isdigit() and 1 <= int(raw) <= len(stages):
-            return stages[int(raw) - 1]
-        print("잘못된 입력입니다.")
+    """평문 폴백. tty가 아니거나 curses를 쓸 수 없을 때.
+
+    인덱스가 아니라 **스테이지 자체**를 돌려주는 계약을 지킨다.
+    """
+    idx = pick_line("스테이지를 고르세요", labels)
+    return None if idx is None else stages[idx]
 
 
 def _pick_world_then_stage(stdscr, curses, groups, best, heading, can_go_up):

@@ -21,7 +21,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import exam  # noqa: E402
 import shooting  # noqa: E402
-from tui import cwidth, pick  # noqa: E402
+from tui import cwidth, pick, pick_line  # noqa: E402
 
 # key   프로그램 안에서 쓰는 짧은 이름
 # title 메뉴에 보이는 이름
@@ -116,33 +116,10 @@ def pause_after_mode():
         pass
 
 
-def choose_line(labels, prompt=input):
-    """평문 폴백 → 고른 인덱스(취소면 None).
-
-    `pick()`은 curses를 요구하므로 파이프로 돌리면 쓸 수 없다. 같은 모양이
-    `exam._pick_line`과 `shooting._choose_stage_line`에도 있지만, 셋을 합치려면
-    `CLAUDE.md`가 손대지 말라고 못박은 `exam.py`를 건드려야 해서 여기 따로 둔다.
-    """
-    print("\n무엇을 할까요\n")
-    for i, label in enumerate(labels, 1):
-        print(f"  {i}) {label}")
-    print()
-    while True:
-        try:
-            raw = prompt("번호 (q=종료): ").strip()
-        except (EOFError, KeyboardInterrupt):
-            return None
-        if raw in ("q", "Q"):
-            return None
-        if raw.isdigit() and 1 <= int(raw) <= len(labels):
-            return int(raw) - 1
-        print("잘못된 입력입니다.")
-
-
 def choose_menu(labels):
     """최상위 메뉴 → 고른 인덱스(종료면 None). tty가 아니면 평문으로 묻는다."""
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
-        return choose_line(labels)
+        return pick_line("무엇을 할까요", labels)
     import curses
 
     def _driver(stdscr):

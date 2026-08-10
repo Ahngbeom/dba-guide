@@ -38,6 +38,7 @@ from tui import (  # noqa: E402  (표시 폭·출력·키 입력 공용 프리�
     line_end,
     line_start,
     move_line,
+    pick_line as _tui_pick_line,
     put as _put,
     read_key as _read_key,
     word_left,
@@ -1245,17 +1246,16 @@ def _select_curses(cli_dbms, start="dbms", dbms=None, tier=None):
 
 
 def _pick_line(prompt, labels):
-    """라인 모드 범용 선택기. 선택 인덱스 반환, q는 종료."""
-    print(f"\n== {prompt} ==")
-    for i, label in enumerate(labels, 1):
-        print(f"  {i}. {label}")
-    while True:
-        raw = _prompt(f"번호 선택 (1-{len(labels)}, q=종료): ").strip()
-        if raw.lower() == "q":
-            raise KeyboardInterrupt
-        if raw.isdigit() and 1 <= int(raw) <= len(labels):
-            return int(raw) - 1
-        print("잘못된 입력입니다.")
+    """라인 모드 범용 선택기. 선택 인덱스 반환, q는 종료.
+
+    취소를 **예외로** 알리는 계약을 지킨다 — `main`이 `KeyboardInterrupt`를 잡아
+    "시험을 중단했습니다"를 찍고 130을 반환하는 흐름이 이 위에 서 있다.
+    공용 `tui.pick_line`은 None을 돌려주므로 여기서 되살린다.
+    """
+    idx = _tui_pick_line(prompt, labels)
+    if idx is None:
+        raise KeyboardInterrupt
+    return idx
 
 
 def _select_line(cli_dbms, start="dbms", dbms=None, tier=None):

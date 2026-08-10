@@ -229,35 +229,6 @@ class PauseAfterModeTest(unittest.TestCase):
         self.assertEqual(paused, [1, 1])
 
 
-class LineFallbackTest(unittest.TestCase):
-    """`pick()`은 curses가 필요하다. 파이프로 돌릴 때도 고를 수 있어야 한다."""
-
-    def _choose(self, typed):
-        it = iter(typed)
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            got = guide.choose_line(["가", "나"], prompt=lambda _: next(it))
-        return got, buf.getvalue()
-
-    def test_a_number_selects(self):
-        self.assertEqual(self._choose(["2"])[0], 1)
-
-    def test_q_cancels(self):
-        self.assertIsNone(self._choose(["q"])[0])
-
-    def test_a_bad_entry_asks_again(self):
-        got, out = self._choose(["9", "x", "1"])
-        self.assertEqual(got, 0)
-        self.assertIn("잘못된 입력", out)
-
-    def test_closed_input_cancels(self):
-        def eof(_):
-            raise EOFError
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            self.assertIsNone(guide.choose_line(["가"], prompt=eof))
-
-
 class MainLoopTest(unittest.TestCase):
     """고른 모드가 실제로 불려야 한다.
 
