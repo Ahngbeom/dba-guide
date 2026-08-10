@@ -53,6 +53,21 @@ check_prereqs() {
   fi
 }
 
+# 이 디렉터리 자체가 git 저장소의 루트인가.
+#
+# `rev-parse --is-inside-work-tree` 를 쓰면 안 된다 — 상위로 올라가며 `.git` 을
+# 찾으므로, 홈을 git 으로 관리하는 사람에게는 남의 저장소 안의 평범한
+# 디렉터리까지 참으로 답한다. 그대로 통과시키면 이어지는 fetch·checkout 이
+# 우리가 만들지도 않은 **바깥 저장소**를 대상으로 돈다.
+#
+# 심볼릭 링크(macOS의 /tmp → /private/tmp 등) 때문에 양쪽을 모두 `pwd -P` 로
+# 정규화해 비교한다.
+is_repo_root() {
+  root="$(git -C "$1" rev-parse --show-toplevel 2>/dev/null)" || return 1
+  [ -n "$root" ] || return 1
+  [ "$(cd "$root" && pwd -P)" = "$(cd "$1" && pwd -P)" ]
+}
+
 # 정식 릴리스 태그 중 최신 하나. 없으면 아무것도 출력하지 않는다.
 # --sort=-v:refname 만으로는 프리릴리스가 위로 올 수 있어 패턴 필터가 필수다.
 latest_release_tag() {
@@ -114,7 +129,7 @@ install_managed() {
     info "저장소를 내려받습니다 → $INSTALL_DIR"
     mkdir -p "$(dirname "$INSTALL_DIR")"
     git clone --quiet "$REPO_URL" "$INSTALL_DIR"
-  elif ! git -C "$INSTALL_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  elif ! is_repo_root "$INSTALL_DIR"; then
     die "$INSTALL_DIR 에 git 저장소가 아닌 내용이 있습니다." \
         "  이 스크립트는 자기가 만들지 않은 디렉터리를 지우지 않습니다." \
         "  직접 확인하고 치운 뒤 다시 실행하세요."

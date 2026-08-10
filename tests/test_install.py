@@ -225,3 +225,19 @@ class GuardTest(InstallerTestCase):
         self.assertEqual(r.returncode, 1)
         self.assertIn(str(self.install_dir), r.stderr)
         self.assertTrue((self.install_dir / "중요.txt").exists())
+
+    def test_directory_inside_an_outer_git_repo_is_still_a_hard_stop(self):
+        """홈을 git으로 관리하는 사람 — 설치 경로가 남의 저장소 안에 들어앉는다.
+
+        `rev-parse --is-inside-work-tree`는 상위로 올라가며 `.git`을 찾으므로
+        이 경우 참을 돌려준다. 그대로 통과시키면 이어지는 fetch·checkout이
+        **바깥 저장소**를 대상으로 돈다.
+        """
+        self.tag("v1.0.0")
+        git(self.home, "init", "--quiet")
+        self.install_dir.mkdir(parents=True)
+        (self.install_dir / "중요.txt").write_text("남의 자료\n")
+        r = self.run_installer()
+        self.assertEqual(r.returncode, 1)
+        self.assertIn(str(self.install_dir), r.stderr)
+        self.assertTrue((self.install_dir / "중요.txt").exists())
