@@ -44,10 +44,12 @@ NOTES_DIR = PROGRESS_DIR / "notes"                # 포스트모템 노트(비�
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from tui import (  # noqa: E402
-    bar, cwidth, is_affirmative, is_backspace, is_enter, is_idle, key_char, pick,
-    put, read_key, wrap,
+    bar, cwidth, is_affirmative, is_backspace, is_enter, is_idle, key_char,
+    page_text, pick, pick_line, put, read_key, wrap,
 )
-from exam import grade_mcq, grade_short, shuffle_choices  # noqa: E402
+from exam import (  # noqa: E402
+    exam_bank_for, grade_mcq, grade_short, shuffle_choices,
+)
 
 # 컨테이너 이름은 compose.yaml의 container_name과 맞춰야 한다.
 CONTAINERS = {"primary": "dbshoot-primary", "replica": "dbshoot-replica",
@@ -1053,17 +1055,6 @@ def chapter_reading_list(stage, repo_root=None):
     return "\n".join(lines)
 
 
-def exam_bank_for(chapter_rel, repo_root=None):
-    """챕터에 대응하는 문제은행 경로. 없으면 None.
-
-    매핑은 기계적이다 — `<티어>/<이름>.md` 의 은행은 `exams/<티어>/<이름>.json`
-    이고, 스테이지가 가리키는 챕터는 전부 은행을 가진다(치트시트처럼 은행이 없는
-    챕터도 있으므로 존재를 확인한다).
-    """
-    rel = str(Path("exams") / Path(chapter_rel).with_suffix(".json"))
-    return rel if (Path(repo_root or REPO_ROOT) / rel).is_file() else None
-
-
 def exam_suggestions(stage, repo_root=None):
     """클리어 후 보여줄 '확인해 보기'. 실행 가능한 `./exam` 명령 목록.
 
@@ -1450,27 +1441,6 @@ def notes_text(paths):
         except OSError as e:
             body.append(f"(읽을 수 없습니다: {e})")
     return "\n\n".join(body)
-
-
-def page_text(text):
-    """텍스트를 페이저로 넘긴다(curses 밖에서 호출).
-
-    뷰어를 curses로 만들지 않는다 — `less`가 스크롤·검색(`/`)을 이미 다 한다.
-    목록 UI조차 필요 없다: 이어 붙여 넘기면 끝이다.
-    """
-    pager = os.environ.get("PAGER") or ("less -R" if shutil.which("less")
-                                        else None)
-    if not pager:
-        print(text)
-        return 0
-    try:
-        proc = subprocess.Popen(shlex.split(pager), stdin=subprocess.PIPE,
-                                text=True)
-        proc.communicate(text)
-        return proc.returncode
-    except (OSError, KeyboardInterrupt):
-        print(text)
-        return 0
 
 
 def open_notes_pager(stdscr, curses, paths):
@@ -3154,21 +3124,12 @@ def _choose_stage_curses(labels):
 
 
 def _choose_stage_line(stages, labels):
-    """평문 폴백. tty가 아니거나 curses를 쓸 수 없을 때."""
-    print("\n스테이지를 고르세요\n")
-    for i, label in enumerate(labels, 1):
-        print(f"  {i}) {label}")
-    print()
-    while True:
-        try:
-            raw = input("번호 (q=종료): ").strip()
-        except (EOFError, KeyboardInterrupt):
-            return None
-        if raw in ("q", "Q"):
-            return None
-        if raw.isdigit() and 1 <= int(raw) <= len(stages):
-            return stages[int(raw) - 1]
-        print("잘못된 입력입니다.")
+    """평문 폴백. tty가 아니거나 curses를 쓸 수 없을 때.
+
+    인덱스가 아니라 **스테이지 자체**를 돌려주는 계약을 지킨다.
+    """
+    idx = pick_line("스테이지를 고르세요", labels)
+    return None if idx is None else stages[idx]
 
 
 def _pick_world_then_stage(stdscr, curses, groups, best, heading, can_go_up):

@@ -3758,3 +3758,36 @@ class ImplicitConversionStageTest(unittest.TestCase):
         spec = self.stage["vars"]["code"]
         self.assertGreaterEqual(spec["min"], 101001)
         self.assertLessEqual(spec["max"], 901000)
+
+
+class ChooseStageLineContractTest(unittest.TestCase):
+    """`_choose_stage_line` 은 인덱스가 아니라 **스테이지 자체**를 돌려준다."""
+
+    def _with_input(self, typed, stages=("가경로", "나경로")):
+        it = iter(typed)
+        tui.input = lambda *a: next(it)
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                return shooting._choose_stage_line(list(stages), ["가", "나"])
+        finally:
+            del tui.input
+
+    def test_a_number_returns_the_stage_itself(self):
+        self.assertEqual(self._with_input(["2"]), "나경로")
+
+    def test_q_returns_none(self):
+        self.assertIsNone(self._with_input(["q"]))
+
+    def test_eof_returns_none(self):
+        def eof(*a):
+            raise EOFError
+        tui.input = eof
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertIsNone(
+                    shooting._choose_stage_line(["가경로"], ["가"]))
+        finally:
+            del tui.input
+
+    def test_a_bad_entry_asks_again(self):
+        self.assertEqual(self._with_input(["9", "x", "1"]), "가경로")

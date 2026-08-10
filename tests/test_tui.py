@@ -7,6 +7,9 @@ exam.py에서 추출하기 전까지 이 함수들은 테스트가 없었다. �
 실행:
     python3 -m unittest discover -s tests
 """
+import contextlib
+import io
+import os
 import sys
 import unittest
 from pathlib import Path
@@ -305,6 +308,110 @@ class PickTest(unittest.TestCase):
 
     def test_empty_list_returns_none(self):
         self.assertIsNone(tui.pick(_PickScreen([]), _PickCurses(), "제목", []))
+
+
+class PageTextCharacterizationTest(unittest.TestCase):
+    """옮기기 전 현재 동작을 고정한다.
+
+    `page_text` 에는 테스트가 하나도 없었다. 테스트 없이 옮기면 전체 스위트가
+    통과해도 이 함수에 대해서는 아무것도 증명하지 못한다.
+    (`shooting.py` 에서 옮겨 온 뒤에도 같은 동작이어야 한다.)
+    """
+
+    def setUp(self):
+        import tui
+        self.mod = tui
+
+    @contextlib.contextmanager
+    def _env(self, pager=None, which=None):
+        real_env = dict(os.environ)
+        real_which = self.mod.shutil.which
+        if pager is None:
+            os.environ.pop("PAGER", None)
+        else:
+            os.environ["PAGER"] = pager
+        self.mod.shutil.which = lambda n, *a, **k: which
+        try:
+            yield
+        finally:
+            os.environ.clear()
+            os.environ.update(real_env)
+            self.mod.shutil.which = real_which
+
+    def test_hands_the_text_to_the_pager(self):
+        seen = {}
+
+        class FakeProc:
+            returncode = 7
+
+            def communicate(self, text):
+                seen["text"] = text
+
+        real = self.mod.subprocess.Popen
+        self.mod.subprocess.Popen = lambda *a, **k: seen.setdefault(
+            "cmd", a[0]) and None or FakeProc()
+        try:
+            with self._env(pager="less -R"):
+                rc = self.mod.page_text("본문")
+        finally:
+            self.mod.subprocess.Popen = real
+        self.assertEqual(seen["cmd"], ["less", "-R"])
+        self.assertEqual(seen["text"], "본문")
+        self.assertEqual(rc, 7)
+
+    def test_prints_plainly_when_there_is_no_pager(self):
+        buf = io.StringIO()
+        with self._env(pager=None, which=None):
+            with contextlib.redirect_stdout(buf):
+                rc = self.mod.page_text("본문")
+        self.assertEqual(buf.getvalue().strip(), "본문")
+        self.assertEqual(rc, 0)
+
+    def test_a_failing_pager_falls_back_to_printing(self):
+        real = self.mod.subprocess.Popen
+
+        def boom(*a, **k):
+            raise OSError("페이저 실행 실패")
+
+        self.mod.subprocess.Popen = boom
+        buf = io.StringIO()
+        try:
+            with self._env(pager="없는페이저"):
+                with contextlib.redirect_stdout(buf):
+                    rc = self.mod.page_text("본문")
+        finally:
+            self.mod.subprocess.Popen = real
+        self.assertEqual(buf.getvalue().strip(), "본문")
+        self.assertEqual(rc, 0)
+
+
+class PickLineTest(unittest.TestCase):
+    """`pick()`의 평문 짝. 파이프로 돌릴 때도 고를 수 있어야 한다."""
+
+    def _choose(self, typed):
+        it = iter(typed)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            got = tui.pick_line("무엇을 할까요", ["가", "나"],
+                                ask=lambda _: next(it))
+        return got, buf.getvalue()
+
+    def test_a_number_selects(self):
+        self.assertEqual(self._choose(["2"])[0], 1)
+
+    def test_q_cancels(self):
+        self.assertIsNone(self._choose(["q"])[0])
+
+    def test_a_bad_entry_asks_again(self):
+        got, out = self._choose(["9", "x", "1"])
+        self.assertEqual(got, 0)
+        self.assertIn("잘못된 입력", out)
+
+    def test_closed_input_cancels(self):
+        def eof(_):
+            raise EOFError
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertIsNone(tui.pick_line("제목", ["가"], ask=eof))
 
 
 if __name__ == "__main__":

@@ -15,13 +15,15 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
 
 import guide  # noqa: E402
+import tui  # noqa: E402
 
 
 class ModeTableTest(unittest.TestCase):
     """메뉴는 모드 목록 데이터다 — 후속의 '챕터 읽기'가 한 줄로 붙어야 한다."""
 
-    def test_both_runners_are_offered(self):
-        self.assertEqual([m.key for m in guide.MODES], ["exam", "shoot"])
+    def test_all_three_modes_are_offered(self):
+        self.assertEqual([m.key for m in guide.MODES],
+                         ["exam", "shoot", "read"])
 
     def test_scale_reports_the_real_counts(self):
         """`exam.discover_banks()`와 같은 재귀 글롭으로 세어야 한다.
@@ -162,6 +164,13 @@ class PauseAfterModeTest(unittest.TestCase):
     후일담)이 한 프레임도 못 읽히고 사라지므로, tty에서만 한 번 멈춰야 한다.
     비-tty(파이프)에서 멈추면 `input()`이 다음 입력 줄을 삼켜 파이프 실행이
     깨지므로, 거기서는 멈추면 안 된다.
+
+    실제 멈춤 로직은 `tui.pause_after_output()`으로 옮겨졌다(`reading`도 같은
+    함정을 겪어서 공용이 됐다) — `guide.pause_after_mode()`는 그 얇은 래퍼다.
+    그래서 여기서 patch하는 대상도 `guide.input`이 아니라 `tui.input`이다:
+    실제 `input()` 호출이 이제 `tui` 모듈 안에서 일어나기 때문이다. tty
+    판정은 여전히 전역 `sys.stdin`/`sys.stdout`을 보므로 `_patch_tty`는 그대로
+    유효하다.
     """
 
     def _patch_tty(self, is_tty):
@@ -176,22 +185,22 @@ class PauseAfterModeTest(unittest.TestCase):
     def test_it_does_not_pause_when_not_a_tty(self):
         restore = self._patch_tty(False)
         called = []
-        guide.input = lambda *a, **k: called.append(1)
+        tui.input = lambda *a, **k: called.append(1)
         try:
             guide.pause_after_mode()
         finally:
-            del guide.input
+            del tui.input
             restore()
         self.assertEqual(called, [])
 
     def test_it_pauses_when_a_tty(self):
         restore = self._patch_tty(True)
         called = []
-        guide.input = lambda *a, **k: called.append(1)
+        tui.input = lambda *a, **k: called.append(1)
         try:
             guide.pause_after_mode()
         finally:
-            del guide.input
+            del tui.input
             restore()
         self.assertEqual(called, [1])
 
@@ -201,10 +210,10 @@ class PauseAfterModeTest(unittest.TestCase):
             for exc in (EOFError, KeyboardInterrupt):
                 def boom(*a, exc=exc, **k):
                     raise exc
-                guide.input = boom
+                tui.input = boom
                 guide.pause_after_mode()  # 예외 없이 돌아와야 한다
         finally:
-            del guide.input
+            del tui.input
             restore()
 
     def test_main_pauses_after_each_mode_but_not_after_quitting(self):
@@ -227,35 +236,6 @@ class PauseAfterModeTest(unittest.TestCase):
             guide.choose_menu, guide.run_mode, guide.pause_after_mode = (
                 real_choose, real_run, real_pause)
         self.assertEqual(paused, [1, 1])
-
-
-class LineFallbackTest(unittest.TestCase):
-    """`pick()`은 curses가 필요하다. 파이프로 돌릴 때도 고를 수 있어야 한다."""
-
-    def _choose(self, typed):
-        it = iter(typed)
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            got = guide.choose_line(["가", "나"], prompt=lambda _: next(it))
-        return got, buf.getvalue()
-
-    def test_a_number_selects(self):
-        self.assertEqual(self._choose(["2"])[0], 1)
-
-    def test_q_cancels(self):
-        self.assertIsNone(self._choose(["q"])[0])
-
-    def test_a_bad_entry_asks_again(self):
-        got, out = self._choose(["9", "x", "1"])
-        self.assertEqual(got, 0)
-        self.assertIn("잘못된 입력", out)
-
-    def test_closed_input_cancels(self):
-        def eof(_):
-            raise EOFError
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            self.assertIsNone(guide.choose_line(["가"], prompt=eof))
 
 
 class MainLoopTest(unittest.TestCase):
@@ -309,7 +289,7 @@ class LauncherTest(unittest.TestCase):
         self.assertIn("scripts/guide.py", body)
         self.assertIn("#!/usr/bin/env bash", body)
 
-    def test_it_runs_and_offers_both_modes(self):
+    def test_it_runs_and_offers_all_three_modes(self):
         """실제로 실행해 메뉴가 뜨는지 본다 — 파이프라 평문 폴백으로 돈다."""
         import subprocess
         p = subprocess.run([str(REPO_ROOT / "guide")], input="q\n",
@@ -317,8 +297,28 @@ class LauncherTest(unittest.TestCase):
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertIn("학습 점검", p.stdout)
         self.assertIn("장애 대응", p.stdout)
+        self.assertIn("챕터 읽기", p.stdout)
 
     def test_the_docs_mention_it(self):
         for name in ("README.md", "CLAUDE.md"):
             body = (REPO_ROOT / name).read_text(encoding="utf-8")
             self.assertIn("./guide", body, f"{name} 에 ./guide 안내가 없다")
+
+
+class ReadingModeWiringTest(unittest.TestCase):
+    """세 번째 모드를 고르면 읽기 러너가 실제로 불려야 한다."""
+
+    def test_the_read_mode_runs_the_reading_runner(self):
+        ran = []
+        real = guide.reading.main
+        guide.reading.main = lambda argv: ran.append(argv) or 0
+        try:
+            mode = next(m for m in guide.MODES if m.key == "read")
+            mode.run()
+        finally:
+            guide.reading.main = real
+        self.assertEqual(ran, [[]])
+
+    def test_its_scale_counts_chapters(self):
+        mode = next(m for m in guide.MODES if m.key == "read")
+        self.assertIn("챕터", mode.scale())

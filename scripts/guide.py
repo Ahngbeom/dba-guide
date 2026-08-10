@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""`./exam`과 `./shoot`을 한 자리에서 고르는 최상위 메뉴.
+"""`./exam`·`./shoot`·챕터 읽기를 한 자리에서 고르는 최상위 메뉴.
 
-두 러너를 감싸기만 한다 — 고르면 curses를 내리고 기존 `main()`에 그대로 넘기고,
+세 러너를 감싸기만 한다 — 고르면 curses를 내리고 기존 `main()`에 그대로 넘기고,
 끝나면 이 메뉴로 돌아온다. 기존 진입점은 그대로 살아 있다.
 
 하나의 curses 세션이 전체를 감쌀 수는 없다. `shoot`은 장애 주입 로그를 평문으로
@@ -21,7 +21,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import exam  # noqa: E402
 import shooting  # noqa: E402
-from tui import cwidth, pick  # noqa: E402
+import reading  # noqa: E402
+from tui import cwidth, pause_after_output, pick, pick_line  # noqa: E402
 
 # key   프로그램 안에서 쓰는 짧은 이름
 # title 메뉴에 보이는 이름
@@ -52,6 +53,7 @@ def shoot_scale():
 MODES = (
     Mode("exam", "학습 점검 (퀴즈/시험)", exam_scale, lambda: exam.main([])),
     Mode("shoot", "장애 대응 (실전 훈련)", shoot_scale, lambda: shooting.main([])),
+    Mode("read", "챕터 읽기", reading.read_scale, lambda: reading.main([])),
 )
 
 
@@ -70,11 +72,13 @@ def menu_labels():
 def run_mode(mode):
     """모드를 돌리고 **반드시** 메뉴로 돌아온다.
 
-    두 `main()`은 끝나는 방식이 다르다. `exam.main`은 SystemExit을 여러 곳에서
+    `main()`들은 끝나는 방식이 다르다. `exam.main`은 SystemExit을 여러 곳에서
     올리고(대상 없음·출제할 문항 없음·문제은행 없음 …), `shooting.main`은
     KeyboardInterrupt를 스스로 잡지 않는다 — 지금까지는 각 모듈의 `__main__`
     블록이 마지막 방어선이었고, 런처가 부르는 순간 그 방어선이 사라진다.
-    잡지 않으면 모드 하나가 끝나는 것이 런처를 통째로 죽인다.
+    `reading.main`은 챕터→시험 핸드오프에서 `exam.main`을 그대로 부르고, 거기서
+    오르는 SystemExit을 자기도 잡지 않은 채 흘려보낸다 — 세 번째, 독립된
+    이유다. 잡지 않으면 모드 하나가 끝나는 것이 런처를 통째로 죽인다.
 
     **그 둘만 잡는다.** 예상 못 한 예외까지 삼키면 트레이스백이 사라져 버그를
     고칠 수 없게 된다.
@@ -95,54 +99,21 @@ def run_mode(mode):
 def pause_after_mode():
     """모드가 남긴 평문 출력을 메뉴가 곧바로 지우지 못하게 한 번 멈춘다.
 
-    tty에서만 멈춘다. `choose_menu`가 tty면 다음 프레임에 `curses.wrapper`→
-    `tui.pick()`을 열고 `stdscr.erase()`부터 하므로, 방금 `run_mode`가 평문으로
-    찍은 것(예: exam이 SystemExit으로 올린 "출제할 문항이 없습니다" 같은 사유,
-    shoot이 curses를 내린 뒤 찍는 등급표·후일담·`./exam` 제안)이 한 프레임도
-    못 읽히고 사라진다.
-
-    비-tty(파이프)에서는 폴백 메뉴도 평문이라 지워질 것이 없고, 여기서
-    `input()`을 부르면 다음 입력 줄을 삼켜 파이프로 돌리는 실행(테스트 포함)이
-    깨지므로 멈추지 않는다.
-
-    `EOFError`·`KeyboardInterrupt`도 삼킨다 — 여기서 새면 `run_mode`가 애써
-    격리해 둔 것이 무의미해진다.
+    실제 tty 가드·멈춤 로직은 `tui.pause_after_output()`에 있다. `reading`도
+    챕터→시험 핸드오프 뒤 다음 챕터 선택 화면으로 돌아가며 같은 함정(다음
+    curses 프레임의 `erase()`가 방금 찍힌 평문을 한 프레임도 못 읽고 지움)을
+    밟아서, `guide`만의 것으로 남겨 둘 수 없었다 — `pick_line`이 같은 이유로
+    `tui`에 모인 전례를 따른다. 이 얇은 래퍼를 남기는 이유는 `main()`이
+    `run_mode` 바로 뒤에서 부르는 배선을 이 모듈 안에서 그대로 읽을 수 있게
+    하기 위해서다.
     """
-    if not (sys.stdin.isatty() and sys.stdout.isatty()):
-        return
-    try:
-        input("\n계속하려면 Enter를 누르세요...")
-    except (EOFError, KeyboardInterrupt):
-        pass
-
-
-def choose_line(labels, prompt=input):
-    """평문 폴백 → 고른 인덱스(취소면 None).
-
-    `pick()`은 curses를 요구하므로 파이프로 돌리면 쓸 수 없다. 같은 모양이
-    `exam._pick_line`과 `shooting._choose_stage_line`에도 있지만, 셋을 합치려면
-    `CLAUDE.md`가 손대지 말라고 못박은 `exam.py`를 건드려야 해서 여기 따로 둔다.
-    """
-    print("\n무엇을 할까요\n")
-    for i, label in enumerate(labels, 1):
-        print(f"  {i}) {label}")
-    print()
-    while True:
-        try:
-            raw = prompt("번호 (q=종료): ").strip()
-        except (EOFError, KeyboardInterrupt):
-            return None
-        if raw in ("q", "Q"):
-            return None
-        if raw.isdigit() and 1 <= int(raw) <= len(labels):
-            return int(raw) - 1
-        print("잘못된 입력입니다.")
+    pause_after_output()
 
 
 def choose_menu(labels):
     """최상위 메뉴 → 고른 인덱스(종료면 None). tty가 아니면 평문으로 묻는다."""
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
-        return choose_line(labels)
+        return pick_line("무엇을 할까요", labels)
     import curses
 
     def _driver(stdscr):
@@ -162,7 +133,7 @@ def main(argv=None):
     """
     argparse.ArgumentParser(
         prog="guide",
-        description="DBA 학습 가이드 — 학습 점검과 장애 대응을 한 자리에서"
+        description="DBA 학습 가이드 — 챕터 읽기·학습 점검·장애 대응을 한 자리에서"
     ).parse_args(argv)
 
     while True:

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # DBA 학습 가이드 통합 실행 래퍼.
-# 학습 점검(./exam)과 장애 대응(./shoot)을 한 메뉴에서 골라 실행한다.
+# 챕터 읽기·학습 점검(./exam)·장애 대응(./shoot)을 한 메뉴에서 골라 실행한다.
 # 기존 ./exam · ./shoot 도 그대로 쓸 수 있다.
 set -euo pipefail
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

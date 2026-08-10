@@ -4,6 +4,8 @@
 실행:
     python3 -m unittest discover -s tests
 """
+import contextlib
+import io
 import json
 import sys
 import unittest
@@ -762,6 +764,45 @@ class RealBanksTest(unittest.TestCase):
                 data = json.loads(path.read_text(encoding="utf-8"))
                 self.assertEqual(exam.validate_bank(data), [],
                                  f"{path} 검증 실패")
+
+
+class PickLineContractTest(unittest.TestCase):
+    """`_pick_line` 은 취소를 **예외로** 알린다 — 그 흐름 위에 main 이 서 있다.
+
+    `main` 이 `KeyboardInterrupt` 를 잡아 "시험을 중단했습니다" 를 찍고 130 을
+    반환한다(`exam.py` 의 main). 공용 선택기로 바꾸면서 이 계약이 깨지면
+    취소가 조용히 0 번 항목 선택이 되거나 트레이스백이 된다.
+    """
+
+    def _with_input(self, typed):
+        it = iter(typed)
+        tui.input = lambda *a: next(it)
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                return exam._pick_line("제목", ["가", "나"])
+        finally:
+            del tui.input
+
+    def test_a_number_returns_its_index(self):
+        self.assertEqual(self._with_input(["2"]), 1)
+
+    def test_q_raises_keyboard_interrupt(self):
+        with self.assertRaises(KeyboardInterrupt):
+            self._with_input(["q"])
+
+    def test_eof_raises_keyboard_interrupt(self):
+        def eof(*a):
+            raise EOFError
+        tui.input = eof
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                with self.assertRaises(KeyboardInterrupt):
+                    exam._pick_line("제목", ["가"])
+        finally:
+            del tui.input
+
+    def test_a_bad_entry_asks_again(self):
+        self.assertEqual(self._with_input(["9", "x", "1"]), 0)
 
 
 if __name__ == "__main__":

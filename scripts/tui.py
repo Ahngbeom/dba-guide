@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""터미널 UI 공용 프리미티브 (표시 폭 계산·안전 출력·키 입력 정규화).
+"""터미널 UI 공용 프리미티브 (표시 폭 계산·안전 출력·키 입력 정규화·외부 도구 위임).
 
 `exam.py`(학습 점검 시험)와 `shooting.py`(장애 대응 게임)가 함께 쓴다.
 외부 의존성 없음(Python3 표준 라이브러리만 사용).
@@ -8,7 +8,12 @@
 호출자가 `curses` 모듈을 인자로 넘긴다. 덕분에 tty가 없는 환경(테스트 등)에서도
 폭 계산·줄바꿈 같은 순수 함수를 그대로 쓸 수 있다.
 """
+import os
 import re
+import shlex
+import shutil
+import subprocess
+import sys
 import unicodedata
 
 
@@ -418,3 +423,91 @@ def describe_key(curses, kind, val):
     except Exception:
         name = str(val)
     return f"{kind} + {name}"
+
+
+def pick_line(title, labels, ask=None):
+    """번호로 하나 고른다 → 고른 인덱스(취소면 None).
+
+    `pick()`의 평문 짝이다. curses를 쓸 수 없을 때(파이프·비-tty) 쓴다.
+
+    같은 모양이 러너 세 곳에 따로 있었고 네 번째가 생길 참이었다 — `pick()`이
+    여기 모인 이유가 정확히 그것이었는데(`CLAUDE.md`) 평문 짝만 남아 있었다.
+
+    입력 함수를 `ask`로 받는다. `prompt`라고 하면 `exam._pick_line(prompt,
+    labels)`의 첫 인자(제목)와 이름이 겹쳐 호출부가 읽히지 않는다. 기본값을
+    `input`으로 **박아 두지 않는 것**은 의도다 — 기본 인자는 def 시점에 한 번
+    평가되어 빌트인을 붙들므로, 그렇게 두면 `tui.input` 을 바꿔 넣는 테스트가
+    통하지 않는다. 호출 시점에 찾는다.
+
+    취소를 **None**으로 알린다. 예외로 알리던 호출부(`exam`)는 얇은 어댑터로
+    자기 계약을 지킨다 — 공용이 가장 단순한 계약을 갖는 편이 낫다.
+    """
+    ask = ask or input
+    print(f"\n{title}\n")
+    for i, label in enumerate(labels, 1):
+        print(f"  {i}) {label}")
+    print()
+    while True:
+        try:
+            raw = ask(f"번호 (1-{len(labels)}, q=종료): ").strip()
+        except (EOFError, KeyboardInterrupt):
+            return None
+        if raw in ("q", "Q"):
+            return None
+        if raw.isdigit() and 1 <= int(raw) <= len(labels):
+            return int(raw) - 1
+        print("잘못된 입력입니다.")
+
+
+# --------------------------------------------------------------------------- #
+# 평문 출력 보존 (curses 리프레시가 지우기 전에 한 번 멈춤)
+# --------------------------------------------------------------------------- #
+def pause_after_output():
+    """직전에 찍힌 평문 출력을 다음 curses 리프레시가 곧바로 지우지 못하게 멈춘다.
+
+    `guide`(메뉴로 복귀)와 `reading`(챕터→시험 핸드오프 뒤 다음 챕터 선택
+    화면으로 복귀)이 같은 함정을 밟는다: 다음 프레임에서 `curses.wrapper` →
+    `stdscr.erase()`가 열리기 때문에, 방금 평문으로 찍힌 것 — `exam.main`이
+    `SystemExit`에 실어 올린 사유, `KeyboardInterrupt`를 스스로 잡고 돌아오며
+    남긴 "시험을 중단했습니다.", `shoot`의 등급표·후일담, `$PAGER`도 `less`도
+    없을 때 그대로 print된 챕터 본문 — 이 한 프레임도 못 읽히고 사라진다.
+    `guide.pause_after_mode`가 처음 이 문제를 풀었고, `reading`이 같은 모양을
+    다시 필요로 하면서 여기로 옮겨 왔다(`pick_line`이 같은 이유로 여기 모인
+    전례를 따른다).
+
+    tty에서만 멈춘다. 비-tty(파이프)에서 `input()`을 부르면 다음 입력 줄을
+    삼켜 파이프 실행(테스트 포함)이 깨지므로 거기서는 멈추지 않는다.
+
+    `EOFError`·`KeyboardInterrupt`도 삼킨다 — 호출부가 애써 격리해 둔 것이
+    여기서 새면 무의미해진다.
+    """
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        return
+    try:
+        input("\n계속하려면 Enter를 누르세요...")
+    except (EOFError, KeyboardInterrupt):
+        pass
+
+
+# --------------------------------------------------------------------------- #
+# 외부 도구 위임
+# --------------------------------------------------------------------------- #
+def page_text(text):
+    """텍스트를 페이저로 넘긴다(curses 밖에서 호출).
+
+    뷰어를 curses로 만들지 않는다 — `less`가 스크롤·검색(`/`)을 이미 다 한다.
+    목록 UI조차 필요 없다: 이어 붙여 넘기면 끝이다.
+    """
+    pager = os.environ.get("PAGER") or ("less -R" if shutil.which("less")
+                                        else None)
+    if not pager:
+        print(text)
+        return 0
+    try:
+        proc = subprocess.Popen(shlex.split(pager), stdin=subprocess.PIPE,
+                                text=True)
+        proc.communicate(text)
+        return proc.returncode
+    except (OSError, KeyboardInterrupt):
+        print(text)
+        return 0
