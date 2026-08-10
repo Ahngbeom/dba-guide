@@ -16,7 +16,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import exam  # noqa: E402
 from filter_dbms import filter_lines  # noqa: E402
-from tui import page_text, pick, pick_line  # noqa: E402
+from tui import page_text, pause_after_output, pick, pick_line  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -148,6 +148,7 @@ def main(argv=None):
                     if dbms:
                         args += ["--dbms", dbms]
                     exam.main(args)
+                pause_after_output()
 
 
 if __name__ == "__main__":

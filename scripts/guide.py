@@ -22,7 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import exam  # noqa: E402
 import shooting  # noqa: E402
 import reading  # noqa: E402
-from tui import cwidth, pick, pick_line  # noqa: E402
+from tui import cwidth, pause_after_output, pick, pick_line  # noqa: E402
 
 # key   프로그램 안에서 쓰는 짧은 이름
 # title 메뉴에 보이는 이름
@@ -97,25 +97,15 @@ def run_mode(mode):
 def pause_after_mode():
     """모드가 남긴 평문 출력을 메뉴가 곧바로 지우지 못하게 한 번 멈춘다.
 
-    tty에서만 멈춘다. `choose_menu`가 tty면 다음 프레임에 `curses.wrapper`→
-    `tui.pick()`을 열고 `stdscr.erase()`부터 하므로, 방금 `run_mode`가 평문으로
-    찍은 것(예: exam이 SystemExit으로 올린 "출제할 문항이 없습니다" 같은 사유,
-    shoot이 curses를 내린 뒤 찍는 등급표·후일담·`./exam` 제안)이 한 프레임도
-    못 읽히고 사라진다.
-
-    비-tty(파이프)에서는 폴백 메뉴도 평문이라 지워질 것이 없고, 여기서
-    `input()`을 부르면 다음 입력 줄을 삼켜 파이프로 돌리는 실행(테스트 포함)이
-    깨지므로 멈추지 않는다.
-
-    `EOFError`·`KeyboardInterrupt`도 삼킨다 — 여기서 새면 `run_mode`가 애써
-    격리해 둔 것이 무의미해진다.
+    실제 tty 가드·멈춤 로직은 `tui.pause_after_output()`에 있다. `reading`도
+    챕터→시험 핸드오프 뒤 다음 챕터 선택 화면으로 돌아가며 같은 함정(다음
+    curses 프레임의 `erase()`가 방금 찍힌 평문을 한 프레임도 못 읽고 지움)을
+    밟아서, `guide`만의 것으로 남겨 둘 수 없었다 — `pick_line`이 같은 이유로
+    `tui`에 모인 전례를 따른다. 이 얇은 래퍼를 남기는 이유는 `main()`이
+    `run_mode` 바로 뒤에서 부르는 배선을 이 모듈 안에서 그대로 읽을 수 있게
+    하기 위해서다.
     """
-    if not (sys.stdin.isatty() and sys.stdout.isatty()):
-        return
-    try:
-        input("\n계속하려면 Enter를 누르세요...")
-    except (EOFError, KeyboardInterrupt):
-        pass
+    pause_after_output()
 
 
 def choose_menu(labels):

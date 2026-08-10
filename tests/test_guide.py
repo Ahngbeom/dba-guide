@@ -15,6 +15,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
 
 import guide  # noqa: E402
+import tui  # noqa: E402
 
 
 class ModeTableTest(unittest.TestCase):
@@ -163,6 +164,13 @@ class PauseAfterModeTest(unittest.TestCase):
     후일담)이 한 프레임도 못 읽히고 사라지므로, tty에서만 한 번 멈춰야 한다.
     비-tty(파이프)에서 멈추면 `input()`이 다음 입력 줄을 삼켜 파이프 실행이
     깨지므로, 거기서는 멈추면 안 된다.
+
+    실제 멈춤 로직은 `tui.pause_after_output()`으로 옮겨졌다(`reading`도 같은
+    함정을 겪어서 공용이 됐다) — `guide.pause_after_mode()`는 그 얇은 래퍼다.
+    그래서 여기서 patch하는 대상도 `guide.input`이 아니라 `tui.input`이다:
+    실제 `input()` 호출이 이제 `tui` 모듈 안에서 일어나기 때문이다. tty
+    판정은 여전히 전역 `sys.stdin`/`sys.stdout`을 보므로 `_patch_tty`는 그대로
+    유효하다.
     """
 
     def _patch_tty(self, is_tty):
@@ -177,22 +185,22 @@ class PauseAfterModeTest(unittest.TestCase):
     def test_it_does_not_pause_when_not_a_tty(self):
         restore = self._patch_tty(False)
         called = []
-        guide.input = lambda *a, **k: called.append(1)
+        tui.input = lambda *a, **k: called.append(1)
         try:
             guide.pause_after_mode()
         finally:
-            del guide.input
+            del tui.input
             restore()
         self.assertEqual(called, [])
 
     def test_it_pauses_when_a_tty(self):
         restore = self._patch_tty(True)
         called = []
-        guide.input = lambda *a, **k: called.append(1)
+        tui.input = lambda *a, **k: called.append(1)
         try:
             guide.pause_after_mode()
         finally:
-            del guide.input
+            del tui.input
             restore()
         self.assertEqual(called, [1])
 
@@ -202,10 +210,10 @@ class PauseAfterModeTest(unittest.TestCase):
             for exc in (EOFError, KeyboardInterrupt):
                 def boom(*a, exc=exc, **k):
                     raise exc
-                guide.input = boom
+                tui.input = boom
                 guide.pause_after_mode()  # 예외 없이 돌아와야 한다
         finally:
-            del guide.input
+            del tui.input
             restore()
 
     def test_main_pauses_after_each_mode_but_not_after_quitting(self):

@@ -13,6 +13,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
 import unicodedata
 
 
@@ -456,6 +457,36 @@ def pick_line(title, labels, ask=None):
         if raw.isdigit() and 1 <= int(raw) <= len(labels):
             return int(raw) - 1
         print("잘못된 입력입니다.")
+
+
+# --------------------------------------------------------------------------- #
+# 평문 출력 보존 (curses 리프레시가 지우기 전에 한 번 멈춤)
+# --------------------------------------------------------------------------- #
+def pause_after_output():
+    """직전에 찍힌 평문 출력을 다음 curses 리프레시가 곧바로 지우지 못하게 멈춘다.
+
+    `guide`(메뉴로 복귀)와 `reading`(챕터→시험 핸드오프 뒤 다음 챕터 선택
+    화면으로 복귀)이 같은 함정을 밟는다: 다음 프레임에서 `curses.wrapper` →
+    `stdscr.erase()`가 열리기 때문에, 방금 평문으로 찍힌 것 — `exam.main`이
+    `SystemExit`에 실어 올린 사유, `KeyboardInterrupt`를 스스로 잡고 돌아오며
+    남긴 "시험을 중단했습니다.", `shoot`의 등급표·후일담, `$PAGER`도 `less`도
+    없을 때 그대로 print된 챕터 본문 — 이 한 프레임도 못 읽히고 사라진다.
+    `guide.pause_after_mode`가 처음 이 문제를 풀었고, `reading`이 같은 모양을
+    다시 필요로 하면서 여기로 옮겨 왔다(`pick_line`이 같은 이유로 여기 모인
+    전례를 따른다).
+
+    tty에서만 멈춘다. 비-tty(파이프)에서 `input()`을 부르면 다음 입력 줄을
+    삼켜 파이프 실행(테스트 포함)이 깨지므로 거기서는 멈추지 않는다.
+
+    `EOFError`·`KeyboardInterrupt`도 삼킨다 — 호출부가 애써 격리해 둔 것이
+    여기서 새면 무의미해진다.
+    """
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        return
+    try:
+        input("\n계속하려면 Enter를 누르세요...")
+    except (EOFError, KeyboardInterrupt):
+        pass
 
 
 # --------------------------------------------------------------------------- #
