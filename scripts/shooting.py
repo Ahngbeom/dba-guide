@@ -44,8 +44,8 @@ NOTES_DIR = PROGRESS_DIR / "notes"                # 포스트모템 노트(비�
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from tui import (  # noqa: E402
-    bar, cwidth, is_affirmative, is_backspace, is_enter, is_idle, key_char, pick,
-    put, read_key, wrap,
+    bar, cwidth, is_affirmative, is_backspace, is_enter, is_idle, key_char,
+    page_text, pick, put, read_key, wrap,
 )
 from exam import grade_mcq, grade_short, shuffle_choices  # noqa: E402
 
@@ -1450,27 +1450,6 @@ def notes_text(paths):
         except OSError as e:
             body.append(f"(읽을 수 없습니다: {e})")
     return "\n\n".join(body)
-
-
-def page_text(text):
-    """텍스트를 페이저로 넘긴다(curses 밖에서 호출).
-
-    뷰어를 curses로 만들지 않는다 — `less`가 스크롤·검색(`/`)을 이미 다 한다.
-    목록 UI조차 필요 없다: 이어 붙여 넘기면 끝이다.
-    """
-    pager = os.environ.get("PAGER") or ("less -R" if shutil.which("less")
-                                        else None)
-    if not pager:
-        print(text)
-        return 0
-    try:
-        proc = subprocess.Popen(shlex.split(pager), stdin=subprocess.PIPE,
-                                text=True)
-        proc.communicate(text)
-        return proc.returncode
-    except (OSError, KeyboardInterrupt):
-        print(text)
-        return 0
 
 
 def open_notes_pager(stdscr, curses, paths):

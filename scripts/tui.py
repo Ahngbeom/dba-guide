@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""터미널 UI 공용 프리미티브 (표시 폭 계산·안전 출력·키 입력 정규화).
+"""터미널 UI 공용 프리미티브 (표시 폭 계산·안전 출력·키 입력 정규화·외부 도구 위임).
 
 `exam.py`(학습 점검 시험)와 `shooting.py`(장애 대응 게임)가 함께 쓴다.
 외부 의존성 없음(Python3 표준 라이브러리만 사용).
@@ -8,7 +8,11 @@
 호출자가 `curses` 모듈을 인자로 넘긴다. 덕분에 tty가 없는 환경(테스트 등)에서도
 폭 계산·줄바꿈 같은 순수 함수를 그대로 쓸 수 있다.
 """
+import os
 import re
+import shlex
+import shutil
+import subprocess
 import unicodedata
 
 
@@ -418,3 +422,27 @@ def describe_key(curses, kind, val):
     except Exception:
         name = str(val)
     return f"{kind} + {name}"
+
+
+# --------------------------------------------------------------------------- #
+# 외부 도구 위임
+# --------------------------------------------------------------------------- #
+def page_text(text):
+    """텍스트를 페이저로 넘긴다(curses 밖에서 호출).
+
+    뷰어를 curses로 만들지 않는다 — `less`가 스크롤·검색(`/`)을 이미 다 한다.
+    목록 UI조차 필요 없다: 이어 붙여 넘기면 끝이다.
+    """
+    pager = os.environ.get("PAGER") or ("less -R" if shutil.which("less")
+                                        else None)
+    if not pager:
+        print(text)
+        return 0
+    try:
+        proc = subprocess.Popen(shlex.split(pager), stdin=subprocess.PIPE,
+                                text=True)
+        proc.communicate(text)
+        return proc.returncode
+    except (OSError, KeyboardInterrupt):
+        print(text)
+        return 0
