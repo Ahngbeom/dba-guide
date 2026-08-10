@@ -289,7 +289,7 @@ class LauncherTest(unittest.TestCase):
         self.assertIn("scripts/guide.py", body)
         self.assertIn("#!/usr/bin/env bash", body)
 
-    def test_it_runs_and_offers_both_modes(self):
+    def test_it_runs_and_offers_all_three_modes(self):
         """실제로 실행해 메뉴가 뜨는지 본다 — 파이프라 평문 폴백으로 돈다."""
         import subprocess
         p = subprocess.run([str(REPO_ROOT / "guide")], input="q\n",
@@ -297,6 +297,7 @@ class LauncherTest(unittest.TestCase):
         self.assertEqual(p.returncode, 0, p.stderr)
         self.assertIn("학습 점검", p.stdout)
         self.assertIn("장애 대응", p.stdout)
+        self.assertIn("챕터 읽기", p.stdout)
 
     def test_the_docs_mention_it(self):
         for name in ("README.md", "CLAUDE.md"):
