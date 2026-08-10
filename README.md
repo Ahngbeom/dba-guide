@@ -102,7 +102,15 @@ curl -fsSL https://raw.githubusercontent.com/Ahngbeom/dba-guide/main/install.sh 
 
 같은 명령을 다시 실행하면 최신 릴리스로 **업데이트**된다. 제거는
 `… | bash -s -- --uninstall`이며, 이때 학습 기록(시험 결과·정리 노트)은 남는다.
-기록까지 지우려면 `--purge`를 덧붙인다.
+
+기록까지 지우는 `--purge`는 **파이프로 실행할 수 없다.** 지우기 전에 확인을 받는데,
+파이프에서는 표준 입력이 curl이라 답을 받을 방법이 없기 때문이다. 스크립트를
+내려받아 직접 실행한다.
+
+```bash
+curl -fsSL -o install.sh https://raw.githubusercontent.com/Ahngbeom/dba-guide/main/install.sh
+bash install.sh --uninstall --purge
+```
 
 스크립트를 먼저 읽고 실행하고 싶다면 두 단계로 나눠도 된다.
 
