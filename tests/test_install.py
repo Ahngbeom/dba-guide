@@ -190,3 +190,38 @@ class UpdateTest(InstallerTestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual(self.head_tag(), "v1.1.0")
         self.assertTrue((self.install_dir / "MEMO.txt").exists())
+
+
+class GuardTest(InstallerTestCase):
+    """자기가 만들지 않은 것을 지우거나 덮지 않는다."""
+
+    def test_existing_plain_file_named_guide_blocks_and_survives(self):
+        self.tag("v1.0.0")
+        self.bin_dir.mkdir(parents=True)
+        victim = self.bin_dir / "guide"
+        victim.write_text("남의 스크립트\n")
+        r = self.run_installer()
+        self.assertEqual(r.returncode, 1)
+        self.assertIn(str(victim), r.stderr)
+        self.assertFalse(victim.is_symlink())
+        self.assertEqual(victim.read_text(), "남의 스크립트\n")
+
+    def test_all_conflicts_are_reported_at_once(self):
+        """하나씩 죽으면 사용자가 같은 실패를 세 번 겪는다."""
+        self.tag("v1.0.0")
+        self.bin_dir.mkdir(parents=True)
+        for name in ("guide", "exam", "shoot"):
+            (self.bin_dir / name).write_text("남의 것\n")
+        r = self.run_installer()
+        self.assertEqual(r.returncode, 1)
+        for name in ("guide", "exam", "shoot"):
+            self.assertIn(str(self.bin_dir / name), r.stderr)
+
+    def test_non_git_directory_at_install_path_is_a_hard_stop(self):
+        self.tag("v1.0.0")
+        self.install_dir.mkdir(parents=True)
+        (self.install_dir / "중요.txt").write_text("남의 자료\n")
+        r = self.run_installer()
+        self.assertEqual(r.returncode, 1)
+        self.assertIn(str(self.install_dir), r.stderr)
+        self.assertTrue((self.install_dir / "중요.txt").exists())

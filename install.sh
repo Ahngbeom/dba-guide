@@ -114,6 +114,10 @@ install_managed() {
     info "저장소를 내려받습니다 → $INSTALL_DIR"
     mkdir -p "$(dirname "$INSTALL_DIR")"
     git clone --quiet "$REPO_URL" "$INSTALL_DIR"
+  elif ! git -C "$INSTALL_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    die "$INSTALL_DIR 에 git 저장소가 아닌 내용이 있습니다." \
+        "  이 스크립트는 자기가 만들지 않은 디렉터리를 지우지 않습니다." \
+        "  직접 확인하고 치운 뒤 다시 실행하세요."
   else
     git -C "$INSTALL_DIR" fetch --quiet --tags origin
   fi
