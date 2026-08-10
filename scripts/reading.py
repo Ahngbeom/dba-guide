@@ -50,14 +50,17 @@ def chapter_text(rel, dbms=None):
     읽기 모드로 보는 것이 조용히 갈라진다.
 
     읽을 수 없는 파일은 예외로 죽지 않고 그 사실을 본문 자리에 적는다 —
-    메뉴로 돌아갈 수 있어야 한다.
+    메뉴로 돌아갈 수 있어야 한다. `filter_lines` 는 마커 불균형·마커 미종료·
+    닫히지 않은 코드 펜스에서 `ValueError` 를 올린다(잘못된 인코딩이면
+    `UnicodeDecodeError` 도 `ValueError` 의 하위 클래스로 여기 걸린다) —
+    `OSError` 만 잡으면 이 경로들이 그대로 새어 나간다.
     """
     try:
         lines = (REPO_ROOT / rel).read_text(encoding="utf-8").splitlines(True)
-    except OSError as e:
+        if dbms:
+            lines = filter_lines(lines, dbms)
+    except (OSError, ValueError) as e:
         return f"{rel} 을(를) 읽을 수 없습니다: {e}\n"
-    if dbms:
-        lines = filter_lines(lines, dbms)
     return "".join(lines)
 
 
@@ -83,14 +86,17 @@ def read_chapter(rel, dbms=None):
     page_text(chapter_text(rel, dbms))
 
 
-def offer_exam(rel, ask=input):
+def offer_exam(rel, bank, ask=input):
     """읽은 챕터의 시험을 권한다 → 하겠다고 했는가.
+
+    `bank`(챕터→문제은행 매핑)는 호출부가 이미 `exam.exam_bank_for(rel)`로
+    구해 둔 것을 받는다 — 여기서 다시 구하면 같은 챕터에 대해 같은 조회를
+    두 번(핸드오프에서 또 한 번) 하게 된다.
 
     은행이 없는 챕터(개요·치트시트·부록)에서는 **묻지 않는다** — '예'를 받아도
     갈 곳이 없다. 비-tty 에서도 묻지 않는다: `input()` 이 다음 입력 줄을 삼켜
     파이프 실행이 깨진다(`./guide` 에서 같은 함정을 밟았다).
     """
-    bank = exam.exam_bank_for(rel)
     if not bank or not (sys.stdin.isatty() and sys.stdout.isatty()):
         return False
     print(f"\n읽은 챕터: {rel}")
@@ -128,9 +134,20 @@ def main(argv=None):
                 if c_idx is None:
                     break                  # 티어 선택으로
                 rel = chapters[c_idx]
+                bank = exam.exam_bank_for(rel)
                 read_chapter(rel, dbms)
-                if offer_exam(rel):
-                    exam.main([exam.exam_bank_for(rel)])
+                if offer_exam(rel, bank):
+                    # `exam.main`은 대상 인자를 cwd 기준 상대경로로 받는다
+                    # (CLI 계약이라 `exam` 쪽에서 바꾸지 않는다) — 여기서는
+                    # `./guide`를 저장소 밖 cwd에서 띄운 경우에도 은행을 찾게
+                    # `REPO_ROOT` 기준 절대경로로 넘긴다. 고른 벤더도 함께
+                    # 넘기지 않으면 PostgreSQL 챕터를 읽고도 MySQL·Oracle
+                    # 문항까지 다 나온다 — `dbms`가 `None`("전체")이면 그대로
+                    # 생략해 `exam`이 스스로 묻게 한다.
+                    args = [str(exam.REPO_ROOT / bank)]
+                    if dbms:
+                        args += ["--dbms", dbms]
+                    exam.main(args)
 
 
 if __name__ == "__main__":

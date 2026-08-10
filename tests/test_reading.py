@@ -61,6 +61,22 @@ class ChapterTextTest(unittest.TestCase):
         text = reading.chapter_text("01-beginner/99-없는챕터.md")
         self.assertIn("읽을 수 없습니다", text)
 
+    def test_a_malformed_chapter_says_so_instead_of_crashing(self):
+        """`filter_lines`는 OSError가 아니라 ValueError를 올린다(예: 닫히지
+        않은 코드 펜스) — `chapter_text`가 OSError만 잡으면 이 경로가 그대로
+        새어 나가 메뉴로 돌아갈 수 없다."""
+        # 실제 티어 디렉터리 아래에 둬야 한다 — chapter_text는 rel을 REPO_ROOT
+        # 기준 상대경로로 읽는다.
+        rel = "01-beginner/_test-unclosed-code-fence.md"
+        path = REPO_ROOT / rel
+        self.assertFalse(path.exists(), "테스트용 파일이 이미 존재한다")
+        path.write_text("```sql\nSELECT 1;\n", encoding="utf-8")
+        try:
+            text = reading.chapter_text(rel, dbms="postgresql")
+        finally:
+            path.unlink()
+        self.assertIn("읽을 수 없습니다", text)
+
 
 class _TTYStringIO(io.StringIO):
     """`redirect_stdout` 이 붙인 스트림이 tty 로 보여야 `offer_exam` 이 실제로
@@ -81,6 +97,16 @@ class ExamOfferTest(unittest.TestCase):
     WITH_BANK = "02-intermediate/01-transaction-and-locking.md"
     NO_BANK = "01-beginner/07-commands-cheatsheet.md"
 
+    def setUp(self):
+        # `offer_exam` 은 이제 은행 경로를 스스로 구하지 않고 호출부가 넘긴
+        # `bank` 를 그대로 쓴다(핸드오프에서 같은 조회를 두 번 하지 않도록
+        # `reading.main` 이 한 번만 구해 재사용한다) — 테스트도 같은 계약을
+        # 따라 실제 매핑을 미리 구해 둔다.
+        self.with_bank = reading.exam.exam_bank_for(self.WITH_BANK)
+        self.no_bank = reading.exam.exam_bank_for(self.NO_BANK)
+        self.assertIsNotNone(self.with_bank, "고정값 자체가 은행 없는 챕터다")
+        self.assertIsNone(self.no_bank, "고정값 자체가 은행 있는 챕터다")
+
     @contextlib.contextmanager
     def _stdin_as_tty(self):
         """`sys.stdin.isatty()` 가 True 를 돌려주게 한다.
@@ -99,33 +125,40 @@ class ExamOfferTest(unittest.TestCase):
             sys.stdin.isatty = real
 
     def test_it_does_not_ask_when_there_is_no_bank(self):
+        """은행 부재가 묻지 않는 **유일한** 이유임을 증명해야 한다 — tty
+        가드가 먼저 걸리면 이 테스트는 `offer_exam`에서 `not bank or` 를
+        지워도 계속 통과해 버린다(실측: 이전 버전이 그랬다). 그래서 형제
+        테스트들과 같은 `_stdin_as_tty()`/`_TTYStringIO()` 로 tty처럼 보이게
+        고정한 채로, 그래도 묻지 않는지를 본다.
+        """
         asked = []
-        with contextlib.redirect_stdout(io.StringIO()):
-            got = reading.offer_exam(self.NO_BANK,
+        with self._stdin_as_tty(), contextlib.redirect_stdout(_TTYStringIO()):
+            got = reading.offer_exam(self.NO_BANK, self.no_bank,
                                      ask=lambda p: asked.append(p) or "y")
         self.assertFalse(got)
         self.assertEqual(asked, [])
 
     def test_yes_accepts(self):
         with self._stdin_as_tty(), contextlib.redirect_stdout(_TTYStringIO()):
-            self.assertTrue(reading.offer_exam(self.WITH_BANK,
+            self.assertTrue(reading.offer_exam(self.WITH_BANK, self.with_bank,
                                                ask=lambda _: "y"))
 
     def test_enter_accepts_because_the_default_is_yes(self):
         with self._stdin_as_tty(), contextlib.redirect_stdout(_TTYStringIO()):
-            self.assertTrue(reading.offer_exam(self.WITH_BANK,
+            self.assertTrue(reading.offer_exam(self.WITH_BANK, self.with_bank,
                                                ask=lambda _: ""))
 
     def test_n_declines(self):
         with self._stdin_as_tty(), contextlib.redirect_stdout(_TTYStringIO()):
-            self.assertFalse(reading.offer_exam(self.WITH_BANK,
+            self.assertFalse(reading.offer_exam(self.WITH_BANK, self.with_bank,
                                                 ask=lambda _: "n"))
 
     def test_closed_input_declines(self):
         def eof(_):
             raise EOFError
         with self._stdin_as_tty(), contextlib.redirect_stdout(_TTYStringIO()):
-            self.assertFalse(reading.offer_exam(self.WITH_BANK, ask=eof))
+            self.assertFalse(reading.offer_exam(self.WITH_BANK, self.with_bank,
+                                                ask=eof))
 
 
 class ReadChapterTest(unittest.TestCase):
@@ -159,7 +192,7 @@ class ReadingMainTest(unittest.TestCase):
                 for n in ("choose", "read_chapter", "offer_exam")}
         reading.choose = lambda title, labels: next(seq)
         reading.read_chapter = lambda rel, dbms=None: read.append((rel, dbms))
-        reading.offer_exam = lambda rel, ask=input: False
+        reading.offer_exam = lambda rel, bank, ask=input: False
         try:
             with contextlib.redirect_stdout(io.StringIO()):
                 yield read
@@ -180,6 +213,41 @@ class ReadingMainTest(unittest.TestCase):
         with self._flow([1, 0, 0]) as read:
             reading.main([])
         self.assertEqual(read[0][1], "postgresql")
+
+    def test_the_exam_handoff_uses_an_absolute_bank_path_and_forwards_dbms(self):
+        """Important 1 + 2 회귀.
+
+        전에는 `exam.main([exam.exam_bank_for(rel)])`처럼 cwd 기준 상대경로만
+        넘기고 고른 DBMS는 흘렸다 — `./guide`를 저장소 밖 cwd에서 띄우면 은행을
+        못 찾고("대상을 찾을 수 없습니다: exams/...") PostgreSQL 챕터를 읽고도
+        MySQL·Oracle 문항까지 다 나왔다. 이제 절대경로 + `--dbms`를 넘겨야
+        한다.
+        """
+        captured = {}
+        real = {n: getattr(reading, n)
+                for n in ("choose", "read_chapter", "offer_exam")}
+        real_exam_main = reading.exam.main
+        # 1=PostgreSQL, 1=02-intermediate, 1=그 티어의 두 번째 챕터
+        # (00-overview.md 다음, 정렬 순서상 01-transaction-and-locking.md =
+        # ExamOfferTest.WITH_BANK) → offer_exam이 "예"라고 답한다.
+        seq = iter([1, 1, 1] + [None] * 6)
+        reading.choose = lambda title, labels: next(seq)
+        reading.read_chapter = lambda rel, dbms=None: None
+        reading.offer_exam = lambda rel, bank, ask=input: True
+        reading.exam.main = lambda argv: captured.setdefault("argv", argv) or 0
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                reading.main([])
+        finally:
+            for n, fn in real.items():
+                setattr(reading, n, fn)
+            reading.exam.main = real_exam_main
+
+        argv = captured["argv"]
+        self.assertTrue(Path(argv[0]).is_absolute(), argv)
+        self.assertTrue(argv[0].startswith(str(REPO_ROOT)), argv)
+        self.assertTrue(argv[0].endswith(".json"), argv)
+        self.assertEqual(argv[1:], ["--dbms", "postgresql"], argv)
 
     def test_quitting_at_the_first_screen_reads_nothing(self):
         with self._flow([]) as read:
