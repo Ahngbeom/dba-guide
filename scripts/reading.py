@@ -59,3 +59,79 @@ def chapter_text(rel, dbms=None):
     if dbms:
         lines = filter_lines(lines, dbms)
     return "".join(lines)
+
+
+def choose(title, labels):
+    """세로 목록에서 하나 고른다 → 인덱스(뒤로/종료면 None).
+
+    tty면 공용 curses 선택기, 아니면 공용 평문 선택기. 둘 다 `tui` 에 있다.
+    """
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        return pick_line(title, labels)
+    import curses
+
+    def _driver(stdscr):
+        curses.curs_set(0)
+        return pick(stdscr, curses, title, labels,
+                    footer=" ↑↓ 또는 숫자 선택   Enter 선택   Esc/q 뒤로 ")
+
+    return curses.wrapper(_driver)
+
+
+def read_chapter(rel, dbms=None):
+    """본문을 `$PAGER` 로 넘긴다. curses 밖에서 부른다."""
+    page_text(chapter_text(rel, dbms))
+
+
+def offer_exam(rel, ask=input):
+    """읽은 챕터의 시험을 권한다 → 하겠다고 했는가.
+
+    은행이 없는 챕터(개요·치트시트·부록)에서는 **묻지 않는다** — '예'를 받아도
+    갈 곳이 없다. 비-tty 에서도 묻지 않는다: `input()` 이 다음 입력 줄을 삼켜
+    파이프 실행이 깨진다(`./guide` 에서 같은 함정을 밟았다).
+    """
+    bank = exam.exam_bank_for(rel)
+    if not bank or not (sys.stdin.isatty() and sys.__stdout__.isatty()):
+        return False
+    print(f"\n읽은 챕터: {rel}")
+    try:
+        answer = ask("이제 확인해 볼까요? [Y/n] ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        return False
+    return answer in ("", "y", "yes")
+
+
+def main(argv=None):
+    """DBMS → 티어 → 챕터 → 읽기 → 시험 제안. 각 화면에서 뒤로 갈 수 있다."""
+    argparse.ArgumentParser(
+        prog="reading", description="챕터 본문 읽기").parse_args(argv)
+
+    while True:
+        d_idx = choose("어느 DBMS 기준으로 볼까요",
+                       [label for label, _ in DBMS_CHOICES])
+        if d_idx is None:
+            return 0
+        dbms = DBMS_CHOICES[d_idx][1]
+
+        while True:
+            t_idx = choose("어느 티어를 볼까요",
+                           [f"{t}   {len(discover_chapters(t))}개"
+                            for t in TIERS])
+            if t_idx is None:
+                break                      # DBMS 선택으로
+            tier = TIERS[t_idx]
+
+            while True:
+                chapters = discover_chapters(tier)
+                c_idx = choose(f"{tier} — 어느 챕터를 읽을까요",
+                               [Path(c).name for c in chapters])
+                if c_idx is None:
+                    break                  # 티어 선택으로
+                rel = chapters[c_idx]
+                read_chapter(rel, dbms)
+                if offer_exam(rel):
+                    exam.main([exam.exam_bank_for(rel)])
+
+
+if __name__ == "__main__":
+    sys.exit(main())
