@@ -8,6 +8,7 @@
     python3 -m unittest discover -s tests
 """
 import os
+import pty
 import shutil
 import subprocess
 import tempfile
@@ -66,16 +67,40 @@ class InstallerTestCase(unittest.TestCase):
         git(self.origin, "add", "-A")
         git(self.origin, "commit", "--quiet", "-m", message)
 
-    def run_installer(self, *args, stdin=""):
+    def env(self):
         env = dict(os.environ)
         env["HOME"] = str(self.home)
         env["XDG_DATA_HOME"] = str(self.home / ".local" / "share")
         env["DBA_GUIDE_REPO_URL"] = self.origin.as_uri()
+        return env
+
+    def run_installer(self, *args, stdin=""):
         return subprocess.run(
             ["bash", str(self.script), *args],
-            env=env, cwd=str(self.tmp),
+            env=self.env(), cwd=str(self.tmp),
             input=stdin, capture_output=True, text=True,
         )
+
+    def run_installer_on_a_tty(self, *args, answer=""):
+        """진짜 tty를 stdin에 붙여 실행한다.
+
+        `install.sh`의 확인 프롬프트는 `[ -t 0 ]` 뒤에 있어, 파이프로는
+        영영 닿지 않는다 — 삭제 분기와 취소 분기를 실제로 밟으려면 pty가
+        필요하다. `pty`는 표준 라이브러리이고 네트워크를 쓰지 않는다.
+        답은 미리 써 둔다. 라인 디시플린이 자식이 읽을 때까지 들고 있다.
+        """
+        master, slave = pty.openpty()
+        try:
+            if answer:
+                os.write(master, answer.encode())
+            return subprocess.run(
+                ["bash", str(self.script), *args],
+                env=self.env(), cwd=str(self.tmp), stdin=slave,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            )
+        finally:
+            os.close(slave)
+            os.close(master)
 
     @property
     def install_dir(self):
@@ -435,5 +460,31 @@ class UninstallTest(InstallerTestCase):
         """무엇이 사라지는지 숫자로 보여준 뒤에 물어야 한다."""
         self._install_with_records()
         r = self.run_installer("--uninstall", "--purge")
+        self.assertEqual(r.returncode, 1)
         self.assertIn("시험 결과 2건", r.stdout)
         self.assertIn("정리 노트 1건", r.stdout)
+
+    def test_purge_answered_no_on_a_tty_keeps_everything(self):
+        """확인 분기는 tty가 있어야 밟힌다 — 취소 쪽."""
+        self._install_with_records()
+        r = self.run_installer_on_a_tty("--uninstall", "--purge", answer="n\n")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("취소했습니다", r.stdout)
+        self.assertTrue(self.install_dir.exists())
+        self.assertTrue((self.install_dir / ".exam-results" / "results.jsonl").exists())
+
+    def test_purge_answered_yes_on_a_tty_deletes_the_tree(self):
+        """확인 분기는 tty가 있어야 밟힌다 — 삭제 쪽."""
+        self._install_with_records()
+        r = self.run_installer_on_a_tty("--uninstall", "--purge", answer="y\n")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("삭제했습니다", r.stdout)
+        self.assertFalse(self.install_dir.exists())
+
+    def test_purge_treats_eof_as_a_cancel(self):
+        """Ctrl-D에 `read`가 실패한다. set -e 아래에서 말없이 죽으면 안 된다."""
+        self._install_with_records()
+        r = self.run_installer_on_a_tty("--uninstall", "--purge", answer="\x04")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("취소했습니다", r.stdout)
+        self.assertTrue(self.install_dir.exists())

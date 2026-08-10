@@ -260,7 +260,7 @@ uninstall() {
     n_notes="$(find "$INSTALL_DIR/.shooting-progress/notes" -type f -name '*.md' | wc -l | tr -d ' ')"
   fi
   info "" \
-       "$INSTALL_DIR 을 지웁니다." \
+       "$INSTALL_DIR 을 지우면" \
        "  시험 결과 ${n_exam}건 · 정리 노트 ${n_notes}건이 함께 사라집니다." \
        "  이 기록은 git에 올라가지 않아 다른 사본이 없습니다."
 
@@ -271,7 +271,12 @@ uninstall() {
   fi
 
   printf '정말 지울까요? [y/N] '
-  read -r answer
+  # EOF(Ctrl-D)면 read가 실패한다. set -e 아래에서 그냥 두면 아무 말 없이
+  # 1로 죽으므로, 취소와 똑같이 다룬다.
+  if ! read -r answer; then
+    info "" "취소했습니다."
+    return 0
+  fi
   case "$answer" in
     y|Y|yes|YES) rm -rf "$INSTALL_DIR"; info "삭제했습니다." ;;
     *) info "취소했습니다." ;;
