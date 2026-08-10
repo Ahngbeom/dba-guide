@@ -241,3 +241,53 @@ class GuardTest(InstallerTestCase):
         self.assertEqual(r.returncode, 1)
         self.assertIn(str(self.install_dir), r.stderr)
         self.assertTrue((self.install_dir / "중요.txt").exists())
+
+
+class InPlaceTest(InstallerTestCase):
+    """이미 클론한 저장소 안에서 실행한 경우."""
+
+    def _clone(self):
+        clone = self.tmp / "work"
+        subprocess.run(["git", "clone", "--quiet", self.origin.as_uri(), str(clone)],
+                       check=True, capture_output=True, text=True)
+        shutil.copy2(INSTALL_SH, clone / "install.sh")
+        return clone
+
+    def _run_in(self, clone):
+        env = dict(os.environ)
+        env["HOME"] = str(self.home)
+        env["XDG_DATA_HOME"] = str(self.home / ".local" / "share")
+        env["DBA_GUIDE_REPO_URL"] = self.origin.as_uri()
+        return subprocess.run(["bash", str(clone / "install.sh")],
+                              env=env, cwd=str(clone),
+                              input="", capture_output=True, text=True)
+
+    def test_links_to_the_clone_and_does_not_move_head(self):
+        self.tag("v1.0.0")
+        self.commit("unreleased work")
+        clone = self._clone()
+        before = git(clone, "rev-parse", "HEAD").strip()
+        r = self._run_in(clone)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(git(clone, "rev-parse", "HEAD").strip(), before)
+        self.assertEqual(os.readlink(self.bin_dir / "guide"), str(clone / "guide"))
+        self.assertFalse(self.install_dir.exists())
+
+    def test_a_git_repo_without_the_launchers_is_not_treated_as_in_place(self):
+        """이름만 같은 남의 저장소를 설치본으로 오인하면 안 된다."""
+        self.tag("v1.0.0")
+        stranger = self.tmp / "stranger"
+        stranger.mkdir()
+        git(stranger, "init", "--quiet")
+        shutil.copy2(INSTALL_SH, stranger / "install.sh")
+        env = dict(os.environ)
+        env["HOME"] = str(self.home)
+        env["XDG_DATA_HOME"] = str(self.home / ".local" / "share")
+        env["DBA_GUIDE_REPO_URL"] = self.origin.as_uri()
+        r = subprocess.run(["bash", str(stranger / "install.sh")],
+                           env=env, cwd=str(stranger),
+                           input="", capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(self.install_dir.exists())
+        self.assertEqual(os.readlink(self.bin_dir / "guide"),
+                         str(self.install_dir / "guide"))

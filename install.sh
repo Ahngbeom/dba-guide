@@ -165,6 +165,37 @@ install_managed() {
   report "$INSTALL_DIR" "$tag"
 }
 
+# 스크립트가 dba-guide 작업 트리 안에 놓여 있으면 그 최상위를 출력한다.
+# git 저장소인 것만으로는 부족하다 — 런처와 scripts/guide.py 를 함께 갖고
+# 있어야 우리 저장소로 본다. 이름만 같은 남의 저장소를 설치본으로 삼는
+# 사고를 막기 위해서다. 파이프 실행 시 BASH_SOURCE는 실재 경로가 아니라
+# 자연히 managed 로 떨어진다.
+#
+# 최상위 경로는 `git rev-parse --show-toplevel` 이 아니라 `is_repo_root` 로
+# 판별한 뒤 원래의 `$dir` 을 그대로 출력한다 — show-toplevel 은 항상 실제
+# 경로(symlink 해제)를 돌려주는데, macOS에서는 `$TMPDIR` 자체가 /private 아래
+# 심볼릭 링크라 논리 경로와 어긋난다. `is_repo_root` 는 양쪽을 `pwd -P` 로
+# 정규화해 비교만 할 뿐 값을 새로 만들어 내지 않으므로 이 문제가 없다.
+detect_inplace() {
+  src="${BASH_SOURCE[0]:-}"
+  [ -n "$src" ] && [ -f "$src" ] || return 1
+  dir="$(cd "$(dirname "$src")" && pwd)"
+  is_repo_root "$dir" || return 1
+  [ -f "$dir/guide" ] || return 1
+  [ -f "$dir/scripts/guide.py" ] || return 1
+  printf '%s\n' "$dir"
+}
+
+install_inplace() {
+  info "저장소 안에서 실행됐습니다 — 이 자리를 그대로 씁니다." \
+       "  $1" \
+       "  버전은 git으로 직접 관리하세요. 이 스크립트는 HEAD를 옮기지 않습니다." \
+       ""
+  link_launchers "$1"
+  ver="$(git -C "$1" describe --tags --always 2>/dev/null || echo '(버전 정보 없음)')"
+  report "$1" "$ver"
+}
+
 main() {
   mode="install"
   purge="no"
@@ -184,7 +215,11 @@ main() {
   fi
 
   check_prereqs
-  install_managed
+  if top="$(detect_inplace)"; then
+    install_inplace "$top"
+  else
+    install_managed
+  fi
 }
 
 main "$@"
