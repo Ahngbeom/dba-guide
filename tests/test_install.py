@@ -296,6 +296,31 @@ class GuardTest(InstallerTestCase):
             self.assertEqual(os.readlink(self.bin_dir / name),
                              str(self.install_dir / name))
 
+    def test_a_live_foreign_symlink_with_a_relative_target_blocks_and_survives(self):
+        """상대 경로를 가리키는, 멀쩡히 살아 있는 남의 링크.
+
+        `readlink`가 돌려준 상대 경로를 `[ -e ]`로 그대로 검사하면 설치기의
+        cwd를 기준으로 풀린다 — 링크 자신이 있는 디렉터리 기준이 아니다.
+        그러면 사용자 셸에서는 멀쩡히 열리는 링크가 "끊긴 링크"로 오판되어
+        `is_our_link`이 참을 돌려주고, 남의 링크가 우리 것으로 입양되어
+        덮어써진다. 우리가 만드는 링크는 항상 절대 경로이므로, 상대 경로
+        대상은 애초에 입양 대상이 아니어야 한다.
+        """
+        self.tag("v1.0.0")
+        elsewhere = self.home / ".local" / "elsewhere"
+        elsewhere.mkdir(parents=True)
+        (elsewhere / "guide").write_text("#!/bin/sh\necho 남의 guide\n")
+        self.bin_dir.mkdir(parents=True)
+        relative_target = "../elsewhere/guide"
+        (self.bin_dir / "guide").symlink_to(relative_target)
+        # 링크가 있는 자리(bin_dir) 기준으로는 살아 있다 — 설치기의 cwd
+        # 기준으로 잘못 풀면 끊긴 것처럼 보일 뿐이다.
+        self.assertTrue((self.bin_dir / "guide").exists())
+        r = self.run_installer()
+        self.assertEqual(r.returncode, 1)
+        self.assertIn(str(self.bin_dir / "guide"), r.stderr)
+        self.assertEqual(os.readlink(self.bin_dir / "guide"), relative_target)
+
     def test_non_git_directory_at_install_path_is_a_hard_stop(self):
         self.tag("v1.0.0")
         self.install_dir.mkdir(parents=True)

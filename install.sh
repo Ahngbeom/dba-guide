@@ -100,6 +100,11 @@ is_our_link() {
   [ -L "$1" ] || return 1
   target="$(readlink "$1")"
   [ "$(basename "$target")" = "$2" ] || return 1
+  # 상대 경로 대상은 호출자의 cwd를 기준으로 풀린다. 우리가 만드는 링크는
+  # 항상 절대 경로를 가리키므로, 상대 경로인데 존재하지 않는다고 해서
+  # 끊어진 링크로 단정하면 멀쩡히 살아 있는 남의 링크를 우리 것으로 오판할
+  # 수 있다.
+  case "$target" in /*) ;; *) return 1 ;; esac
   [ -e "$target" ] || return 0
   [ -f "$(dirname "$target")/scripts/guide.py" ]
 }
