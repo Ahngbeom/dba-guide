@@ -37,6 +37,98 @@ usage() {
 EOF
 }
 
+check_prereqs() {
+  have git || die "git이 필요합니다." \
+                  "  macOS:         xcode-select --install" \
+                  "  Debian/Ubuntu: sudo apt install git"
+  have python3 || die "python3가 필요합니다 (3.9 이상)."
+  if ! python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)'; then
+    die "python3 3.9 이상이 필요합니다. 현재: $(python3 -V 2>&1)"
+  fi
+  if ! have docker; then
+    info "경고: docker가 없습니다." \
+         "      챕터 읽기와 학습 점검은 그대로 쓸 수 있지만," \
+         "      장애 대응(shoot)은 로컬 Docker 랩이 필요합니다." \
+         ""
+  fi
+}
+
+# 정식 릴리스 태그 중 최신 하나. 없으면 아무것도 출력하지 않는다.
+# --sort=-v:refname 만으로는 프리릴리스가 위로 올 수 있어 패턴 필터가 필수다.
+latest_release_tag() {
+  git -C "$1" tag -l --sort=-v:refname \
+    | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+    | head -n 1 || true
+}
+
+# 이 링크가 우리가 만든 것인가 — 대상 파일명이 런처 이름이고,
+# 그 옆에 scripts/guide.py가 있으면 우리 설치본이다.
+is_our_link() {
+  [ -L "$1" ] || return 1
+  target="$(readlink "$1")"
+  [ "$(basename "$target")" = "$2" ] || return 1
+  [ -f "$(dirname "$target")/scripts/guide.py" ]
+}
+
+link_launchers() {
+  src="$1"
+  conflicts=""
+  for name in $LAUNCHERS; do
+    link="$BIN_DIR/$name"
+    if [ -e "$link" ] || [ -L "$link" ]; then
+      if ! is_our_link "$link" "$name"; then
+        conflicts="${conflicts}  ${link}
+"
+      fi
+    fi
+  done
+  if [ -n "$conflicts" ]; then
+    die "다음 이름이 이미 쓰이고 있어 링크를 만들지 못했습니다:" \
+        "$conflicts" \
+        "치우거나 이름을 바꾼 뒤 다시 실행하세요."
+  fi
+  mkdir -p "$BIN_DIR"
+  for name in $LAUNCHERS; do
+    ln -sfn "$src/$name" "$BIN_DIR/$name"
+  done
+}
+
+report() {
+  info "" \
+       "설치 완료 — $2" \
+       "  저장소: $1" \
+       "  명령:   guide · exam · shoot"
+  case ":${PATH}:" in
+    *":${BIN_DIR}:"*) ;;
+    *) info "" \
+            "${BIN_DIR} 이 PATH에 없습니다. 셸 설정에 다음 한 줄을 더하세요:" \
+            '  export PATH="$HOME/.local/bin:$PATH"' ;;
+  esac
+  info "" \
+       "시작하려면:            guide" \
+       "장애 대응 전 사전점검:  shoot doctor"
+}
+
+install_managed() {
+  if [ ! -d "$INSTALL_DIR" ] || [ -z "$(ls -A "$INSTALL_DIR" 2>/dev/null)" ]; then
+    info "저장소를 내려받습니다 → $INSTALL_DIR"
+    mkdir -p "$(dirname "$INSTALL_DIR")"
+    git clone --quiet "$REPO_URL" "$INSTALL_DIR"
+  else
+    git -C "$INSTALL_DIR" fetch --quiet --tags origin
+  fi
+
+  tag="$(latest_release_tag "$INSTALL_DIR")"
+  if [ -z "$tag" ]; then
+    die "정식 릴리스 태그를 찾지 못했습니다 — $REPO_URL" \
+        "  vX.Y.Z 형식의 태그가 하나도 없습니다."
+  fi
+
+  git -C "$INSTALL_DIR" checkout --quiet --detach "$tag"
+  link_launchers "$INSTALL_DIR"
+  report "$INSTALL_DIR" "$tag"
+}
+
 main() {
   mode="install"
   purge="no"
@@ -55,7 +147,8 @@ main() {
         "  제거하려면: install.sh --uninstall --purge"
   fi
 
-  die "아직 구현되지 않았습니다."
+  check_prereqs
+  install_managed
 }
 
 main "$@"

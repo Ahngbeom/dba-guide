@@ -109,3 +109,38 @@ class ArgumentTest(InstallerTestCase):
         self.assertEqual(r.returncode, 1)
         self.assertIn("--uninstall", r.stderr)
         self.assertFalse(self.install_dir.exists())
+
+
+class FreshInstallTest(InstallerTestCase):
+    """빈 상태에서의 첫 설치."""
+
+    def test_installs_latest_release_tag_and_links_three_launchers(self):
+        self.tag("v1.0.0")
+        r = self.run_installer()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.head_tag(), "v1.0.0")
+        for name in ("guide", "exam", "shoot"):
+            link = self.bin_dir / name
+            self.assertTrue(link.is_symlink(), f"{name} 링크가 없다")
+            self.assertEqual(os.readlink(link), str(self.install_dir / name))
+
+    def test_prerelease_tags_are_ignored(self):
+        """정렬만으로는 v9.9.9-rc.1이 위로 올 수 있다 — 패턴 필터가 있어야 한다."""
+        self.tag("v1.0.0")
+        self.commit("prerelease work")
+        self.tag("v9.9.9-rc.1")
+        r = self.run_installer()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.head_tag(), "v1.0.0")
+
+    def test_no_release_tag_is_a_hard_stop(self):
+        r = self.run_installer()
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("태그", r.stderr)
+
+    def test_reports_path_guidance_when_bin_dir_is_not_on_path(self):
+        self.tag("v1.0.0")
+        r = self.run_installer()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("PATH", r.stdout)
+        self.assertIn(str(self.bin_dir), r.stdout)
