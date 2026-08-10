@@ -291,3 +291,49 @@ class InPlaceTest(InstallerTestCase):
         self.assertTrue(self.install_dir.exists())
         self.assertEqual(os.readlink(self.bin_dir / "guide"),
                          str(self.install_dir / "guide"))
+
+
+class UninstallTest(InstallerTestCase):
+    """제거는 학습 기록을 지우지 않는다 — 어디에도 백업이 없는 유일본이다."""
+
+    def _install_with_records(self):
+        self.tag("v1.0.0")
+        self.assertEqual(self.run_installer().returncode, 0)
+        results = self.install_dir / ".exam-results"
+        results.mkdir()
+        (results / "results.jsonl").write_text('{"score": 1}\n{"score": 2}\n')
+        notes = self.install_dir / ".shooting-progress" / "notes" / "1-1"
+        notes.mkdir(parents=True)
+        (notes / "20260810-S.md").write_text("# 정리 노트\n")
+
+    def test_uninstall_removes_links_and_keeps_the_records(self):
+        self._install_with_records()
+        r = self.run_installer("--uninstall")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        for name in ("guide", "exam", "shoot"):
+            self.assertFalse((self.bin_dir / name).exists())
+            self.assertFalse((self.bin_dir / name).is_symlink())
+        self.assertTrue((self.install_dir / ".exam-results" / "results.jsonl").exists())
+
+    def test_uninstall_leaves_a_foreign_file_alone(self):
+        self._install_with_records()
+        (self.bin_dir / "exam").unlink()
+        (self.bin_dir / "exam").write_text("남의 것\n")
+        r = self.run_installer("--uninstall")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual((self.bin_dir / "exam").read_text(), "남의 것\n")
+
+    def test_purge_without_a_tty_refuses_to_delete(self):
+        """파이프 실행에서는 확인을 받을 수 없다. 그럴 땐 지우지 않는다."""
+        self._install_with_records()
+        r = self.run_installer("--uninstall", "--purge")
+        self.assertEqual(r.returncode, 1)
+        self.assertTrue(self.install_dir.exists())
+        self.assertIn("rm -rf", r.stderr)
+
+    def test_purge_counts_the_records_before_asking(self):
+        """무엇이 사라지는지 숫자로 보여준 뒤에 물어야 한다."""
+        self._install_with_records()
+        r = self.run_installer("--uninstall", "--purge")
+        self.assertIn("시험 결과 2건", r.stdout)
+        self.assertIn("정리 노트 1건", r.stdout)

@@ -196,6 +196,62 @@ install_inplace() {
   report "$1" "$ver"
 }
 
+uninstall() {
+  removed=0
+  for name in $LAUNCHERS; do
+    link="$BIN_DIR/$name"
+    if is_our_link "$link" "$name"; then
+      rm -f "$link"
+      removed=$((removed + 1))
+      info "링크 제거 — $link"
+    elif [ -e "$link" ] || [ -L "$link" ]; then
+      info "건너뜀 (우리가 만든 것이 아닙니다) — $link"
+    fi
+  done
+  if [ "$removed" -eq 0 ]; then
+    info "제거할 링크가 없습니다."
+  fi
+
+  if [ "$1" != "yes" ]; then
+    info "" \
+         "저장소는 남겨 뒀습니다 — $INSTALL_DIR" \
+         "  학습 기록(시험 결과·정리 노트)이 그 안에 있습니다." \
+         "  전부 지우려면: install.sh --uninstall --purge"
+    return 0
+  fi
+
+  if [ ! -d "$INSTALL_DIR" ]; then
+    info "지울 저장소가 없습니다."
+    return 0
+  fi
+
+  n_exam=0
+  if [ -f "$INSTALL_DIR/.exam-results/results.jsonl" ]; then
+    n_exam="$(wc -l < "$INSTALL_DIR/.exam-results/results.jsonl" | tr -d ' ')"
+  fi
+  n_notes=0
+  if [ -d "$INSTALL_DIR/.shooting-progress/notes" ]; then
+    n_notes="$(find "$INSTALL_DIR/.shooting-progress/notes" -type f -name '*.md' | wc -l | tr -d ' ')"
+  fi
+  info "" \
+       "$INSTALL_DIR 을 지웁니다." \
+       "  시험 결과 ${n_exam}건 · 정리 노트 ${n_notes}건이 함께 사라집니다." \
+       "  이 기록은 git에 올라가지 않아 다른 사본이 없습니다."
+
+  if [ ! -t 0 ]; then
+    die "" \
+        "비대화형 실행이라 확인을 받을 수 없어 멈췄습니다." \
+        "  정말 지우려면 직접 실행하세요: rm -rf \"$INSTALL_DIR\""
+  fi
+
+  printf '정말 지울까요? [y/N] '
+  read -r answer
+  case "$answer" in
+    y|Y|yes|YES) rm -rf "$INSTALL_DIR"; info "삭제했습니다." ;;
+    *) info "취소했습니다." ;;
+  esac
+}
+
 main() {
   mode="install"
   purge="no"
@@ -212,6 +268,11 @@ main() {
   if [ "$purge" = "yes" ] && [ "$mode" != "uninstall" ]; then
     die "--purge 는 --uninstall 과 함께만 쓸 수 있습니다." \
         "  제거하려면: install.sh --uninstall --purge"
+  fi
+
+  if [ "$mode" = "uninstall" ]; then
+    uninstall "$purge"
+    exit 0
   fi
 
   check_prereqs
