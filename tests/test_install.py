@@ -144,3 +144,49 @@ class FreshInstallTest(InstallerTestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("PATH", r.stdout)
         self.assertIn(str(self.bin_dir), r.stdout)
+
+
+class UpdateTest(InstallerTestCase):
+    """두 번째 실행부터의 동작."""
+
+    def test_rerun_is_idempotent(self):
+        self.tag("v1.0.0")
+        self.assertEqual(self.run_installer().returncode, 0)
+        r = self.run_installer()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("최신", r.stdout)
+        self.assertEqual(self.head_tag(), "v1.0.0")
+
+    def test_moves_to_a_newer_tag(self):
+        self.tag("v1.0.0")
+        self.assertEqual(self.run_installer().returncode, 0)
+        self.commit("next release")
+        self.tag("v1.1.0")
+        r = self.run_installer()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.head_tag(), "v1.1.0")
+
+    def test_local_modification_stops_the_update(self):
+        """설치본을 고쳐 둔 사람의 작업을 말없이 덮지 않는다."""
+        self.tag("v1.0.0")
+        self.assertEqual(self.run_installer().returncode, 0)
+        (self.install_dir / "guide").write_text("#!/usr/bin/env bash\necho mine\n")
+        self.commit("next release")
+        self.tag("v1.1.0")
+        r = self.run_installer()
+        self.assertEqual(r.returncode, 1)
+        self.assertIn("로컬 수정", r.stderr)
+        self.assertEqual(self.head_tag(), "v1.0.0")
+        self.assertIn("mine", (self.install_dir / "guide").read_text())
+
+    def test_untracked_files_do_not_block_the_update(self):
+        """학습 기록은 gitignore 대상이지만, 그 외 미추적 파일도 막지 않는다."""
+        self.tag("v1.0.0")
+        self.assertEqual(self.run_installer().returncode, 0)
+        (self.install_dir / "MEMO.txt").write_text("메모\n")
+        self.commit("next release")
+        self.tag("v1.1.0")
+        r = self.run_installer()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.head_tag(), "v1.1.0")
+        self.assertTrue((self.install_dir / "MEMO.txt").exists())

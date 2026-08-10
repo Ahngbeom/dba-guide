@@ -124,6 +124,23 @@ install_managed() {
         "  vX.Y.Z 형식의 태그가 하나도 없습니다."
   fi
 
+  current="$(git -C "$INSTALL_DIR" describe --tags --exact-match 2>/dev/null || true)"
+  if [ "$current" = "$tag" ]; then
+    info "이미 최신입니다 — $tag"
+    link_launchers "$INSTALL_DIR"
+    report "$INSTALL_DIR" "$tag"
+    return 0
+  fi
+
+  # 추적 파일의 수정만 본다. 미추적 파일(메모·학습 기록)은 업데이트를 막지 않는다.
+  dirty="$(git -C "$INSTALL_DIR" status --short --untracked-files=no)"
+  if [ -n "$dirty" ]; then
+    die "설치본에 로컬 수정이 있어 업데이트를 멈췄습니다 — $INSTALL_DIR" \
+        "$dirty" \
+        "  되돌리고 업데이트하려면: git -C \"$INSTALL_DIR\" restore ." \
+        "  그대로 두려면 업데이트하지 않아도 됩니다."
+  fi
+
   git -C "$INSTALL_DIR" checkout --quiet --detach "$tag"
   link_launchers "$INSTALL_DIR"
   report "$INSTALL_DIR" "$tag"
