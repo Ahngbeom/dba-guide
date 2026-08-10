@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""`./exam`과 `./shoot`을 한 자리에서 고르는 최상위 메뉴.
+"""`./exam`·`./shoot`·챕터 읽기를 한 자리에서 고르는 최상위 메뉴.
 
-두 러너를 감싸기만 한다 — 고르면 curses를 내리고 기존 `main()`에 그대로 넘기고,
+세 러너를 감싸기만 한다 — 고르면 curses를 내리고 기존 `main()`에 그대로 넘기고,
 끝나면 이 메뉴로 돌아온다. 기존 진입점은 그대로 살아 있다.
 
 하나의 curses 세션이 전체를 감쌀 수는 없다. `shoot`은 장애 주입 로그를 평문으로
@@ -72,11 +72,13 @@ def menu_labels():
 def run_mode(mode):
     """모드를 돌리고 **반드시** 메뉴로 돌아온다.
 
-    두 `main()`은 끝나는 방식이 다르다. `exam.main`은 SystemExit을 여러 곳에서
+    `main()`들은 끝나는 방식이 다르다. `exam.main`은 SystemExit을 여러 곳에서
     올리고(대상 없음·출제할 문항 없음·문제은행 없음 …), `shooting.main`은
     KeyboardInterrupt를 스스로 잡지 않는다 — 지금까지는 각 모듈의 `__main__`
     블록이 마지막 방어선이었고, 런처가 부르는 순간 그 방어선이 사라진다.
-    잡지 않으면 모드 하나가 끝나는 것이 런처를 통째로 죽인다.
+    `reading.main`은 챕터→시험 핸드오프에서 `exam.main`을 그대로 부르고, 거기서
+    오르는 SystemExit을 자기도 잡지 않은 채 흘려보낸다 — 세 번째, 독립된
+    이유다. 잡지 않으면 모드 하나가 끝나는 것이 런처를 통째로 죽인다.
 
     **그 둘만 잡는다.** 예상 못 한 예외까지 삼키면 트레이스백이 사라져 버그를
     고칠 수 없게 된다.
@@ -131,7 +133,7 @@ def main(argv=None):
     """
     argparse.ArgumentParser(
         prog="guide",
-        description="DBA 학습 가이드 — 학습 점검과 장애 대응을 한 자리에서"
+        description="DBA 학습 가이드 — 챕터 읽기·학습 점검·장애 대응을 한 자리에서"
     ).parse_args(argv)
 
     while True:
