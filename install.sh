@@ -239,16 +239,33 @@ uninstall() {
   fi
 
   if [ "$1" != "yes" ]; then
-    info "" \
-         "저장소는 남겨 뒀습니다 — $INSTALL_DIR" \
-         "  학습 기록(시험 결과·정리 노트)이 그 안에 있습니다." \
-         "  전부 지우려면: install.sh --uninstall --purge"
+    if [ -d "$INSTALL_DIR" ]; then
+      info "" \
+           "저장소는 남겨 뒀습니다 — $INSTALL_DIR" \
+           "  학습 기록(시험 결과·정리 노트)이 그 안에 있습니다." \
+           "  전부 지우려면: install.sh --uninstall --purge"
+    else
+      # in-place 설치였다면 이 경로는 만들어진 적이 없다. 없는 디렉터리를
+      # 학습 기록이 있는 곳이라고 알리면 사용자가 엉뚱한 데를 찾는다.
+      info "" \
+           "설치 디렉터리가 없습니다 — $INSTALL_DIR" \
+           "  저장소 안에서 설치했다면 학습 기록은 그 클론 안에 그대로 있습니다."
+    fi
     return 0
   fi
 
   if [ ! -d "$INSTALL_DIR" ]; then
     info "지울 저장소가 없습니다."
     return 0
+  fi
+
+  # 설치 경로가 우리 설치본일 때만 지운다. 이 검사가 없으면 설치한 적 없는
+  # 사람의 자료를 "시험 결과 0건"이라는 안심시키는 숫자와 함께 날린다.
+  if ! is_our_install "$INSTALL_DIR"; then
+    die "" \
+        "$INSTALL_DIR 이 이 학습서의 설치본이 아니라 지우지 않았습니다." \
+        "  이 스크립트는 자기가 만들지 않은 디렉터리를 지우지 않습니다." \
+        "  내용을 직접 확인하고 지우세요: rm -rf \"$INSTALL_DIR\""
   fi
 
   n_exam=0

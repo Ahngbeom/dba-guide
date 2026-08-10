@@ -448,6 +448,14 @@ class UninstallTest(InstallerTestCase):
         self.assertNotIn("건너뜀", r.stdout)
         self.assertFalse((self.bin_dir / "exam").is_symlink())
 
+    def test_uninstall_does_not_name_an_install_dir_that_was_never_created(self):
+        """in-place 설치였다면 이 경로는 만들어진 적이 없다."""
+        self.assertFalse(self.install_dir.exists())
+        r = self.run_installer("--uninstall")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("그 안에 있습니다", r.stdout)
+        self.assertIn("설치 디렉터리가 없습니다", r.stdout)
+
     def test_purge_without_a_tty_refuses_to_delete(self):
         """파이프 실행에서는 확인을 받을 수 없다. 그럴 땐 지우지 않는다."""
         self._install_with_records()
@@ -463,6 +471,20 @@ class UninstallTest(InstallerTestCase):
         self.assertEqual(r.returncode, 1)
         self.assertIn("시험 결과 2건", r.stdout)
         self.assertIn("정리 노트 1건", r.stdout)
+
+    def test_purge_refuses_a_directory_it_did_not_create(self):
+        """설치한 적 없는 사람의 자료가 그 경로에 있는 경우.
+
+        개수를 세기 전에 막아야 한다. "시험 결과 0건"은 지워도 잃을 게 없다는
+        뜻으로 읽히는데, 가드가 필요한 상황이 바로 그 경우다.
+        """
+        self.tag("v1.0.0")
+        self.install_dir.mkdir(parents=True)
+        (self.install_dir / "중요.txt").write_text("남의 자료\n")
+        r = self.run_installer_on_a_tty("--uninstall", "--purge", answer="y\n")
+        self.assertEqual(r.returncode, 1)
+        self.assertNotIn("시험 결과", r.stdout)
+        self.assertTrue((self.install_dir / "중요.txt").exists())
 
     def test_purge_answered_no_on_a_tty_keeps_everything(self):
         """확인 분기는 tty가 있어야 밟힌다 — 취소 쪽."""
