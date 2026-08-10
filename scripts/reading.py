@@ -91,7 +91,7 @@ def offer_exam(rel, ask=input):
     파이프 실행이 깨진다(`./guide` 에서 같은 함정을 밟았다).
     """
     bank = exam.exam_bank_for(rel)
-    if not bank or not (sys.stdin.isatty() and sys.__stdout__.isatty()):
+    if not bank or not (sys.stdin.isatty() and sys.stdout.isatty()):
         return False
     print(f"\n읽은 챕터: {rel}")
     try:

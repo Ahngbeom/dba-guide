@@ -62,6 +62,14 @@ class ChapterTextTest(unittest.TestCase):
         self.assertIn("읽을 수 없습니다", text)
 
 
+class _TTYStringIO(io.StringIO):
+    """`redirect_stdout` 이 붙인 스트림이 tty 로 보여야 `offer_exam` 이 실제로
+    `ask()` 까지 간다."""
+
+    def isatty(self):
+        return True
+
+
 class ExamOfferTest(unittest.TestCase):
     """은행이 있는 챕터에서만 묻는다.
 
@@ -75,24 +83,20 @@ class ExamOfferTest(unittest.TestCase):
 
     @contextlib.contextmanager
     def _stdin_as_tty(self):
-        """`sys.stdin.isatty()`/`sys.__stdout__.isatty()` 가 True 를 돌려주게 한다.
+        """`sys.stdin.isatty()` 가 True 를 돌려주게 한다.
 
-        `offer_exam` 은 (`contextlib.redirect_stdout` 에 흔들리지 않도록)
-        `sys.__stdout__.isatty()` 와 `sys.stdin.isatty()` 를 본다. 파이프로
-        돌리는 자동화 실행 하네스에서는 프로세스 자체가 tty 에 붙어 있지 않아
-        둘 다 원래 False 라, `ask` 가 불리기도 전에 짧게 끝나 버려서 이
-        테스트들이 검증하려는 y/Enter/n/EOF 분기를 타지 못한다. 두 값을
-        하네스와 무관하게 고정해야 이 테스트가 실제 코드 경로를 결정적으로
-        검증한다.
+        `offer_exam` 은 `sys.stdin.isatty()` 도 함께 본다. 파이프로 돌리는
+        자동화 실행 하네스에서는 프로세스 자체가 tty 에 붙어 있지 않아 이게
+        원래 False 라, `ask` 가 불리기도 전에 짧게 끝나 버려서 이 테스트들이
+        검증하려는 y/Enter/n/EOF 분기를 타지 못한다. 하네스와 무관하게
+        고정해야 이 테스트가 실제 코드 경로를 결정적으로 검증한다.
         """
-        real_in, real_out = sys.stdin.isatty, sys.__stdout__.isatty
+        real = sys.stdin.isatty
         sys.stdin.isatty = lambda: True
-        sys.__stdout__.isatty = lambda: True
         try:
             yield
         finally:
-            sys.stdin.isatty = real_in
-            sys.__stdout__.isatty = real_out
+            sys.stdin.isatty = real
 
     def test_it_does_not_ask_when_there_is_no_bank(self):
         asked = []
@@ -103,24 +107,24 @@ class ExamOfferTest(unittest.TestCase):
         self.assertEqual(asked, [])
 
     def test_yes_accepts(self):
-        with self._stdin_as_tty(), contextlib.redirect_stdout(io.StringIO()):
+        with self._stdin_as_tty(), contextlib.redirect_stdout(_TTYStringIO()):
             self.assertTrue(reading.offer_exam(self.WITH_BANK,
                                                ask=lambda _: "y"))
 
     def test_enter_accepts_because_the_default_is_yes(self):
-        with self._stdin_as_tty(), contextlib.redirect_stdout(io.StringIO()):
+        with self._stdin_as_tty(), contextlib.redirect_stdout(_TTYStringIO()):
             self.assertTrue(reading.offer_exam(self.WITH_BANK,
                                                ask=lambda _: ""))
 
     def test_n_declines(self):
-        with self._stdin_as_tty(), contextlib.redirect_stdout(io.StringIO()):
+        with self._stdin_as_tty(), contextlib.redirect_stdout(_TTYStringIO()):
             self.assertFalse(reading.offer_exam(self.WITH_BANK,
                                                 ask=lambda _: "n"))
 
     def test_closed_input_declines(self):
         def eof(_):
             raise EOFError
-        with self._stdin_as_tty(), contextlib.redirect_stdout(io.StringIO()):
+        with self._stdin_as_tty(), contextlib.redirect_stdout(_TTYStringIO()):
             self.assertFalse(reading.offer_exam(self.WITH_BANK, ask=eof))
 
 
