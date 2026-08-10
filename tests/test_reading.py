@@ -52,7 +52,17 @@ class ChapterTextTest(unittest.TestCase):
         self.assertEqual(reading.chapter_text(self.CHAPTER), raw)
 
     def test_a_vendor_drops_the_other_vendors_blocks(self):
+        """`main` 위에서만 성립하는 검사다 — 벤더 브랜치에서는 건너뛴다.
+
+        `postgresql`/`mysql`/`oracle` 브랜치는 `main` 을 이미 필터해 둔 파생
+        뷰이고, 스크립트가 `*.md` 만 거르므로 이 스위트는 거기서도 그대로
+        돈다. 이미 필터된 트리에서 한 번 더 거르면 무동작이라 아래 엄격
+        부등호가 깨진다 — 필터가 고장 나서가 아니라 걷어낼 것이 없어서다.
+        마커 유무로 어느 쪽 트리인지 가른다.
+        """
         full = reading.chapter_text(self.CHAPTER)
+        if "<!-- dbms:" not in full:
+            self.skipTest("벤더 브랜치 — 이미 필터된 뷰라 걷어낼 마커가 없다")
         pg = reading.chapter_text(self.CHAPTER, dbms="postgresql")
         self.assertLess(len(pg), len(full), "필터가 아무것도 걷어내지 않았다")
         self.assertNotIn("<!-- dbms:", pg, "마커가 본문에 남았다")

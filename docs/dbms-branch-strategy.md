@@ -43,6 +43,8 @@ CREATE ROLE app_user WITH LOGIN PASSWORD 'secret123';
 
 `exams/**/*.json`(학습 점검 문제은행)도 필터링 대상이 아니다. 생성 스크립트는 `*.md`만 필터하므로 JSON은 모든 브랜치에 벤더 중립 슈퍼셋으로 그대로 통과하며, 각 문항의 `dbms` 필드로 벤더를 표기하고 실행 시 `scripts/exam.py --dbms <name>`이 런타임에 걸러 낸다(자세한 내용은 `docs/exam-authoring.md` 참고).
 
+`scripts/`와 `tests/`도 마찬가지로 그대로 통과한다. 즉 **벤더 브랜치에서도 `python3 -m unittest discover -s tests`가 초록이어야 한다** — 러너 세 개가 그 브랜치에서도 그대로 돌아야 하기 때문이다. 여기에 함정이 하나 있다: 저장소 본문을 읽는 테스트는 자기가 `main` 위에서 돈다고 가정하기 쉽다. 벤더 브랜치의 챕터는 **이미 필터된 뷰**라 마커가 하나도 없고, 거기서 한 번 더 거르면 무동작이다. 필터가 무언가를 걷어내는 것을 확인하는 테스트는 마커 유무로 트리를 판별해 벤더 브랜치에서는 `skipTest`로 빠져야 한다(`tests/test_reading.py`의 `test_a_vendor_drops_the_other_vendors_blocks`가 그 예다). 이 부류의 실패는 `main`에서는 절대 재현되지 않으므로, 브랜치를 실제로 잘라 스위트를 돌려 보는 것이 유일한 검출 수단이다.
+
 ## 생성 스크립트
 
 ```bash
