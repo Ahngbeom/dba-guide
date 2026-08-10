@@ -612,6 +612,22 @@ class GuardTest(InstallerTestCase):
         self.assertEqual(r.returncode, 1)
         self.assertIn(str(self.install_dir), r.stderr)
         self.assertTrue((self.install_dir / "중요.txt").exists())
+
+    def test_directory_inside_an_outer_git_repo_is_still_a_hard_stop(self):
+        """홈을 git으로 관리하는 사람 — 설치 경로가 남의 저장소 안에 들어앉는다.
+
+        `rev-parse --is-inside-work-tree`는 상위로 올라가며 `.git`을 찾으므로
+        이 경우 참을 돌려준다. 그대로 통과시키면 이어지는 fetch·checkout이
+        **바깥 저장소**를 대상으로 돈다.
+        """
+        self.tag("v1.0.0")
+        git(self.home, "init", "--quiet")
+        self.install_dir.mkdir(parents=True)
+        (self.install_dir / "중요.txt").write_text("남의 자료\n")
+        r = self.run_installer()
+        self.assertEqual(r.returncode, 1)
+        self.assertIn(str(self.install_dir), r.stderr)
+        self.assertTrue((self.install_dir / "중요.txt").exists())
 ```
 
 - [ ] **Step 2: 실패를 확인한다**
@@ -637,13 +653,32 @@ Expected: 앞의 두 건은 PASS(Task 2의 `link_launchers`가 이미 처리), �
     info "저장소를 내려받습니다 → $INSTALL_DIR"
     mkdir -p "$(dirname "$INSTALL_DIR")"
     git clone --quiet "$REPO_URL" "$INSTALL_DIR"
-  elif ! git -C "$INSTALL_DIR" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  elif ! is_repo_root "$INSTALL_DIR"; then
     die "$INSTALL_DIR 에 git 저장소가 아닌 내용이 있습니다." \
         "  이 스크립트는 자기가 만들지 않은 디렉터리를 지우지 않습니다." \
         "  직접 확인하고 치운 뒤 다시 실행하세요."
   else
     git -C "$INSTALL_DIR" fetch --quiet --tags origin
   fi
+```
+
+`latest_release_tag()` **앞**에 헬퍼를 넣는다.
+
+```bash
+# 이 디렉터리 자체가 git 저장소의 루트인가.
+#
+# `rev-parse --is-inside-work-tree` 를 쓰면 안 된다 — 상위로 올라가며 `.git` 을
+# 찾으므로, 홈을 git 으로 관리하는 사람에게는 남의 저장소 안의 평범한
+# 디렉터리까지 참으로 답한다. 그대로 통과시키면 이어지는 fetch·checkout 이
+# 우리가 만들지도 않은 **바깥 저장소**를 대상으로 돈다.
+#
+# 심볼릭 링크(macOS의 /tmp → /private/tmp 등) 때문에 양쪽을 모두 `pwd -P` 로
+# 정규화해 비교한다.
+is_repo_root() {
+  root="$(git -C "$1" rev-parse --show-toplevel 2>/dev/null)" || return 1
+  [ -n "$root" ] || return 1
+  [ "$(cd "$root" && pwd -P)" = "$(cd "$1" && pwd -P)" ]
+}
 ```
 
 - [ ] **Step 4: 통과를 확인한다**
