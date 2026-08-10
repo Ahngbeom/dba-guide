@@ -296,6 +296,42 @@ class GuardTest(InstallerTestCase):
         self.assertIn(str(self.install_dir), r.stderr)
         self.assertTrue((self.install_dir / "중요.txt").exists())
 
+    def test_a_foreign_git_repo_at_the_install_path_is_a_hard_stop(self):
+        """설치 경로에 앉은 남의 저장소를 fetch·checkout 하지 않는다.
+
+        벤더 브랜치 클론을 이 경로에 둔 사람이 대표적이다. git 저장소인 것만
+        보고 통과시키면 `checkout --detach`가 말없이 그 사람을 브랜치 밖으로
+        옮긴다.
+        """
+        self.tag("v1.0.0")
+        self.install_dir.mkdir(parents=True)
+        (self.install_dir / "중요.txt").write_text("남의 저장소\n")
+        git(self.install_dir, "init", "--quiet")
+        git(self.install_dir, "config", "user.email", "test@example.com")
+        git(self.install_dir, "config", "user.name", "test")
+        git(self.install_dir, "add", "-A")
+        git(self.install_dir, "commit", "--quiet", "-m", "남의 커밋")
+        before = git(self.install_dir, "rev-parse", "HEAD").strip()
+        r = self.run_installer()
+        self.assertEqual(r.returncode, 1)
+        self.assertIn(str(self.install_dir), r.stderr)
+        self.assertEqual(git(self.install_dir, "rev-parse", "HEAD").strip(), before)
+        self.assertTrue((self.install_dir / "중요.txt").exists())
+
+    def test_a_regular_file_at_the_install_path_is_a_hard_stop(self):
+        """디렉터리가 아니면 `[ ! -d ]`가 참이라 클론 분기로 흐른다.
+
+        그대로 두면 git이 영어 fatal을 뱉고 128로 죽는다. 한국어 안내로
+        멈추고 그 파일은 그대로 남아야 한다.
+        """
+        self.tag("v1.0.0")
+        self.install_dir.parent.mkdir(parents=True, exist_ok=True)
+        self.install_dir.write_text("남의 파일\n")
+        r = self.run_installer()
+        self.assertEqual(r.returncode, 1)
+        self.assertIn(str(self.install_dir), r.stderr)
+        self.assertEqual(self.install_dir.read_text(), "남의 파일\n")
+
 
 class InPlaceTest(InstallerTestCase):
     """이미 클론한 저장소 안에서 실행한 경우."""

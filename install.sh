@@ -68,6 +68,15 @@ is_repo_root() {
   [ "$(cd "$root" && pwd -P)" = "$(cd "$1" && pwd -P)" ]
 }
 
+# 이 디렉터리가 우리 설치본인가 — git 저장소의 루트인 것만으로는 부족하다.
+# 남의 저장소(또는 벤더 브랜치 클론)가 설치 경로에 앉아 있으면 fetch·checkout
+# 이 그 저장소를 대상으로 돌고, --purge 는 남의 자료를 지운다. 두 자리 모두
+# 이 함수를 통과해야만 손을 댄다.
+is_our_install() {
+  is_repo_root "$1" || return 1
+  [ -f "$1/scripts/guide.py" ]
+}
+
 # 정식 릴리스 태그 중 최신 하나. 없으면 아무것도 출력하지 않는다.
 # --sort=-v:refname 만으로는 프리릴리스가 위로 올 수 있어 패턴 필터가 필수다.
 latest_release_tag() {
@@ -132,13 +141,23 @@ report() {
 }
 
 install_managed() {
+  # 디렉터리가 아닌 것(일반 파일·끊어진 링크)이 자리를 차지한 경우.
+  # 그대로 두면 [ ! -d ] 가 참이라 클론 분기로 흘러 git이 영어 fatal 을
+  # 뱉고 128로 죽는다. 같은 상황이니 같은 한국어 안내로 멈춘다.
+  if { [ -e "$INSTALL_DIR" ] || [ -L "$INSTALL_DIR" ]; } && [ ! -d "$INSTALL_DIR" ]; then
+    die "$INSTALL_DIR 에 디렉터리가 아닌 것이 있습니다." \
+        "  이 스크립트는 자기가 만들지 않은 것을 지우지 않습니다." \
+        "  직접 확인하고 치운 뒤 다시 실행하세요."
+  fi
+
   if [ ! -d "$INSTALL_DIR" ] || [ -z "$(ls -A "$INSTALL_DIR" 2>/dev/null)" ]; then
     info "저장소를 내려받습니다 → $INSTALL_DIR"
     mkdir -p "$(dirname "$INSTALL_DIR")"
     git clone --quiet "$REPO_URL" "$INSTALL_DIR"
-  elif ! is_repo_root "$INSTALL_DIR"; then
-    die "$INSTALL_DIR 에 git 저장소가 아닌 내용이 있습니다." \
-        "  이 스크립트는 자기가 만들지 않은 디렉터리를 지우지 않습니다." \
+  elif ! is_our_install "$INSTALL_DIR"; then
+    die "$INSTALL_DIR 이 이 학습서의 설치본이 아닙니다." \
+        "  git 저장소가 아니거나, 다른 저장소가 그 자리에 있습니다." \
+        "  이 스크립트는 자기가 만들지 않은 디렉터리를 지우거나 옮기지 않습니다." \
         "  직접 확인하고 치운 뒤 다시 실행하세요."
   else
     git -C "$INSTALL_DIR" fetch --quiet --tags origin
