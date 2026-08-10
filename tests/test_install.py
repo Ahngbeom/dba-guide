@@ -217,6 +217,60 @@ class GuardTest(InstallerTestCase):
         for name in ("guide", "exam", "shoot"):
             self.assertIn(str(self.bin_dir / name), r.stderr)
 
+    def test_a_foreign_symlink_named_guide_blocks_and_survives(self):
+        """남의 심볼릭 링크도 일반 파일과 똑같이 충돌이다.
+
+        `is_our_link`의 마지막 줄(대상 옆의 `scripts/guide.py` 확인)이 유일한
+        판별자가 되도록, 대상 파일명은 런처 이름과 일부러 같게 둔다. 그 줄이
+        사라지면 이 링크가 우리 것으로 입양돼 `ln -sfn`에 덮인다.
+        """
+        self.tag("v1.0.0")
+        stranger = self.tmp / "stranger-bin"
+        stranger.mkdir()
+        (stranger / "guide").write_text("#!/bin/sh\necho 남의 guide\n")
+        self.bin_dir.mkdir(parents=True)
+        (self.bin_dir / "guide").symlink_to(stranger / "guide")
+        r = self.run_installer()
+        self.assertEqual(r.returncode, 1)
+        self.assertIn(str(self.bin_dir / "guide"), r.stderr)
+        self.assertEqual(os.readlink(self.bin_dir / "guide"), str(stranger / "guide"))
+
+    def test_a_link_to_another_name_in_our_tree_blocks_and_survives(self):
+        """대상 파일명 확인이 유일한 판별자인 경우.
+
+        대상 옆에는 `scripts/guide.py`가 있으므로 마지막 줄은 통과한다.
+        파일명 확인이 사라지면 `guide`가 엉뚱한 실행 파일을 가리키게 된다.
+        """
+        self.tag("v1.0.0")
+        other = self.tmp / "other-tree"
+        (other / "scripts").mkdir(parents=True)
+        (other / "scripts" / "guide.py").write_text("# stub\n")
+        (other / "notguide").write_text("#!/bin/sh\necho 다른 것\n")
+        self.bin_dir.mkdir(parents=True)
+        (self.bin_dir / "guide").symlink_to(other / "notguide")
+        r = self.run_installer()
+        self.assertEqual(r.returncode, 1)
+        self.assertIn(str(self.bin_dir / "guide"), r.stderr)
+        self.assertEqual(os.readlink(self.bin_dir / "guide"), str(other / "notguide"))
+
+    def test_a_dangling_launcher_link_does_not_block_the_install(self):
+        """기여자가 설치에 쓴 클론을 지우면 우리 링크 세 개가 끊긴 채 남는다.
+
+        이를 충돌로 보면 재설치가 영영 막히고, 남이 그 이름을 쓰고 있다는
+        거짓 안내가 나간다.
+        """
+        self.tag("v1.0.0")
+        gone = self.home / "gone-clone"
+        self.bin_dir.mkdir(parents=True)
+        for name in ("guide", "exam", "shoot"):
+            (self.bin_dir / name).symlink_to(gone / name)
+            self.assertFalse((self.bin_dir / name).exists())
+        r = self.run_installer()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        for name in ("guide", "exam", "shoot"):
+            self.assertEqual(os.readlink(self.bin_dir / name),
+                             str(self.install_dir / name))
+
     def test_non_git_directory_at_install_path_is_a_hard_stop(self):
         self.tag("v1.0.0")
         self.install_dir.mkdir(parents=True)
@@ -322,6 +376,16 @@ class UninstallTest(InstallerTestCase):
         r = self.run_installer("--uninstall")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertEqual((self.bin_dir / "exam").read_text(), "남의 것\n")
+
+    def test_uninstall_removes_a_dangling_link_it_created(self):
+        """대상 트리가 사라진 링크도 우리 것이다. 남의 것이라 우기면 안 된다."""
+        self._install_with_records()
+        (self.bin_dir / "exam").unlink()
+        (self.bin_dir / "exam").symlink_to(self.home / "gone-clone" / "exam")
+        r = self.run_installer("--uninstall")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("건너뜀", r.stdout)
+        self.assertFalse((self.bin_dir / "exam").is_symlink())
 
     def test_purge_without_a_tty_refuses_to_delete(self):
         """파이프 실행에서는 확인을 받을 수 없다. 그럴 땐 지우지 않는다."""
