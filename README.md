@@ -91,6 +91,44 @@
 | [DBMS 비교표](appendix/dbms-comparison-matrix.md) | PostgreSQL/MySQL/Oracle/MSSQL/클라우드 매니지드 서비스 전체 비교 |
 | [용어집](appendix/glossary.md) | 학습서 전반의 핵심 용어 정리 |
 
+## 설치
+
+한 줄로 끝난다. 저장소를 `~/.local/share/dba-guide`에 두고 `guide`·`exam`·`shoot`
+세 명령을 `~/.local/bin`에 걸어 준다.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Ahngbeom/dba-guide/main/install.sh | bash
+```
+
+같은 명령을 다시 실행하면 최신 릴리스로 **업데이트**된다. 제거는
+`… | bash -s -- --uninstall`이며, 이때 학습 기록(시험 결과·정리 노트)은 남는다.
+
+기록까지 지우는 `--purge`는 **파이프로 실행할 수 없다.** 지우기 전에 확인을 받는데,
+파이프에서는 표준 입력이 curl이라 답을 받을 방법이 없기 때문이다. 스크립트를
+내려받아 직접 실행한다.
+
+```bash
+curl -fsSL -o install.sh https://raw.githubusercontent.com/Ahngbeom/dba-guide/main/install.sh
+bash install.sh --uninstall --purge
+```
+
+스크립트를 먼저 읽고 실행하고 싶다면 두 단계로 나눠도 된다.
+
+```bash
+curl -fsSL -o install.sh https://raw.githubusercontent.com/Ahngbeom/dba-guide/main/install.sh
+less install.sh && bash install.sh
+```
+
+**설치하지 않아도 된다.** 클론만 해도 전부 그대로 동작한다.
+
+```bash
+git clone https://github.com/Ahngbeom/dba-guide.git
+cd dba-guide && ./guide
+```
+
+필요한 것은 `git`과 `python3`(3.9 이상)뿐이다. 장애 대응 게임을 하려면 Docker가
+추가로 필요하다(`./shoot doctor`가 점검해 준다). Windows에서는 WSL 안에서 쓴다.
+
 ## 한 번에 시작하기
 
 ```bash
