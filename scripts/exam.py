@@ -349,6 +349,19 @@ def discover_banks():
     return sorted(Path(p) for p in glob.glob(str(EXAMS_DIR / "**" / "*.json"), recursive=True))
 
 
+def exam_bank_for(chapter_rel, repo_root=None):
+    """챕터에 대응하는 문제은행 경로. 없으면 None.
+
+    매핑은 기계적이다 — `<티어>/<이름>.md`의 은행은 `exams/<티어>/<이름>.json`
+    이다. 치트시트·개요·부록처럼 은행이 없는 챕터도 있으므로 존재를 확인한다.
+
+    스테이지 클리어 화면(`shooting`)과 챕터 읽기(`reading`)가 같은 매핑을 쓴다.
+    규약이 두 벌이 되면 조용히 갈라지므로 은행 쪽에 둔다.
+    """
+    rel = str(Path("exams") / Path(chapter_rel).with_suffix(".json"))
+    return rel if (Path(repo_root or REPO_ROOT) / rel).is_file() else None
+
+
 def discover_tiers():
     """문제은행이 하나라도 있는 티어 디렉터리명을 정렬해 반환(예: ['01-beginner'])."""
     tiers = {b.parent.name for b in discover_banks() if b.parent != EXAMS_DIR}

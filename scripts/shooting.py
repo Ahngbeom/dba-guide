@@ -47,7 +47,9 @@ from tui import (  # noqa: E402
     bar, cwidth, is_affirmative, is_backspace, is_enter, is_idle, key_char,
     page_text, pick, pick_line, put, read_key, wrap,
 )
-from exam import grade_mcq, grade_short, shuffle_choices  # noqa: E402
+from exam import (  # noqa: E402
+    exam_bank_for, grade_mcq, grade_short, shuffle_choices,
+)
 
 # 컨테이너 이름은 compose.yaml의 container_name과 맞춰야 한다.
 CONTAINERS = {"primary": "dbshoot-primary", "replica": "dbshoot-replica",
@@ -1051,17 +1053,6 @@ def chapter_reading_list(stage, repo_root=None):
         title = chapter_title(root, rel)
         lines.append(f"    - {title} ({rel})" if title else f"    - {rel}")
     return "\n".join(lines)
-
-
-def exam_bank_for(chapter_rel, repo_root=None):
-    """챕터에 대응하는 문제은행 경로. 없으면 None.
-
-    매핑은 기계적이다 — `<티어>/<이름>.md` 의 은행은 `exams/<티어>/<이름>.json`
-    이고, 스테이지가 가리키는 챕터는 전부 은행을 가진다(치트시트처럼 은행이 없는
-    챕터도 있으므로 존재를 확인한다).
-    """
-    rel = str(Path("exams") / Path(chapter_rel).with_suffix(".json"))
-    return rel if (Path(repo_root or REPO_ROOT) / rel).is_file() else None
 
 
 def exam_suggestions(stage, repo_root=None):
