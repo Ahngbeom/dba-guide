@@ -140,6 +140,11 @@ curl -fsSL https://raw.githubusercontent.com/Ahngbeom/dba-guide/main/install.sh 
   | XDG_DATA_HOME="$HOME/tools" bash
 ```
 
+**이후 업데이트·제거에도 같은 `XDG_DATA_HOME`을 준다.** 스크립트는 실행할 때마다 이 값으로
+설치 위치를 계산할 뿐, 지난번에 어디에 깔았는지 기억하지 않는다. 빠뜨리면 기본 경로를
+대상으로 삼아 — 업데이트는 **두 번째 설치본을 만들어 링크를 그쪽으로 옮기고**, `--purge`는
+기본 경로만 지우므로 원래 설치본과 학습 기록은 그대로 남는다.
+
 ## 한 번에 시작하기
 
 ```bash
