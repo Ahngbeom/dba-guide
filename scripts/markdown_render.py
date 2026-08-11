@@ -181,6 +181,7 @@ def paint(spans, color=True):
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.*?)\s*#*\s*$")
 _HR_RE = re.compile(r"^\s*([-*_])\s*(?:\1\s*){2,}$")
 _COMMENT_RE = re.compile(r"^\s*<!--.*-->\s*$")
+_FENCE_RE = re.compile(r"^\s*```+\s*(\w*)")
 
 
 def _blank(out):
@@ -213,6 +214,36 @@ def _emit_paragraph(line, width, color, out):
         out.append(paint(row, color))
 
 
+def _emit_fence(lines, i, width, color, out):
+    """` ```lang ` 블록을 테두리 상자로 낸다 → 다음에 볼 줄 번호.
+
+    상자 안에서는 마크업을 **전혀** 해석하지 않는다. SQL 주석 `--`, bash 의
+    `## `, C 의 `**ptr` 이 그대로 들어 있다 — `filter_dbms.filter_lines` 가
+    `in_fence` 를 추적하는 것과 같은 이유다.
+
+    긴 코드 줄은 폭 단위로 자른다. 단어 단위로 접으면 보기에는 낫지만 `│`
+    거터가 어긋나고, 자르지 않으면 `less` 가 접으면서 거터가 무너진다.
+    """
+    lang = _FENCE_RE.match(lines[i]).group(1)
+    i += 1
+    head = f"┌─ {lang} " if lang else "┌"
+    out.append(paint([(head + "─" * max(0, width - cwidth(head)), "dim")],
+                     color))
+    while i < len(lines) and not _FENCE_RE.match(lines[i]):
+        body = lines[i].rstrip()
+        # 폭 - 2 = `│ ` 만큼 뺀 나머지. 빈 줄도 거터는 남긴다.
+        while True:
+            part = fit(body, width - 2)
+            out.append(paint([("│ ", "dim"), (part, "fence")], color))
+            body = body[len(part):]
+            if not body:
+                break
+        i += 1
+    out.append(paint([("└" + "─" * (width - 1), "dim")], color))
+    # 닫는 펜스가 없으면(파일 끝) i 는 이미 끝이다 — 한 칸 더 넘겨도 안전하다.
+    return i + 1
+
+
 def render(text, width=80, color=True):
     """마크다운 → 화면에 뿌릴 문자열. 항상 개행으로 끝난다."""
     width = max(20, width)
@@ -225,6 +256,9 @@ def render(text, width=80, color=True):
 
         if _COMMENT_RE.match(line):
             continue                       # dbms 마커 등 — 화면에 낼 것이 아니다
+        if _FENCE_RE.match(line):
+            i = _emit_fence(lines, i - 1, width, color, out)
+            continue
         if not line.strip():
             _blank(out)
             continue

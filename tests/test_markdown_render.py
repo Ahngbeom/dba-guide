@@ -188,5 +188,47 @@ class NoEscapesWhenPlainTest(unittest.TestCase):
         self.assertIn("\x1b", got)
 
 
+class FenceTest(unittest.TestCase):
+    """코드블록이 본문과 구분되어야 '여기부터 실행할 명령'이 보인다."""
+
+    def test_a_fence_gets_a_box_with_the_language_label(self):
+        got = mr.render("```sql\nSELECT 1;\n```\n", width=40, color=False)
+        self.assertIn("┌─ sql", got)
+        self.assertIn("│ SELECT 1;", got)
+        self.assertIn("└", got)
+
+    def test_a_fence_without_a_language_still_gets_a_box(self):
+        got = mr.render("```\nplain\n```\n", width=40, color=False)
+        self.assertIn("┌", got)
+        self.assertIn("│ plain", got)
+
+    def test_markup_inside_a_fence_is_not_interpreted(self):
+        """SQL 주석 `--`, bash 의 `## `, C 의 `**ptr` 이 펜스 안에 있다."""
+        src = "```bash\n## 주석\n**ptr\n| a | b |\n```\n"
+        got = mr.render(src, width=40, color=False)
+        self.assertIn("│ ## 주석", got)
+        self.assertIn("│ **ptr", got)
+        self.assertIn("│ | a | b |", got)
+        self.assertNotIn("◆", got)
+
+    def test_a_long_code_line_is_split_not_lost(self):
+        src = "```sql\n" + "SELECT " + "x" * 80 + ";\n```\n"
+        got = mr.render(src, width=40, color=False)
+        for line in got.split("\n"):
+            self.assertLessEqual(cwidth(line), 40, repr(line))
+        self.assertIn("x" * 20, got)
+
+    def test_an_unclosed_fence_is_closed_instead_of_crashing(self):
+        """'전체' 보기는 filter_lines 를 안 거치므로 여기까지 올 수 있다."""
+        got = mr.render("```sql\nSELECT 1;\n", width=40, color=False)
+        self.assertIn("│ SELECT 1;", got)
+        self.assertIn("└", got)
+
+    def test_the_box_never_exceeds_the_width(self):
+        got = mr.render("```sql\nSELECT 1;\n```\n", width=30, color=False)
+        for line in got.split("\n"):
+            self.assertLessEqual(cwidth(line), 30, repr(line))
+
+
 if __name__ == "__main__":
     unittest.main()
