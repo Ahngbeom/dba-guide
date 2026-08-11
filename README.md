@@ -93,8 +93,8 @@
 
 ## 설치
 
-한 줄로 끝난다. 저장소를 `~/.local/share/dba-guide`에 두고 `guide`·`exam`·`shoot`
-세 명령을 `~/.local/bin`에 걸어 준다.
+한 줄로 끝난다. 저장소를 기본값인 `~/.local/share/dba-guide`에 두고(아래에서 바꿀 수 있다)
+`guide`·`exam`·`shoot` 세 명령을 `~/.local/bin`에 걸어 준다.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Ahngbeom/dba-guide/main/install.sh | bash
@@ -179,7 +179,7 @@ curl -fsSL https://raw.githubusercontent.com/Ahngbeom/dba-guide/main/install.sh 
 - 정답/오답 시 강조 배너와 화면 플래시(오답은 비프음)가 잠깐 재생되고, **연속 정답**이 이어지면 상단에 `🔥 연속 N`이 표시되며 3·5·10연속에서 축하 배너가 뜬다. 효과가 거슬리면 `m`으로 끄거나 `./exam --no-effects`로 시작한다.
 - 상단에 실시간 진행상황(정답·오답·정답률·**등급 A~F**)과 문항별 점 스트립이 표시된다. 자동채점 정답률 70% 미만이면 재학습을 권장한다.
 - 시험을 마치면 결과 화면에서 **다른 챕터 (같은 티어) / 처음부터 다시 선택 / 종료**를 고를 수 있어, 나가지 않고 이어서 여러 챕터를 볼 수 있다.
-- 각 시험 결과는 `.exam-results/results.jsonl`에 자동 저장된다 — 클론해서 쓰면 그 클론 안에, 설치했다면 설치본(`~/.local/share/dba-guide`) 안에 쌓인다. 개인 학습 기록이라 **git에 커밋되지 않는다**(`.gitignore` 처리). 챕터를 다시 고를 때 그 챕터의 `[지난 최고 등급·정답률]`이 함께 표시된다.
+- 각 시험 결과는 `.exam-results/results.jsonl`에 자동 저장된다 — 클론해서 쓰면 그 클론 안에, 설치했다면 설치본(`${XDG_DATA_HOME:-~/.local/share}/dba-guide`) 안에 쌓인다. 개인 학습 기록이라 **git에 커밋되지 않는다**(`.gitignore` 처리). 챕터를 다시 고를 때 그 챕터의 `[지난 최고 등급·정답률]`이 함께 표시된다.
 
 <details>
 <summary>바로 특정 챕터/옵션으로 실행하기 (선택 사항)</summary>
