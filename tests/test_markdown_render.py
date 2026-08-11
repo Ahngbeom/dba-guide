@@ -244,5 +244,63 @@ class FenceTest(unittest.TestCase):
             self.assertLessEqual(cwidth(line), 20, repr(line))
 
 
+class ListTest(unittest.TestCase):
+    """불릿 523개, 번호 155개, 체크박스 239개 — 챕터 본문의 큰 축이다."""
+
+    def test_a_bullet_becomes_a_dot(self):
+        got = mr.render("- 첫 항목\n", width=40, color=False)
+        self.assertIn("• 첫 항목", got)
+
+    def test_an_asterisk_bullet_counts_too(self):
+        self.assertIn("• 항목", mr.render("* 항목\n", width=40, color=False))
+
+    def test_a_nested_bullet_gets_a_hollow_dot(self):
+        """이 저장소는 중첩 들여쓰기를 2·3·4칸으로 섞어 쓴다(실측) — 셋 다
+        같은 깊이로 읽혀야 목록이 들쭉날쭉해지지 않는다."""
+        for pad in ("  ", "   ", "    "):
+            got = mr.render(f"- 위\n{pad}- 아래\n", width=40, color=False)
+            self.assertIn("◦ 아래", got, repr(pad))
+
+    def test_a_deeply_nested_bullet_gets_a_dash(self):
+        got = mr.render("- 위\n      - 아주 아래\n", width=40, color=False)
+        self.assertIn("- 아주 아래", got)
+
+    def test_an_ordered_item_keeps_its_number(self):
+        got = mr.render("1. 첫째\n2. 둘째\n", width=40, color=False)
+        self.assertIn("1. 첫째", got)
+        self.assertIn("2. 둘째", got)
+
+    def test_an_unchecked_box_becomes_an_empty_box(self):
+        got = mr.render("- [ ] 할 수 있다\n", width=40, color=False)
+        self.assertIn("☐ 할 수 있다", got)
+        self.assertNotIn("[ ]", got)
+
+    def test_a_checked_box_becomes_a_ticked_box(self):
+        self.assertIn("☑ 했다", mr.render("- [x] 했다\n", width=40,
+                                          color=False))
+
+    def test_a_wrapped_item_hangs_under_its_text(self):
+        got = mr.render("- " + "가나다 " * 15 + "\n", width=24, color=False)
+        rows = [r for r in got.split("\n") if r.strip()]
+        self.assertGreater(len(rows), 1)
+        self.assertTrue(rows[1].startswith("  "), repr(rows[1]))
+        for r in rows:
+            self.assertLessEqual(cwidth(r), 24, repr(r))
+
+
+class QuoteTest(unittest.TestCase):
+    def test_a_quote_gets_a_left_bar(self):
+        got = mr.render("> 주의할 점\n", width=40, color=False)
+        self.assertIn("│ 주의할 점", got)
+        self.assertNotIn(">", got)
+
+    def test_a_long_quote_wraps_under_the_bar(self):
+        got = mr.render("> " + "가나다 " * 15 + "\n", width=24, color=False)
+        for r in got.split("\n"):
+            self.assertLessEqual(cwidth(r), 24, repr(r))
+            if r.strip():
+                self.assertTrue(r.startswith("│ "), repr(r))
+
+
 if __name__ == "__main__":
     unittest.main()

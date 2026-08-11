@@ -183,6 +183,17 @@ _HR_RE = re.compile(r"^\s*([-*_])\s*(?:\1\s*){2,}$")
 _COMMENT_RE = re.compile(r"^\s*<!--.*-->\s*$")
 _FENCE_RE = re.compile(r"^\s*```+\s*(\w*)")
 
+# 체크박스가 불릿보다 **먼저** 걸려야 한다 — `- [ ] …` 는 불릿에도 맞는다.
+_TASK_RE = re.compile(r"^(\s*)[-*+]\s+\[([ xX])\]\s+(.*)$")
+_BULLET_RE = re.compile(r"^(\s*)[-*+]\s+(.*)$")
+_ORDERED_RE = re.compile(r"^(\s*)(\d+)[.)]\s+(.*)$")
+_QUOTE_RE = re.compile(r"^\s*>\s?(.*)$")
+
+# 깊이별 불릿 기호. 이 저장소는 중첩 들여쓰기를 2·3·4칸으로 섞어 쓴다(실측)
+# 이라 `len(indent) // 2` 로 재면 3칸과 4칸이 다른 깊이가 되어 같은 목록이
+# 들쭉날쭉해진다. 1~4칸을 한 단계로 묶는다.
+_MARKERS = ("•", "◦", "-")
+
 
 def _blank(out):
     """직전 줄이 이미 비어 있지 않을 때만 빈 줄을 넣는다."""
@@ -207,6 +218,55 @@ def _emit_heading(level, body, width, color, out):
     # 제목은 접지 않고 자른다 — 접힌 제목은 본문과 구분이 안 된다. 자르지
     # 않으면 `less` 가 접어서 같은 결과가 되고, 폭 회귀 테스트도 깨진다.
     out.append(paint([(fit(text, width), style)], color))
+
+
+def _depth(indent):
+    return 0 if not indent else min(len(_MARKERS) - 1, 1 + (len(indent) - 1) // 4)
+
+
+def _emit_hanging(head, body, width, color, out, head_style=None, repeat=False):
+    """`head` 를 붙이고 접힌 줄을 그 폭만큼 들여 쓴다.
+
+    목록은 이어지는 줄이 기호 아래가 아니라 **글자 아래**로 와야 항목 경계가
+    보인다(`repeat=False`). 인용은 반대로 **막대가 이어져야** 인용 범위가
+    보인다(`repeat=True`) — 둘째 줄에서 `│` 가 끊기면 인용이 끝난 것처럼
+    읽힌다.
+    """
+    hw = cwidth(head)
+    rows = layout(inline_spans(body, color), width - hw)
+    for n, row in enumerate(rows):
+        if n == 0 or repeat:
+            prefix = [(head, head_style)]
+        else:
+            prefix = [(" " * hw, None)]
+        out.append(paint(prefix + row, color))
+
+
+def _emit_list_or_quote(line, width, color, out):
+    """목록·체크박스·인용이면 내고 True. 아니면 False."""
+    m = _TASK_RE.match(line)
+    if m:
+        indent, mark, body = m.groups()
+        box = "☑" if mark.lower() == "x" else "☐"
+        _emit_hanging(f"{indent}{box} ", body, width, color, out)
+        return True
+    m = _ORDERED_RE.match(line)
+    if m:
+        indent, num, body = m.groups()
+        _emit_hanging(f"{indent}{num}. ", body, width, color, out)
+        return True
+    m = _BULLET_RE.match(line)
+    if m:
+        indent, body = m.groups()
+        marker = _MARKERS[_depth(indent)]
+        _emit_hanging(f"{indent}{marker} ", body, width, color, out)
+        return True
+    m = _QUOTE_RE.match(line)
+    if m:
+        _emit_hanging("│ ", m.group(1), width, color, out, head_style="dim",
+                      repeat=True)
+        return True
+    return False
 
 
 def _emit_paragraph(line, width, color, out):
@@ -268,6 +328,8 @@ def render(text, width=80, color=True):
         m = _HEADING_RE.match(line)
         if m:
             _emit_heading(len(m.group(1)), m.group(2), width, color, out)
+            continue
+        if _emit_list_or_quote(line, width, color, out):
             continue
         _emit_paragraph(line, width, color, out)
 
