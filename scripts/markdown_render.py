@@ -189,6 +189,9 @@ _BULLET_RE = re.compile(r"^(\s*)[-*+]\s+(.*)$")
 _ORDERED_RE = re.compile(r"^(\s*)(\d+)[.)]\s+(.*)$")
 _QUOTE_RE = re.compile(r"^\s*>\s?(.*)$")
 
+_SEP_CELL_RE = re.compile(r"^:?-{1,}:?$")
+_MIN_COL = 4          # 한글 두 글자. 0폭 열이 생기지 않게 하는 하한
+
 # 깊이별 불릿 기호. 이 저장소는 중첩 들여쓰기를 2·3·4칸으로 섞어 쓴다(실측)
 # 이라 `len(indent) // 2` 로 재면 3칸과 4칸이 다른 깊이가 되어 같은 목록이
 # 들쭉날쭉해진다. 1~4칸을 한 단계로 묶는다.
@@ -293,6 +296,106 @@ def _emit_list_or_quote(line, width, color, out):
     return False
 
 
+def _cells(line):
+    """`| a | b |` → ["a", "b"]. 앞뒤 파이프는 버린다.
+
+    셀 안의 파이프는 다루지 않는다 — 이 저장소 챕터에는 한 건도 없다(실측).
+    """
+    body = line.strip()
+    if body.startswith("|"):
+        body = body[1:]
+    if body.endswith("|"):
+        body = body[:-1]
+    return [c.strip() for c in body.split("|")]
+
+
+def _is_separator(line):
+    """`|---|---|` 인가. 셀이 하나도 없는 `|` 한 글자는 구분선이 아니다."""
+    if not line.strip().startswith("|"):
+        return False
+    cells = [c for c in _cells(line) if c]
+    return bool(cells) and all(_SEP_CELL_RE.match(c) for c in cells)
+
+
+def _alignments(line):
+    """구분선에서 열 정렬을 읽는다. 이 저장소에는 지시자가 0건이지만(실측)
+    README·부록이 나중에 쓸 수 있어 세 줄로 지켜 둔다."""
+    out = []
+    for c in _cells(line):
+        left, right = c.startswith(":"), c.endswith(":")
+        out.append("center" if left and right else "right" if right else "left")
+    return out
+
+
+def _fit_columns(natural, width):
+    """자연 폭이 화면을 넘으면 넓은 열부터 1칸씩 깎는다."""
+    cols = list(natural)
+    avail = width - (len(cols) - 1)          # 열 사이 여백 1칸
+    while sum(cols) > avail:
+        widest = max(range(len(cols)), key=lambda j: cols[j])
+        if cols[widest] <= _MIN_COL:
+            break                            # 더 깎을 데가 없다 — less 가 접는다
+        cols[widest] -= 1
+    return cols
+
+
+def _pad(row_spans, col, align):
+    """셀 한 줄을 열 폭에 맞춰 채운다."""
+    gap = col - swidth(row_spans)
+    if gap <= 0:
+        return row_spans
+    if align == "right":
+        return [(" " * gap, None)] + row_spans
+    if align == "center":
+        left = gap // 2
+        return [(" " * left, None)] + row_spans + [(" " * (gap - left), None)]
+    return row_spans + [(" " * gap, None)]
+
+
+def _emit_table(lines, i, width, color, out):
+    """파이프 표를 정렬해 낸다 → 다음에 볼 줄 번호."""
+    header = _cells(lines[i])
+    aligns = _alignments(lines[i + 1])
+    i += 2
+    body = []
+    while i < len(lines) and lines[i].strip().startswith("|"):
+        body.append(_cells(lines[i]))
+        i += 1
+
+    rows = [header] + body
+    ncols = max(len(r) for r in rows)
+    rows = [r + [""] * (ncols - len(r)) for r in rows]
+    aligns = (aligns + ["left"] * ncols)[:ncols]
+
+    spans = [[inline_spans(c, color) for c in r] for r in rows]
+    natural = [max(swidth(r[j]) for r in spans) for j in range(ncols)]
+    cols = _fit_columns(natural, width)
+
+    _blank(out)
+    for n, row in enumerate(spans):
+        style = "th" if n == 0 else None
+        cells = [layout(row[j], cols[j]) for j in range(ncols)]
+        height = max(len(c) for c in cells)
+        for line_no in range(height):
+            parts = []
+            for j in range(ncols):
+                piece = cells[j][line_no] if line_no < len(cells[j]) else []
+                if style:
+                    piece = [(t, s or style) for t, s in piece]
+                parts.extend(_pad(piece, cols[j], aligns[j]))
+                if j < ncols - 1:
+                    parts.append((" ", None))
+            out.append(paint(parts, color).rstrip())
+        if n == 0:
+            rule = []
+            for j in range(ncols):
+                rule.append(("─" * cols[j], "dim"))
+                if j < ncols - 1:
+                    rule.append((" ", None))
+            out.append(paint(rule, color))
+    return i
+
+
 def _emit_paragraph(line, width, color, out):
     for row in layout(inline_spans(line, color), width):
         out.append(paint(row, color))
@@ -342,6 +445,10 @@ def render(text, width=80, color=True):
             continue                       # dbms 마커 등 — 화면에 낼 것이 아니다
         if _FENCE_RE.match(line):
             i = _emit_fence(lines, i - 1, width, color, out)
+            continue
+        if (line.strip().startswith("|") and i < len(lines)
+                and _is_separator(lines[i])):
+            i = _emit_table(lines, i - 1, width, color, out)
             continue
         if not line.strip():
             _blank(out)

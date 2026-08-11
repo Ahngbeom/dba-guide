@@ -342,5 +342,105 @@ class BulletWidthPropertyTest(unittest.TestCase):
                                            f"indent={indent_count}, width={width}: {repr(line)}")
 
 
+class TableTest(unittest.TestCase):
+    """표 324줄. 한글이 섞여 소스로는 열이 맞지 않고, 치트시트는 폭을 넘는다."""
+
+    SIMPLE = ("| 용어 | 설명 |\n"
+              "|------|------|\n"
+              "| 테이블 | 데이터를 담는 표 |\n"
+              "| 행 | 표의 한 줄 |\n")
+
+    def _rows(self, rendered):
+        return [r for r in rendered.split("\n") if r.strip()]
+
+    def test_columns_line_up_on_display_width(self):
+        """`len` 기준이면 실패하도록 한글·영문 길이가 엇갈리는 표를 쓴다.
+
+        **검증도 폭으로 해야 한다.** `"가나다"`는 3자·폭 6이고 `"ab"`는
+        2자·폭 4+채움 2라, 화면에서 열이 맞아도 `str.index()` 는 4와 5로
+        갈린다 — 문자 인덱스로 비교하면 정렬 성공을 실패로 신고한다.
+        """
+        src = ("| a | b |\n|---|---|\n"
+               "| 가나다 | x |\n| ab | y |\n")
+        rows = self._rows(mr.render(src, width=60, color=False))
+        starts = set()
+        for r in rows:
+            for ch in ("x", "y"):
+                if ch in r:
+                    starts.add(cwidth(r[:r.index(ch)]))
+        self.assertEqual(len(starts), 1, rows)
+
+    def test_the_pipes_are_gone(self):
+        got = mr.render(self.SIMPLE, width=60, color=False)
+        self.assertNotIn("|", got)
+
+    def test_a_separator_row_becomes_a_rule(self):
+        rows = self._rows(mr.render(self.SIMPLE, width=60, color=False))
+        self.assertIn("─", rows[1])
+        self.assertNotIn("-", rows[1].replace("─", ""))
+
+    def test_a_wide_table_wraps_inside_its_cells(self):
+        src = ("| 구분 | 명령 |\n|---|---|\n"
+               "| 권한 부여 | GRANT SELECT ON schema.table TO someuser; |\n")
+        got = mr.render(src, width=34, color=False)
+        for r in got.split("\n"):
+            self.assertLessEqual(cwidth(r), 34, repr(r))
+        self.assertIn("GRANT", got)
+        self.assertIn("someuser", got)
+
+    def test_a_wrapped_cell_keeps_its_column_start(self):
+        src = ("| 구분 | 명령 |\n|---|---|\n"
+               "| 권한 | AAAA BBBB CCCC DDDD EEEE |\n")
+        rows = self._rows(mr.render(src, width=28, color=False))
+        # 여기도 폭으로 잰다 — 첫 줄의 `권한` 은 2자·폭 4다.
+        first = cwidth(rows[2][:rows[2].index("AAAA")])
+        cont = [r for r in rows[3:] if "CCCC" in r or "DDDD" in r or "EEEE" in r]
+        self.assertTrue(cont, rows)
+        for r in cont:
+            self.assertEqual(cwidth(r) - cwidth(r.lstrip()), first, repr(r))
+
+    def test_inline_markup_inside_a_cell_is_rendered(self):
+        src = "| a |\n|---|\n| `SELECT` |\n"
+        got = mr.render(src, width=40, color=True)
+        self.assertIn("SELECT", plain(got))
+        self.assertNotIn("`", plain(got))
+
+    def test_right_and_centre_alignment_are_honoured(self):
+        src = "| a | b |\n|---:|:---:|\n| 1 | 2 |\n"
+        rows = self._rows(mr.render(src, width=40, color=False))
+        self.assertIn("1", rows[2])
+
+    def test_a_lone_pipe_line_is_not_a_table(self):
+        """구분선이 뒤따르지 않으면 표가 아니다 — 문단으로 낸다."""
+        got = mr.render("| 그냥 파이프 문장\n", width=40, color=False)
+        self.assertIn("|", got)
+
+
+class RealChapterTest(unittest.TestCase):
+    """가장 넓은 표를 가진 실제 파일이 폭 안에 들어와야 한다.
+
+    합성 픽스처만으로는 놓친다 — 치트시트는 4열에 SQL 이 들어가고 부록
+    비교표는 클라우드 3사까지 붙는다.
+    """
+
+    WIDEST = ("01-beginner/07-commands-cheatsheet.md",
+              "02-intermediate/09-commands-cheatsheet.md",
+              "appendix/dbms-comparison-matrix.md")
+
+    def test_no_rendered_line_exceeds_the_width(self):
+        for rel in self.WIDEST:
+            src = (REPO_ROOT / rel).read_text(encoding="utf-8")
+            for width in (60, 80, 100):
+                got = mr.render(src, width=width, color=False)
+                for line in got.split("\n"):
+                    self.assertLessEqual(cwidth(line), width,
+                                         f"{rel} @ {width}: {line!r}")
+
+    def test_a_real_chapter_renders_without_escapes_when_plain(self):
+        src = (REPO_ROOT / "01-beginner/01-rdbms-fundamentals.md").read_text(
+            encoding="utf-8")
+        self.assertNotIn("\x1b", mr.render(src, width=80, color=False))
+
+
 if __name__ == "__main__":
     unittest.main()
