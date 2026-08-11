@@ -487,6 +487,14 @@ class UninstallTest(InstallerTestCase):
             self.assertFalse((self.bin_dir / name).is_symlink())
         self.assertTrue((self.install_dir / ".exam-results" / "results.jsonl").exists())
 
+    def test_a_default_install_keeps_the_plain_purge_hint(self):
+        """기본 경로면 환경변수를 덧붙일 이유가 없다 — 잡음이 된다."""
+        self._install_with_records()
+        r = self.run_installer("--uninstall")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("install.sh --uninstall --purge", r.stdout)
+        self.assertNotIn("XDG_DATA_HOME=", r.stdout)
+
     def test_uninstall_leaves_a_foreign_file_alone(self):
         self._install_with_records()
         (self.bin_dir / "exam").unlink()
@@ -656,6 +664,26 @@ class SelfLocatingTest(InstallerTestCase):
         """가장 나쁜 경우 — 엉뚱한 트리를 지우고 진짜는 남기는 것."""
         r = self.run_installer_on_a_tty("--uninstall", "--purge",
                                         answer="y\n", xdg=None)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse(self.custom_install.exists())
+
+    def test_a_kept_install_prints_a_purge_command_that_works(self):
+        """링크를 지우는 순간 위치를 되읽을 수단이 사라진다.
+
+        그러니 그때 안내하는 명령은 **그 자체로 완결**돼야 한다. 맨
+        `install.sh --uninstall --purge`는 다음 실행에서 기본 경로를 보고,
+        커스텀 설치본과 학습 기록은 그대로 남는다.
+        """
+        r = self.run_installer("--uninstall", xdg=None)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn(f'XDG_DATA_HOME="{self.custom}"', r.stdout)
+        self.assertIn(f'rm -rf "{self.custom_install}"', r.stdout)
+
+    def test_following_that_printed_command_actually_purges(self):
+        self.run_installer("--uninstall", xdg=None)
+        self.assertTrue(self.custom_install.is_dir(), "아직 남아 있어야 한다")
+        r = self.run_installer_on_a_tty("--uninstall", "--purge",
+                                        answer="y\n", xdg=self.custom)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertFalse(self.custom_install.exists())
 

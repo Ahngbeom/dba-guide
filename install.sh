@@ -16,6 +16,9 @@ REPO_URL="${DBA_GUIDE_REPO_URL:-https://github.com/Ahngbeom/dba-guide.git}"
 INSTALL_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/dba-guide"
 BIN_DIR="$HOME/.local/bin"
 LAUNCHERS="guide exam shoot"
+# `adopt_existing_install`이 계산된 기본 경로를 링크에서 되읽은 값으로
+# 갈아끼웠는지. 안내 문구가 이 사실을 알아야 한다.
+adopted="no"
 
 info() { printf '%s\n' "$@"; }
 die() { printf '%s\n' "$@" >&2; exit 1; }
@@ -256,8 +259,18 @@ uninstall() {
     if [ -d "$INSTALL_DIR" ]; then
       info "" \
            "저장소는 남겨 뒀습니다 — $INSTALL_DIR" \
-           "  학습 기록(시험 결과·정리 노트)이 그 안에 있습니다." \
-           "  전부 지우려면: install.sh --uninstall --purge"
+           "  학습 기록(시험 결과·정리 노트)이 그 안에 있습니다."
+      # 링크를 방금 지웠다 — 설치 위치를 되읽을 수단이 사라졌다는 뜻이다.
+      # 그러니 여기서 안내하는 명령은 그 자체로 완결돼야 한다. 맨
+      # `--uninstall --purge`는 다음 실행에서 계산된 기본 경로를 보고,
+      # 이 설치본과 학습 기록은 그대로 남는다.
+      if [ "$adopted" = "yes" ]; then
+        info "  전부 지우려면 위치를 함께 준다:" \
+             "    XDG_DATA_HOME=\"$(dirname "$INSTALL_DIR")\" install.sh --uninstall --purge" \
+             "  또는 직접: rm -rf \"$INSTALL_DIR\""
+      else
+        info "  전부 지우려면: install.sh --uninstall --purge"
+      fi
     else
       # in-place 설치였다면 이 경로는 만들어진 적이 없다. 없는 디렉터리를
       # 학습 기록이 있는 곳이라고 알리면 사용자가 엉뚱한 데를 찾는다.
@@ -340,6 +353,7 @@ adopt_existing_install() {
   [ -n "$found" ] || return 0
   [ "$found" != "$INSTALL_DIR" ] || return 0
 
+  adopted="yes"
   info "기존 설치본을 씁니다 — $found" \
        "  계산된 기본 경로는 $INSTALL_DIR 이지만, 걸려 있는 링크가 위를 가리킵니다." \
        "  위치를 옮기려면 먼저 제거하세요: install.sh --uninstall" \
