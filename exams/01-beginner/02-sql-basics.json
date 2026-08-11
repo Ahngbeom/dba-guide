@@ -77,7 +77,8 @@
       "dbms": "neutral",
       "q": "아직 COMMIT하지 않은 트랜잭션의 변경을 취소(되돌리기)하는 명령은?",
       "accept": [
-        "rollback"
+        "rollback",
+        "rollback work"
       ],
       "hint": "COMMIT의 반대 동작을 하는 명령입니다.",
       "explain": "ROLLBACK은 COMMIT 전이라면 변경을 되돌린다. 확정하려면 COMMIT을 쓴다."

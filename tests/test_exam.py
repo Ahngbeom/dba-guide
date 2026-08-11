@@ -708,6 +708,82 @@ class AnswerLeakLintTest(unittest.TestCase):
             f"구체적으로 쓰거나 정답을 줄여라")
 
 
+class EquivalentShortAnswerTest(unittest.TestCase):
+    """아는 사람이 실제로 치는 표기를 오답 처리하지 않는지.
+
+    단답은 개념이 아니라 손에 붙은 명령을 확인하는 자리다. 정당한 표기를
+    틀렸다고 하면 학습자는 자기가 틀렸다고 생각하지 않고 채점을 불신하게
+    되고, 그러면 단답 문항 전체의 신호가 죽는다.
+
+    **일반 규칙으로는 세울 수 없다.** "허용 답안이 하나뿐이면 실패"는
+    `1521`·`pg_stat_activity` 처럼 동의 표기가 없는 단일 식별자 문항까지
+    전부 잡는 잘못된 잣대다. 그래서 실측한 쌍을 직접 못박는다.
+
+    넓히는 기준은 **'동등한가'이지 '비슷한가'가 아니다** — 묻지 않은 동작을
+    더한 답은 아래 REJECTED 에 함께 고정해 두어, 나중에 "이것도 넣자"로
+    흘러가지 않게 한다.
+
+    정규화기(`normalize_answer`)는 이 목록의 근거가 아니다. `\\G` 같은
+    클라이언트 접미사까지 정규화기가 알게 만들면 채점기가 벤더 문법을
+    알아야 하고, 그 지식이 두 군데로 갈라진다.
+    """
+
+    ACCEPTED = [
+        ("sql-rollback", "ROLLBACK WORK", "SQL 표준의 선택적 WORK"),
+        ("mon-tail-f", "tail --follow", "GNU 장형 옵션"),
+        ("mon-df-h", "df --human-readable", "GNU 장형 옵션"),
+        ("priv-revoke-insert",
+         "revoke insert on table employees from app_user",
+         "표준 SQL 에서 TABLE 은 선택적"),
+        ("txn-mysql-deadlock-log", r"SHOW ENGINE INNODB STATUS\G",
+         "mysql 클라이언트에서 실제로 치는 형태"),
+        ("txn-mysql-deadlock-log", r"SHOW ENGINE INNODB STATUS \G",
+         "같은 명령, 띄어 쓴 형태"),
+        # 정규화기가 이미 처리하는 것들 — 여기 함께 두어, 정규화가 약해지면
+        # 이 클래스가 먼저 알려 주게 한다.
+        ("sql-rollback", "rollback;", "끝의 세미콜론"),
+        ("mon-tail-f", "tail -F", "대문자 옵션"),
+    ]
+
+    REJECTED = [
+        ("idx-mysql-analyze-table", "analyze no_write_to_binlog table orders",
+         "묻지 않은 동작을 더했다"),
+        ("backup-mysql-tool", "mysqlpump",
+         "질문과 hint 가 '이름 뒤에 dump 가 붙은' 도구를 특정한다"),
+        ("mon-df-h", "du -h", "다른 명령"),
+    ]
+
+    def setUp(self):
+        banks = list((REPO_ROOT / "exams").glob("**/*.json"))
+        if not banks:
+            self.skipTest("아직 문제은행 없음")
+        self.accept = {}
+        for path in banks:
+            for q in json.loads(path.read_text(encoding="utf-8"))["questions"]:
+                if q.get("type") == "short":
+                    self.accept[q["id"]] = q.get("accept", [])
+
+    def _accept_for(self, qid):
+        # id 가 사라지거나 바뀌면 조용히 검사가 꺼지는 대신 여기서 죽는다.
+        self.assertIn(qid, self.accept,
+                      f"{qid} 문항이 사라졌다 — 이 목록도 함께 갱신하라")
+        return self.accept[qid]
+
+    def test_equivalent_notations_are_accepted(self):
+        for qid, answer, why in self.ACCEPTED:
+            with self.subTest(qid=qid, answer=answer):
+                self.assertTrue(
+                    exam.grade_short(answer, self._accept_for(qid)),
+                    f"{qid}: '{answer}' 를 오답 처리했다 ({why})")
+
+    def test_non_equivalent_answers_stay_rejected(self):
+        for qid, answer, why in self.REJECTED:
+            with self.subTest(qid=qid, answer=answer):
+                self.assertFalse(
+                    exam.grade_short(answer, self._accept_for(qid)),
+                    f"{qid}: '{answer}' 를 정답 처리했다 ({why})")
+
+
 class SeedParseTest(unittest.TestCase):
     def test_checklist_and_dbms_tagging(self):
         md = (
