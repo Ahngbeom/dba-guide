@@ -112,5 +112,81 @@ class PaintTest(unittest.TestCase):
         self.assertEqual(mr.paint([("가", None)], color=True), "가")
 
 
+class HeadingTest(unittest.TestCase):
+    """제목 3단계가 서로 다르게 보여야 챕터의 4단 구조가 스캔된다."""
+
+    def test_h1_is_wrapped_in_bars(self):
+        got = mr.render("# 관계형 데이터베이스 기초\n", width=60, color=False)
+        self.assertIn("━━━ 관계형 데이터베이스 기초 ━━━", got)
+
+    def test_h2_gets_a_diamond(self):
+        got = mr.render("## 1. 핵심 개념 설명\n", width=60, color=False)
+        self.assertIn("◆ 1. 핵심 개념 설명", got)
+
+    def test_h3_and_deeper_get_a_dot(self):
+        got = mr.render("### ACID\n#### 원자성\n", width=60, color=False)
+        self.assertIn("· ACID", got)
+        self.assertIn("· 원자성", got)
+
+    def test_heading_markup_is_stripped_when_coloured(self):
+        got = mr.render("## `SELECT` 문\n", width=60, color=True)
+        self.assertIn("SELECT", plain(got))
+        self.assertNotIn("`", plain(got))
+
+    def test_a_heading_is_preceded_by_a_blank_line(self):
+        lines = mr.render("문단\n## 제목\n", width=60, color=False).split("\n")
+        self.assertEqual(lines[1], "", lines)
+
+
+class ParagraphTest(unittest.TestCase):
+    def test_a_long_paragraph_wraps_to_width(self):
+        text = "가나다 " * 20 + "\n"
+        got = mr.render(text, width=30, color=False)
+        for line in got.split("\n"):
+            self.assertLessEqual(cwidth(line), 30, repr(line))
+
+    def test_blank_lines_survive(self):
+        got = mr.render("첫 문단\n\n둘째 문단\n", width=60, color=False)
+        self.assertIn("첫 문단\n\n둘째 문단", got)
+
+    def test_output_always_ends_with_a_newline(self):
+        self.assertTrue(mr.render("문단", width=60, color=False).endswith("\n"))
+
+
+class RuleAndCommentTest(unittest.TestCase):
+    def test_a_horizontal_rule_spans_the_width(self):
+        got = mr.render("---\n", width=20, color=False)
+        self.assertIn("─" * 20, got)
+
+    def test_asterisk_rules_count_too(self):
+        self.assertIn("─" * 20, mr.render("***\n", width=20, color=False))
+
+    def test_a_dbms_marker_comment_is_hidden(self):
+        """'전체' 보기는 filter_lines 를 거치지 않아 마커가 본문에 남는다."""
+        got = mr.render("<!-- dbms:mysql -->\n본문\n<!-- /dbms:mysql -->\n",
+                        width=60, color=False)
+        self.assertNotIn("dbms:", got)
+        self.assertIn("본문", got)
+
+    def test_a_bullet_is_not_mistaken_for_a_rule(self):
+        got = mr.render("- 항목\n", width=60, color=False)
+        self.assertNotIn("─" * 10, got)
+
+
+class NoEscapesWhenPlainTest(unittest.TestCase):
+    """`color=False` 계약: 출력에 `\\x1b` 가 하나도 없다."""
+
+    SAMPLE = ("# 제목\n\n## 절\n\n본문 **강조** 와 `코드`.\n\n---\n"
+              "<!-- dbms:mysql -->\n")
+
+    def test_no_escape_anywhere(self):
+        got = mr.render(self.SAMPLE, width=50, color=False)
+        self.assertNotIn("\x1b", got)
+
+    def test_colour_on_does_emit_escapes(self):
+        got = mr.render(self.SAMPLE, width=50, color=True)
+        self.assertIn("\x1b", got)
+
+
 if __name__ == "__main__":
     unittest.main()

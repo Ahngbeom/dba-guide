@@ -171,3 +171,70 @@ def paint(spans, color=True):
         code = SGR.get(style)
         out.append(f"\x1b[{code}m{text}\x1b[0m" if code and text else text)
     return "".join(out)
+
+
+# --------------------------------------------------------------------------- #
+# 블록 렌더
+# --------------------------------------------------------------------------- #
+# 줄 단위 스캐너로 쓴다 — `filter_dbms.filter_lines` 와 같은 방식이다. 챕터가
+# 쓰는 마크다운 부분집합이 좁고 일정해서 범용 파서가 필요 없다.
+_HEADING_RE = re.compile(r"^(#{1,6})\s+(.*?)\s*#*\s*$")
+_HR_RE = re.compile(r"^\s*([-*_])\s*(?:\1\s*){2,}$")
+_COMMENT_RE = re.compile(r"^\s*<!--.*-->\s*$")
+
+
+def _blank(out):
+    """직전 줄이 이미 비어 있지 않을 때만 빈 줄을 넣는다."""
+    if out and out[-1] != "":
+        out.append("")
+
+
+def _emit_heading(level, body, width, color, out):
+    """제목은 인라인 스타일을 버리고 통째로 한 스타일을 입는다.
+
+    제목 안의 `` `코드` `` 를 따로 색칠하면 제목 색과 싸워서 오히려 단계가
+    안 읽힌다. 기호만 떼고 제목 색으로 통일한다.
+    """
+    plain_body = "".join(t for t, _ in inline_spans(body, color))
+    _blank(out)
+    if level == 1:
+        bar = "━" * 3
+        text, style = f"{bar} {plain_body} {bar}", "h1"
+    else:
+        prefix, style = ("◆ ", "h2") if level == 2 else ("· ", "h3")
+        text = prefix + plain_body
+    # 제목은 접지 않고 자른다 — 접힌 제목은 본문과 구분이 안 된다. 자르지
+    # 않으면 `less` 가 접어서 같은 결과가 되고, 폭 회귀 테스트도 깨진다.
+    out.append(paint([(fit(text, width), style)], color))
+
+
+def _emit_paragraph(line, width, color, out):
+    for row in layout(inline_spans(line, color), width):
+        out.append(paint(row, color))
+
+
+def render(text, width=80, color=True):
+    """마크다운 → 화면에 뿌릴 문자열. 항상 개행으로 끝난다."""
+    width = max(20, width)
+    lines = text.splitlines()
+    out = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        i += 1
+
+        if _COMMENT_RE.match(line):
+            continue                       # dbms 마커 등 — 화면에 낼 것이 아니다
+        if not line.strip():
+            _blank(out)
+            continue
+        if _HR_RE.match(line):
+            out.append(paint([("─" * width, "dim")], color))
+            continue
+        m = _HEADING_RE.match(line)
+        if m:
+            _emit_heading(len(m.group(1)), m.group(2), width, color, out)
+            continue
+        _emit_paragraph(line, width, color, out)
+
+    return "\n".join(out) + "\n"
