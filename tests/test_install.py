@@ -492,13 +492,13 @@ class UninstallTest(InstallerTestCase):
             self.assertFalse((self.bin_dir / name).is_symlink())
         self.assertTrue((self.install_dir / ".exam-results" / "results.jsonl").exists())
 
-    def test_a_default_install_keeps_the_plain_purge_hint(self):
-        """기본 경로면 환경변수를 덧붙일 이유가 없다 — 잡음이 된다."""
+    def test_a_plain_uninstall_points_at_the_purge_command(self):
+        """지우는 방법을 알려주되, 기록이 남아 그 명령이 그대로 통해야 한다."""
         self._install_with_records()
         r = self.run_installer("--uninstall")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("install.sh --uninstall --purge", r.stdout)
-        self.assertNotIn("XDG_DATA_HOME=", r.stdout)
+        self.assertTrue(self.state_file.is_file())
 
     def test_uninstall_leaves_a_foreign_file_alone(self):
         self._install_with_records()
@@ -622,13 +622,22 @@ class LinkedCommandTest(InstallerTestCase):
 
 
 class SelfLocatingTest(InstallerTestCase):
-    """설치 위치는 링크가 기억한다.
+    """설치 위치는 **기록**이 기억한다 — 링크가 아니다.
 
     `INSTALL_DIR`는 매 실행마다 `XDG_DATA_HOME`으로 계산될 뿐이라, 커스텀
     경로로 설치한 뒤 그 값을 빠뜨리면 스크립트가 지난 설치본을 못 찾는다.
     실측된 결과는 조용한 두 번째 설치본과 그리로 옮겨간 링크였고, 원래
-    설치본과 학습 기록은 고아가 됐다. 우리가 건 링크가 위치를 알고 있으니
-    그것을 되읽어 쓴다.
+    설치본과 학습 기록은 고아가 됐다.
+
+    근거를 링크로 삼으면 안 된다. 링크는 in-place 설치에서도 걸리는데 그
+    대상은 기여자의 작업 클론이라, 나중의 managed 실행이 그 클론을 설치본으로
+    오인해 HEAD를 태그로 떨어뜨린다(실측). `install_managed`만 남기는 기록이
+    유일하게 안전한 근거다. `InPlaceIsNeverAdoptedTest`가 그 경계를 지킨다.
+
+    픽스처는 태그 **뒤에** 커밋을 하나 둔다. 그래야 클론의 HEAD가 최신 태그와
+    달라 실제 설치가 타는 `checkout --detach` 분기를 지나간다 — 태그가 tip에
+    있으면 조기 반환 분기만 검사하게 되고, 진짜 설치 경로의 기록이 통째로
+    테스트 밖에 남는다.
     """
 
     def setUp(self):
@@ -636,6 +645,7 @@ class SelfLocatingTest(InstallerTestCase):
         self.custom = self.tmp / "tools"
         self.custom_install = self.custom / "dba-guide"
         self.tag("v1.0.0")
+        self.commit("after the release")
         r = self.run_installer(xdg=self.custom)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertTrue(self.custom_install.is_dir())
@@ -768,3 +778,107 @@ class InPlaceIsNeverAdoptedTest(InstallerTestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertTrue(self.work.is_dir(), "사용자의 클론이 지워졌다")
         self.assertTrue((self.work / "MY-WORK.md").is_file())
+
+
+class RecordIsNotBlindlyTrustedTest(InstallerTestCase):
+    """기록은 새로 생긴 **신뢰 입력**이다 — 낡거나 엉뚱하면 물러서야 한다."""
+
+    def setUp(self):
+        super().setUp()
+        self.tag("v1.0.0")
+        self.commit("after the release")
+        self.state_file.parent.mkdir(parents=True, exist_ok=True)
+
+    def _record(self, text):
+        self.state_file.write_text(text, encoding="utf-8")
+
+    def _install_lands_at_default(self):
+        r = self.run_installer(xdg=None)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(self.install_dir.is_dir())
+
+    def test_a_record_naming_a_deleted_path_is_ignored(self):
+        self._record(str(self.tmp / "gone" / "dba-guide"))
+        self._install_lands_at_default()
+
+    def test_a_record_naming_a_foreign_repository_is_ignored(self):
+        stranger = self.tmp / "stranger"
+        stranger.mkdir()
+        git(stranger, "init", "--quiet")
+        self._record(str(stranger))
+        self._install_lands_at_default()
+
+    def test_a_record_naming_a_plain_file_is_ignored(self):
+        f = self.tmp / "not-a-dir"
+        f.write_text("x\n")
+        self._record(str(f))
+        self._install_lands_at_default()
+
+    def test_an_empty_record_is_ignored(self):
+        self._record("   \n")
+        self._install_lands_at_default()
+
+
+class ExplicitPathWinsTest(InstallerTestCase):
+    """목적지를 지정했으면 그대로 따른다.
+
+    기록이 명시적 지정을 이기면 이동할 방법이 없어진다 — 평범한
+    `--uninstall`은 기록을 남기므로 재설치가 옛 경로로 끌려가고, 남는
+    탈출구는 `--purge`, 즉 **백업 없는 학습 기록을 지우는 것**뿐이다.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.tag("v1.0.0")
+        self.commit("after the release")
+        self.first = self.tmp / "tools"
+        self.second = self.tmp / "elsewhere"
+        r = self.run_installer(xdg=self.first)
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_a_new_explicit_path_relocates_the_install(self):
+        r = self.run_installer(xdg=self.second)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue((self.second / "dba-guide").is_dir(), "지정한 곳에 설치되지 않았다")
+        self.assertEqual(os.readlink(self.bin_dir / "guide"),
+                         str(self.second / "dba-guide" / "guide"))
+        self.assertEqual(self.state_file.read_text().strip(),
+                         str(self.second / "dba-guide"))
+
+    def test_relocating_does_not_require_deleting_the_records(self):
+        """옛 설치본은 그대로 둔다 — 학습 기록은 사용자가 옮기거나 지운다."""
+        self.run_installer(xdg=self.second)
+        self.assertTrue((self.first / "dba-guide").is_dir())
+
+    def test_omitting_the_variable_still_follows_the_record(self):
+        r = self.run_installer(xdg=None)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse(self.install_dir.exists())
+
+
+class RecordingIsBookkeepingTest(InstallerTestCase):
+    """기록은 부기다 — 실패해도 설치를 죽이면 안 되고, 설치보다 늦으면 안 된다."""
+
+    def setUp(self):
+        super().setUp()
+        self.tag("v1.0.0")
+        self.commit("after the release")
+
+    def test_an_unwritable_record_does_not_fail_the_install(self):
+        # 기록 디렉터리 자리에 일반 파일을 둔다 — mkdir -p 가 실패한다.
+        state_root = self.home / ".local" / "state"
+        state_root.mkdir(parents=True)
+        (state_root / "dba-guide").write_text("in the way\n")
+        r = self.run_installer()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("설치 완료", r.stdout)
+
+    def test_a_link_conflict_still_leaves_the_install_recorded(self):
+        """링크 단계에서 죽어도 트리는 이미 우리 것이다 — 기록이 없으면
+        다음 실행이 두 번째 설치본을 만든다."""
+        self.bin_dir.mkdir(parents=True)
+        (self.bin_dir / "exam").write_text("남의 것\n")
+        r = self.run_installer(xdg=self.tmp / "tools")
+        self.assertEqual(r.returncode, 1)
+        self.assertTrue((self.tmp / "tools" / "dba-guide").is_dir())
+        self.assertTrue(self.state_file.is_file(), "트리는 만들고 기록은 안 했다")

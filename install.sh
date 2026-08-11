@@ -19,9 +19,6 @@ LAUNCHERS="guide exam shoot"
 # 우리가 만든 설치본의 위치 기록. 링크가 아니라 이 파일이 근거다 — 링크는
 # "어디에 걸었는가"만 알 뿐 "그 대상을 우리가 만들었는가"를 모른다.
 STATE_FILE="${XDG_STATE_HOME:-$HOME/.local/state}/dba-guide/install-path"
-# `adopt_existing_install`이 계산된 기본 경로를 링크에서 되읽은 값으로
-# 갈아끼웠는지. 안내 문구가 이 사실을 알아야 한다.
-adopted="no"
 
 info() { printf '%s\n' "$@"; }
 die() { printf '%s\n' "$@" >&2; exit 1; }
@@ -42,6 +39,9 @@ usage() {
 
 환경 변수:
   XDG_DATA_HOME       설치 경로의 부모 (기본: ~/.local/share)
+                      주면 그 값이 이깁니다. 주지 않으면 지난 설치 위치를
+                      기억해 그대로 씁니다.
+  XDG_STATE_HOME      설치 위치 기록의 부모 (기본: ~/.local/state)
   DBA_GUIDE_REPO_URL  클론 원본 (기본: GitHub)
 EOF
 }
@@ -155,6 +155,8 @@ report() {
 }
 
 install_managed() {
+  adopt_recorded_install
+
   # 디렉터리가 아닌 것(일반 파일·끊어진 링크)이 자리를 차지한 경우.
   # 그대로 두면 [ ! -d ] 가 참이라 클론 분기로 흘러 git이 영어 fatal 을
   # 뱉고 128로 죽는다. 같은 상황이니 같은 한국어 안내로 멈춘다.
@@ -192,8 +194,8 @@ install_managed() {
     if [ "$fresh" = "no" ]; then
       info "이미 최신입니다 — $tag"
     fi
-    link_launchers "$INSTALL_DIR"
     record_install "$INSTALL_DIR"
+    link_launchers "$INSTALL_DIR"
     report "$INSTALL_DIR" "$tag"
     return 0
   fi
@@ -208,8 +210,8 @@ install_managed() {
   fi
 
   git -C "$INSTALL_DIR" checkout --quiet --detach "$tag"
-  link_launchers "$INSTALL_DIR"
   record_install "$INSTALL_DIR"
+  link_launchers "$INSTALL_DIR"
   report "$INSTALL_DIR" "$tag"
 }
 
@@ -325,7 +327,32 @@ uninstall() {
   esac
 }
 
-# 이미 설치돼 있다면 그 위치를 기록에서 읽어 `INSTALL_DIR`을 갈아끼운다.
+# 기록이 없는데 런처 링크가 **다른 곳**의 유효한 설치본을 가리키는 경우.
+#
+# v1.3.0 이전에 커스텀 경로로 설치한 사람이 여기에 해당한다 — 기록이 없으니
+# 이 실행은 계산된 경로에 새로 설치하게 되고, 조용히 두 벌이 생긴다.
+# 막지는 않는다. 기여자가 자기 클론에 in-place 설치해 둔 상태에서 managed
+# 설치를 하는 정상 흐름이 겉보기에 똑같기 때문이다. 대신 반드시 알린다.
+#
+# 링크를 근거로 **채택하지는 않는다.** 링크는 어디를 가리켰는지만 알 뿐
+# 그 대상을 우리가 만들었는지 모르고, 실제로 그 오인이 기여자의 작업
+# 브랜치를 릴리스 태그로 떨어뜨린 적이 있다.
+warn_if_another_install_is_linked() {
+  for name in $LAUNCHERS; do
+    link="$BIN_DIR/$name"
+    is_our_link "$link" "$name" || continue
+    other="$(dirname "$(readlink "$link")")"
+    is_our_install "$other" || continue
+    [ "$other" != "$INSTALL_DIR" ] || return 0
+    info "참고: 다른 위치에 설치본이 있습니다 — $other" \
+         "  이 실행은 $INSTALL_DIR 에 설치합니다." \
+         "  그쪽을 계속 쓰려면 그 위치의 부모를 XDG_DATA_HOME 으로 주고 다시 실행하세요." \
+         ""
+    return 0
+  done
+}
+
+# 지난 설치 위치를 기록에서 읽어 `INSTALL_DIR`을 갈아끼운다.
 #
 # `INSTALL_DIR`은 매 실행마다 `XDG_DATA_HOME`으로 **계산될 뿐**이라 지난번에
 # 어디에 깔았는지 기억하지 못한다. 커스텀 경로로 설치한 뒤 그 값을 빠뜨리고
@@ -333,31 +360,47 @@ uninstall() {
 # 링크를 그쪽으로 옮긴다 — 원래 설치본과 학습 기록은 고아가 된다. `--purge`는
 # 더 나쁘다. 엉뚱한 트리를 지우고 진짜는 남긴다.
 #
-# 근거는 **런처 링크가 아니라 이 기록**이어야 한다. 링크는 in-place 설치에서도
-# 걸리는데, 그 대상은 기여자의 작업 클론이다. 링크를 근거로 삼으면 나중의
-# managed 실행이 그 클론을 설치본으로 오인해 `checkout --detach`로 작업
-# 브랜치를 태그에 떨어뜨리고, `--purge`는 그 클론을 통째로 지운다. 기록은
-# `install_managed`만 남기므로 in-place 클론은 애초에 후보가 아니다.
-adopt_existing_install() {
-  [ -f "$STATE_FILE" ] || return 0
+# 다만 **`XDG_DATA_HOME`을 준 실행에서는 기록을 보지 않는다.** 사용자가
+# 목적지를 지정한 것이고, 기록이 그걸 이기면 설치를 옮길 방법이 사라진다 —
+# 평범한 `--uninstall`은 기록을 남기므로 재설치가 옛 경로로 끌려가고, 남는
+# 탈출구는 `--purge`, 즉 백업 없는 학습 기록을 지우는 것뿐이 된다.
+#
+# 기록은 신뢰 입력이므로 매번 `is_our_install`로 다시 확인한다. 낡았거나
+# 남의 저장소를 가리키면 조용히 물러나 계산된 경로를 쓴다.
+adopt_recorded_install() {
+  if [ -n "${XDG_DATA_HOME+x}" ]; then
+    return 0
+  fi
+  if [ ! -f "$STATE_FILE" ]; then
+    warn_if_another_install_is_linked
+    return 0
+  fi
   recorded="$(cat "$STATE_FILE" 2>/dev/null || true)"
   [ -n "$recorded" ] || return 0
   is_our_install "$recorded" || return 0
   [ "$recorded" != "$INSTALL_DIR" ] || return 0
 
-  adopted="yes"
   info "기존 설치본을 씁니다 — $recorded" \
        "  계산된 기본 경로는 $INSTALL_DIR 이지만, 지난 설치 기록이 위를 가리킵니다." \
-       "  위치를 옮기려면 먼저 제거하세요: install.sh --uninstall --purge" \
+       "  다른 곳에 설치하려면 XDG_DATA_HOME 으로 목적지를 지정하세요." \
        ""
   INSTALL_DIR="$recorded"
 }
 
 # 우리가 만든 설치본의 위치를 기록한다. in-place 설치는 부르지 않는다 —
 # 그 트리는 우리 것이 아니다.
+#
+# **부기가 설치를 실패시키면 안 된다.** `set -e` 아래에서 mkdir이나
+# 리다이렉트가 죽으면 클론·체크아웃·링크가 다 끝난 실행이 완료 안내도 없이
+# 1로 끝난다.
 record_install() {
-  mkdir -p "$(dirname "$STATE_FILE")"
-  printf '%s\n' "$1" > "$STATE_FILE"
+  if ! mkdir -p "$(dirname "$STATE_FILE")" 2>/dev/null \
+     || ! printf '%s\n' "$1" > "$STATE_FILE" 2>/dev/null; then
+    info "경고: 설치 위치를 기록하지 못했습니다 — $STATE_FILE" \
+         "      다음 실행에서 이 위치를 기억하지 못합니다." \
+         "      그때는 XDG_DATA_HOME 으로 직접 지정하세요." \
+         ""
+  fi
 }
 
 main() {
@@ -378,9 +421,8 @@ main() {
         "  제거하려면: install.sh --uninstall --purge"
   fi
 
-  adopt_existing_install
-
   if [ "$mode" = "uninstall" ]; then
+    adopt_recorded_install
     uninstall "$purge"
     exit 0
   fi
