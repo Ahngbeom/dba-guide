@@ -226,7 +226,7 @@ def _emit_fence(lines, i, width, color, out):
     """
     lang = _FENCE_RE.match(lines[i]).group(1)
     i += 1
-    head = f"┌─ {lang} " if lang else "┌"
+    head = fit(f"┌─ {lang} ", width) if lang else "┌"
     out.append(paint([(head + "─" * max(0, width - cwidth(head)), "dim")],
                      color))
     while i < len(lines) and not _FENCE_RE.match(lines[i]):

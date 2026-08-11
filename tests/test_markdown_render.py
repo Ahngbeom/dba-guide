@@ -229,6 +229,20 @@ class FenceTest(unittest.TestCase):
         for line in got.split("\n"):
             self.assertLessEqual(cwidth(line), 30, repr(line))
 
+    def test_long_ascii_language_tag_does_not_overflow(self):
+        """긴 ASCII 언어 태그(34자)가 width=20을 넘지 않는다."""
+        src = "```verylonglanguagename1234567890\ncode\n```\n"
+        got = mr.render(src, width=20, color=False)
+        for line in got.split("\n"):
+            self.assertLessEqual(cwidth(line), 20, repr(line))
+
+    def test_long_korean_language_tag_does_not_overflow(self):
+        """긴 한글 언어 태그(16자=폭32)가 width=20을 넘지 않는다."""
+        src = "```가나다라마바사아자차카타파하\ncode\n```\n"
+        got = mr.render(src, width=20, color=False)
+        for line in got.split("\n"):
+            self.assertLessEqual(cwidth(line), 20, repr(line))
+
 
 if __name__ == "__main__":
     unittest.main()
