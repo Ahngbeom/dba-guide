@@ -525,6 +525,19 @@ class LessRawFlagTest(unittest.TestCase):
     def test_other_pagers_are_left_alone(self):
         self.assertEqual(self._cmd("more"), ["more"])
 
+    def test_short_option_with_prompt_argument(self):
+        # -P는 인자를 받는 옵션. -Pcurrent에서 current는 인자이지 옵션글자가 아니다.
+        # 이전에는 current에 r이 있어서 오탐했다.
+        self.assertEqual(self._cmd("less -Pcurrent"), ["less", "-Pcurrent", "-R"])
+
+    def test_short_option_with_tab_argument(self):
+        # -x는 인자를 받는 옵션.
+        self.assertEqual(self._cmd("less -x4"), ["less", "-x4", "-R"])
+
+    def test_short_option_with_file_argument(self):
+        # -o는 인자를 받는 옵션.
+        self.assertEqual(self._cmd("less -ofile.log"), ["less", "-ofile.log", "-R"])
+
 
 class PickLineTest(unittest.TestCase):
     """`pick()`의 평문 짝. 파이프로 돌릴 때도 고를 수 있어야 한다."""

@@ -537,12 +537,24 @@ def _with_raw_flag(argv):
     """`less` 에 `-R` 이 없으면 붙인다. 다른 페이저는 건드리지 않는다."""
     if not argv or os.path.basename(argv[0]) != "less":
         return argv
+
+    # less의 단축 옵션 중 인자를 붙여 받는 글자들. 이들 뒤의 텍스트는 옵션이
+    # 아니라 인자이므로 스캔을 중단해야 한다 (예: -Pcurrent 에서 current는
+    # -P의 인자이지 옵션 글자들이 아니다). 부분문자열 검색은 인자값에 들어간
+    # 'r'/'R'을 오탐할 수 있어 글자 단위 스캔이 필수.
+    takes_arg = set("bhjkoOpPtTxyz#")
+
     for a in argv[1:]:
         if a.startswith("--") and a.lower().startswith("--raw"):
             return argv
-        if a.startswith("-") and not a.startswith("--") and (
-                "R" in a or "r" in a):
-            return argv
+        if a.startswith("-") and not a.startswith("--"):
+            # 단축 옵션 글자를 하나하나 검사
+            for c in a[1:]:
+                if c == "R" or c == "r":
+                    return argv
+                if c in takes_arg:
+                    # 이 글자는 인자를 받으므로 뒤의 텍스트는 모두 인자이다
+                    break
     return argv + ["-R"]
 
 
