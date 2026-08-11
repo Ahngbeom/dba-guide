@@ -328,20 +328,29 @@ def save_result(bank, results, session, dbms):
 # 대상(문제은행) 해석
 # --------------------------------------------------------------------------- #
 def resolve_targets(target):
-    """CLI 대상 인자를 JSON 파일 경로 리스트로 해석한다."""
-    if target:
-        p = Path(target)
-        if p.suffix == ".json" and p.is_file():
-            return [p]
-        # 티어 이름 또는 exams 하위 경로
-        for base in (Path(target), EXAMS_DIR / target):
-            if base.is_dir():
-                found = sorted(base.glob("*.json"))
-                if found:
-                    return found
-        raise SystemExit(f"대상을 찾을 수 없습니다: {target}")
-    # 대상 미지정 → 전체 목록에서 선택
-    return None
+    """CLI 대상 인자를 JSON 파일 경로 리스트로 해석한다.
+
+    세 기준을 순서대로 본다 — 준 그대로(절대경로나 현재 디렉터리 기준),
+    저장소 기준(`exams/…`), `exams/` 기준(`<티어>/…`). **파일 형식에도
+    저장소·`exams/` 폴백이 있어야 한다.** 예전에는 파일을 현재 디렉터리
+    기준으로만 찾아서, `install.sh`로 설치한 사람은 README가 안내하는
+    `exam exams/01-beginner/….json`을 쓸 수 없었고 `exam 01-beginner/….json`은
+    저장소 안에서도 동작한 적이 없었다.
+
+    티어 이름은 저장소 루트에도 같은 이름의 챕터 디렉터리가 있다 —
+    거기엔 `*.json`이 없으므로 `found`가 비어 다음 기준으로 넘어간다.
+    """
+    if not target:
+        # 대상 미지정 → 전체 목록에서 선택
+        return None
+    for base in (Path(target), REPO_ROOT / target, EXAMS_DIR / target):
+        if base.suffix == ".json" and base.is_file():
+            return [base]
+        if base.is_dir():
+            found = sorted(base.glob("*.json"))
+            if found:
+                return found
+    raise SystemExit(f"대상을 찾을 수 없습니다: {target}")
 
 
 def discover_banks():
