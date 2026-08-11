@@ -437,8 +437,19 @@ class PagerColorTest(unittest.TestCase):
         with self._env(PAGER="more"):
             self.assertFalse(tui.pager_supports_color(self._TTY()))
 
-    def test_bat_is_fine(self):
+    def test_formatters_are_not_treated_as_colour_pagers(self):
+        # bat과 delta는 포맷터다. 입력을 재해석·재장식하므로 ANSI를 그대로
+        # 통과시킨다는 보장이 없다. 모르는 페이저로 분류되면 무색으로 안전하게 떨어진다.
         with self._env(PAGER="bat"):
+            self.assertFalse(tui.pager_supports_color(self._TTY()))
+        with self._env(PAGER="delta"):
+            self.assertFalse(tui.pager_supports_color(self._TTY()))
+
+    def test_moar_and_ov_are_colour_pagers(self):
+        # moar와 ov는 순수 페이저다.
+        with self._env(PAGER="moar"):
+            self.assertTrue(tui.pager_supports_color(self._TTY()))
+        with self._env(PAGER="ov"):
             self.assertTrue(tui.pager_supports_color(self._TTY()))
 
     def test_no_color_env_wins_over_everything(self):
