@@ -7,7 +7,7 @@
 `main`은 지금처럼 PostgreSQL/MySQL/Oracle을 한 챕터 안에 병기하는 **vendor-neutral 원본**을 유지한다. 하지만 특정 DBMS 하나만 담당하는 독자는 다른 두 벤더 내용까지 헤치고 읽어야 하는 불편이 있다. `postgresql`/`mysql`/`oracle` 브랜치는 이 독자를 위해 **main에서 자동으로 걸러낸 파생 뷰**다.
 
 - `main`만 고치면 된다. 벤더 브랜치는 사람이 직접 편집하지 않는다 — 편집해도 다음 재생성 때 덮어써진다.
-- 재생성은 `scripts/generate-branch.sh`를 수동 실행해 트리거한다. CI는 없다(이 저장소는 학습서이지 소프트웨어 프로젝트가 아니다).
+- 재생성은 `scripts/generate-branch.sh`를 수동 실행해 트리거한다. CI가 대신 돌려 주지 않는다 — 워크플로는 테스트만 돌린다(`docs/release-policy.md` 「CI가 하는 일과 하지 않는 일」). 다만 스크립트 자체의 동작은 `tests/test_generate_branch.py`가 임시 저장소를 만들어 실제로 실행하며 검증한다.
 
 ## 마커 문법
 
