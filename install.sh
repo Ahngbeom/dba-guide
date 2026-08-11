@@ -314,6 +314,39 @@ uninstall() {
   esac
 }
 
+# 이미 설치돼 있다면 그 위치를 링크에서 되읽어 `INSTALL_DIR`을 갈아끼운다.
+#
+# `INSTALL_DIR`은 매 실행마다 `XDG_DATA_HOME`으로 **계산될 뿐**이라 지난번에
+# 어디에 깔았는지 기억하지 못한다. 커스텀 경로로 설치한 뒤 그 값을 빠뜨리고
+# 다시 실행하면 기본 경로를 대상으로 삼아, 조용히 두 번째 설치본을 만들고
+# 링크를 그쪽으로 옮긴다 — 원래 설치본과 학습 기록은 고아가 된다. `--purge`는
+# 더 나쁘다. 엉뚱한 트리를 지우고 진짜는 남긴다.
+#
+# 우리가 건 링크가 그 위치를 알고 있다. 그것이 유일한 기록이다.
+adopt_existing_install() {
+  found=""
+  for name in $LAUNCHERS; do
+    link="$BIN_DIR/$name"
+    is_our_link "$link" "$name" || continue
+    candidate="$(dirname "$(readlink "$link")")"
+    # 끊어진 링크도 `is_our_link`는 우리 것으로 인정한다(설치본을 손으로 지운
+    # 경우). 그런 대상은 설치본이 아니므로 여기서 걸러진다.
+    if is_our_install "$candidate"; then
+      found="$candidate"
+      break
+    fi
+  done
+
+  [ -n "$found" ] || return 0
+  [ "$found" != "$INSTALL_DIR" ] || return 0
+
+  info "기존 설치본을 씁니다 — $found" \
+       "  계산된 기본 경로는 $INSTALL_DIR 이지만, 걸려 있는 링크가 위를 가리킵니다." \
+       "  위치를 옮기려면 먼저 제거하세요: install.sh --uninstall" \
+       ""
+  INSTALL_DIR="$found"
+}
+
 main() {
   mode="install"
   purge="no"
@@ -331,6 +364,8 @@ main() {
     die "--purge 는 --uninstall 과 함께만 쓸 수 있습니다." \
         "  제거하려면: install.sh --uninstall --purge"
   fi
+
+  adopt_existing_install
 
   if [ "$mode" = "uninstall" ]; then
     uninstall "$purge"

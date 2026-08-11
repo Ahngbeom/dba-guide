@@ -75,21 +75,32 @@ class InstallerTestCase(unittest.TestCase):
         git(self.origin, "add", "-A")
         git(self.origin, "commit", "--quiet", "-m", message)
 
-    def env(self):
+    def env(self, xdg="default"):
+        """실행 환경. `xdg`로 `XDG_DATA_HOME`을 갈아끼운다.
+
+        기본값은 임시 HOME 아래의 표준 경로다. 다른 경로를 주면 설치 위치가
+        따라 움직이고, `None`을 주면 변수 자체를 지운다 — 커스텀 경로로
+        설치한 뒤 그 값을 빠뜨리고 다시 실행하는 상황을 재현하기 위해서다.
+        """
         env = dict(os.environ)
         env["HOME"] = str(self.home)
-        env["XDG_DATA_HOME"] = str(self.home / ".local" / "share")
         env["DBA_GUIDE_REPO_URL"] = self.origin.as_uri()
+        if xdg == "default":
+            env["XDG_DATA_HOME"] = str(self.home / ".local" / "share")
+        elif xdg is None:
+            env.pop("XDG_DATA_HOME", None)
+        else:
+            env["XDG_DATA_HOME"] = str(xdg)
         return env
 
-    def run_installer(self, *args, stdin=""):
+    def run_installer(self, *args, stdin="", xdg="default"):
         return subprocess.run(
             ["bash", str(self.script), *args],
-            env=self.env(), cwd=str(self.tmp),
+            env=self.env(xdg), cwd=str(self.tmp),
             input=stdin, capture_output=True, text=True,
         )
 
-    def run_installer_on_a_tty(self, *args, answer=""):
+    def run_installer_on_a_tty(self, *args, answer="", xdg="default"):
         """진짜 tty를 stdin에 붙여 실행한다.
 
         `install.sh`의 확인 프롬프트는 `[ -t 0 ]` 뒤에 있어, 파이프로는
@@ -103,7 +114,7 @@ class InstallerTestCase(unittest.TestCase):
                 os.write(master, answer.encode())
             return subprocess.run(
                 ["bash", str(self.script), *args],
-                env=self.env(), cwd=str(self.tmp), stdin=slave,
+                env=self.env(xdg), cwd=str(self.tmp), stdin=slave,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
             )
         finally:
@@ -595,3 +606,63 @@ class LinkedCommandTest(InstallerTestCase):
                            env=env, cwd=str(self.tmp), capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("args=--dbms postgresql", r.stdout)
+
+
+class SelfLocatingTest(InstallerTestCase):
+    """설치 위치는 링크가 기억한다.
+
+    `INSTALL_DIR`는 매 실행마다 `XDG_DATA_HOME`으로 계산될 뿐이라, 커스텀
+    경로로 설치한 뒤 그 값을 빠뜨리면 스크립트가 지난 설치본을 못 찾는다.
+    실측된 결과는 조용한 두 번째 설치본과 그리로 옮겨간 링크였고, 원래
+    설치본과 학습 기록은 고아가 됐다. 우리가 건 링크가 위치를 알고 있으니
+    그것을 되읽어 쓴다.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.custom = self.tmp / "tools"
+        self.custom_install = self.custom / "dba-guide"
+        self.tag("v1.0.0")
+        r = self.run_installer(xdg=self.custom)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(self.custom_install.is_dir())
+
+    def test_rerunning_without_the_variable_reuses_the_existing_install(self):
+        r = self.run_installer(xdg=None)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse(self.install_dir.exists(),
+                         "기본 경로에 두 번째 설치본이 생겼다")
+        self.assertIn(str(self.custom_install), r.stdout)
+
+    def test_the_links_keep_pointing_at_the_original_install(self):
+        self.run_installer(xdg=None)
+        for name, _ in self.LAUNCHERS:
+            with self.subTest(launcher=name):
+                self.assertEqual(os.readlink(self.bin_dir / name),
+                                 str(self.custom_install / name))
+
+    def test_it_says_which_install_it_adopted(self):
+        """조용히 고르면 안 된다 — 계산된 기본 경로와 다르다는 사실을 알린다."""
+        r = self.run_installer(xdg=None)
+        self.assertIn("기존 설치본", r.stdout)
+
+    def test_uninstall_without_the_variable_reports_the_real_directory(self):
+        r = self.run_installer("--uninstall", xdg=None)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn(str(self.custom_install), r.stdout)
+        self.assertTrue(self.custom_install.is_dir())
+
+    def test_purge_without_the_variable_deletes_the_real_directory(self):
+        """가장 나쁜 경우 — 엉뚱한 트리를 지우고 진짜는 남기는 것."""
+        r = self.run_installer_on_a_tty("--uninstall", "--purge",
+                                        answer="y\n", xdg=None)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse(self.custom_install.exists())
+
+    def test_an_explicit_default_install_is_untouched_by_this(self):
+        """링크가 없으면 예전대로 계산된 경로를 쓴다."""
+        for name, _ in self.LAUNCHERS:
+            (self.bin_dir / name).unlink()
+        r = self.run_installer()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(self.install_dir.is_dir())
