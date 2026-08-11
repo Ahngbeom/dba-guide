@@ -33,15 +33,16 @@ git switch --detach v1.0.0
 
 ## 릴리스 전 점검
 
-CI가 막아 주는 항목은 하나뿐이다(아래 참고). 나머지는 사람이 직접 실행한다.
+**CI 자동**이라고 적힌 항목은 스위트가 막아 준다(아래 참고). 나머지는 사람이 직접 실행한다.
 
 - [ ] `git status --short`가 비어 있다
 - [ ] `python3 -m unittest discover -s tests`가 전부 통과한다 — **CI 자동.** 태그는 tests 워크플로가 초록인 커밋에 찍는다
 - [ ] `./shoot doctor`가 통과한다 — 스테이지 정의 파싱까지 여기서 걸린다. CI에는 없다(docker와 DB 클라이언트가 필요해서)
-- [ ] 챕터를 추가·이동·삭제했다면 `README.md`의 링크가 맞다
-- [ ] 새 명령어를 넣었다면 해당 티어의 `*-commands-cheatsheet.md`에 행이 있다
-- [ ] 새 용어를 넣었다면 `appendix/glossary.md`·`appendix/dbms-comparison-matrix.md` 반영 여부를 판단했다
-- [ ] 챕터를 추가·개정했다면 대응하는 `exams/**/*.json`이 함께 갱신됐다
+- [ ] 챕터를 추가·이동·삭제했다면 `README.md`의 링크가 맞다 — **CI 자동** (`scripts/check_content.py`의 links·orphans)
+- [ ] 챕터를 추가·개정했다면 네 절 구조가 유지된다 — **CI 자동** (structure)
+- [ ] 새 명령어를 넣었다면 해당 티어의 `*-commands-cheatsheet.md`에 행이 있다 — 판정 불가, 사람 몫
+- [ ] 새 용어를 넣었다면 `appendix/glossary.md`·`appendix/dbms-comparison-matrix.md` 반영 여부를 판단했다 — 판정 불가, 사람 몫
+- [ ] 챕터를 추가·개정했다면 대응하는 `exams/**/*.json`이 함께 갱신됐다 — 파일 **존재**만 CI 자동(banks). 내용이 챕터와 맞는지는 사람 몫
 - [ ] `docs/dbms-branch-strategy.md`의 마킹 진행 표가 최신이다
 - [ ] 벤더 브랜치 3개를 `main` 최신 시점에서 재생성해 push했다
 - [ ] 릴리스 발행 **후** `curl … | bash`를 한 번 실제로 돌려 새 태그를 집는지 확인했다
@@ -100,4 +101,8 @@ gh release edit vX.Y.Z --draft=false
 
 트리거가 `push: branches: [main]`으로 좁혀져 있는 것은 실수가 아니다. 벤더 브랜치는 `scripts/generate-branch.sh`가 main의 트리를 통째로 복제해 만들므로 이 워크플로 파일도 함께 실려 간다. 브랜치를 한정하지 않으면 뷰를 재생성할 때마다 같은 테스트가 3번 더 돈다.
 
-대신 **자동화된 것은 테스트뿐이다.** 챕터 링크, 치트시트 행, 용어집 반영, 벤더 브랜치 재생성은 여전히 막아 주는 장치가 없다. 태그를 찍기 전에 위 목록을 직접 훑는다.
+본문 정합성 검사도 **별도 스텝이 아니라 스위트 안에** 있다. `scripts/check_content.py`가 링크·고아 문서·챕터 네 절 구조·문제은행 존재를 판정하고, `tests/test_check_content.py`의 `ShippedContentTest`가 실제 저장소를 상대로 그것을 돌린다. 릴리스 전에 손으로 보고 싶으면 `python3 scripts/check_content.py`를 직접 실행하면 된다 — 어디가 틀렸는지 한 줄씩 찍어 준다.
+
+검사기는 **판정 가능한 것만** 본다. 무엇이 *새* 명령어인지, 어떤 용어가 용어집에 들어가야 하는지는 본문의 의미를 읽어야 하는 판단이라 자동화하지 않았다. 코드 블록에서 토큰을 긁어 치트시트와 대조하는 방식은 오탐이 압도적이어서, 결국 검사기를 끄게 만든다.
+
+그래서 남는 사람 몫은 이것이다: **치트시트 행, 용어집·비교 매트릭스 반영, 문제은행 내용의 최신성, 벤더 브랜치 재생성.** 태그를 찍기 전에 위 목록을 직접 훑는다.
