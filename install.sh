@@ -16,6 +16,9 @@ REPO_URL="${DBA_GUIDE_REPO_URL:-https://github.com/Ahngbeom/dba-guide.git}"
 INSTALL_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/dba-guide"
 BIN_DIR="$HOME/.local/bin"
 LAUNCHERS="guide exam shoot"
+# 우리가 만든 설치본의 위치 기록. 링크가 아니라 이 파일이 근거다 — 링크는
+# "어디에 걸었는가"만 알 뿐 "그 대상을 우리가 만들었는가"를 모른다.
+STATE_FILE="${XDG_STATE_HOME:-$HOME/.local/state}/dba-guide/install-path"
 # `adopt_existing_install`이 계산된 기본 경로를 링크에서 되읽은 값으로
 # 갈아끼웠는지. 안내 문구가 이 사실을 알아야 한다.
 adopted="no"
@@ -190,6 +193,7 @@ install_managed() {
       info "이미 최신입니다 — $tag"
     fi
     link_launchers "$INSTALL_DIR"
+    record_install "$INSTALL_DIR"
     report "$INSTALL_DIR" "$tag"
     return 0
   fi
@@ -205,6 +209,7 @@ install_managed() {
 
   git -C "$INSTALL_DIR" checkout --quiet --detach "$tag"
   link_launchers "$INSTALL_DIR"
+  record_install "$INSTALL_DIR"
   report "$INSTALL_DIR" "$tag"
 }
 
@@ -260,17 +265,10 @@ uninstall() {
       info "" \
            "저장소는 남겨 뒀습니다 — $INSTALL_DIR" \
            "  학습 기록(시험 결과·정리 노트)이 그 안에 있습니다."
-      # 링크를 방금 지웠다 — 설치 위치를 되읽을 수단이 사라졌다는 뜻이다.
-      # 그러니 여기서 안내하는 명령은 그 자체로 완결돼야 한다. 맨
-      # `--uninstall --purge`는 다음 실행에서 계산된 기본 경로를 보고,
-      # 이 설치본과 학습 기록은 그대로 남는다.
-      if [ "$adopted" = "yes" ]; then
-        info "  전부 지우려면 위치를 함께 준다:" \
-             "    XDG_DATA_HOME=\"$(dirname "$INSTALL_DIR")\" install.sh --uninstall --purge" \
-             "  또는 직접: rm -rf \"$INSTALL_DIR\""
-      else
-        info "  전부 지우려면: install.sh --uninstall --purge"
-      fi
+      # 링크는 방금 지웠지만 위치 기록은 남겨 둔다 — 나중에 이 명령을
+      # 그대로 쳐도 진짜 설치본을 찾아간다. 기록까지 지우면 커스텀 경로에
+      # 설치한 사람은 단서를 잃고, `--purge`가 엉뚱한 트리를 본다.
+      info "  전부 지우려면: install.sh --uninstall --purge"
     else
       # in-place 설치였다면 이 경로는 만들어진 적이 없다. 없는 디렉터리를
       # 학습 기록이 있는 곳이라고 알리면 사용자가 엉뚱한 데를 찾는다.
@@ -322,12 +320,12 @@ uninstall() {
     return 0
   fi
   case "$answer" in
-    y|Y|yes|YES) rm -rf "$INSTALL_DIR"; info "삭제했습니다." ;;
+    y|Y|yes|YES) rm -rf "$INSTALL_DIR"; rm -f "$STATE_FILE"; info "삭제했습니다." ;;
     *) info "취소했습니다." ;;
   esac
 }
 
-# 이미 설치돼 있다면 그 위치를 링크에서 되읽어 `INSTALL_DIR`을 갈아끼운다.
+# 이미 설치돼 있다면 그 위치를 기록에서 읽어 `INSTALL_DIR`을 갈아끼운다.
 #
 # `INSTALL_DIR`은 매 실행마다 `XDG_DATA_HOME`으로 **계산될 뿐**이라 지난번에
 # 어디에 깔았는지 기억하지 못한다. 커스텀 경로로 설치한 뒤 그 값을 빠뜨리고
@@ -335,30 +333,31 @@ uninstall() {
 # 링크를 그쪽으로 옮긴다 — 원래 설치본과 학습 기록은 고아가 된다. `--purge`는
 # 더 나쁘다. 엉뚱한 트리를 지우고 진짜는 남긴다.
 #
-# 우리가 건 링크가 그 위치를 알고 있다. 그것이 유일한 기록이다.
+# 근거는 **런처 링크가 아니라 이 기록**이어야 한다. 링크는 in-place 설치에서도
+# 걸리는데, 그 대상은 기여자의 작업 클론이다. 링크를 근거로 삼으면 나중의
+# managed 실행이 그 클론을 설치본으로 오인해 `checkout --detach`로 작업
+# 브랜치를 태그에 떨어뜨리고, `--purge`는 그 클론을 통째로 지운다. 기록은
+# `install_managed`만 남기므로 in-place 클론은 애초에 후보가 아니다.
 adopt_existing_install() {
-  found=""
-  for name in $LAUNCHERS; do
-    link="$BIN_DIR/$name"
-    is_our_link "$link" "$name" || continue
-    candidate="$(dirname "$(readlink "$link")")"
-    # 끊어진 링크도 `is_our_link`는 우리 것으로 인정한다(설치본을 손으로 지운
-    # 경우). 그런 대상은 설치본이 아니므로 여기서 걸러진다.
-    if is_our_install "$candidate"; then
-      found="$candidate"
-      break
-    fi
-  done
-
-  [ -n "$found" ] || return 0
-  [ "$found" != "$INSTALL_DIR" ] || return 0
+  [ -f "$STATE_FILE" ] || return 0
+  recorded="$(cat "$STATE_FILE" 2>/dev/null || true)"
+  [ -n "$recorded" ] || return 0
+  is_our_install "$recorded" || return 0
+  [ "$recorded" != "$INSTALL_DIR" ] || return 0
 
   adopted="yes"
-  info "기존 설치본을 씁니다 — $found" \
-       "  계산된 기본 경로는 $INSTALL_DIR 이지만, 걸려 있는 링크가 위를 가리킵니다." \
-       "  위치를 옮기려면 먼저 제거하세요: install.sh --uninstall" \
+  info "기존 설치본을 씁니다 — $recorded" \
+       "  계산된 기본 경로는 $INSTALL_DIR 이지만, 지난 설치 기록이 위를 가리킵니다." \
+       "  위치를 옮기려면 먼저 제거하세요: install.sh --uninstall --purge" \
        ""
-  INSTALL_DIR="$found"
+  INSTALL_DIR="$recorded"
+}
+
+# 우리가 만든 설치본의 위치를 기록한다. in-place 설치는 부르지 않는다 —
+# 그 트리는 우리 것이 아니다.
+record_install() {
+  mkdir -p "$(dirname "$STATE_FILE")"
+  printf '%s\n' "$1" > "$STATE_FILE"
 }
 
 main() {

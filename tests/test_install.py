@@ -129,6 +129,11 @@ class InstallerTestCase(unittest.TestCase):
     def bin_dir(self):
         return self.home / ".local" / "bin"
 
+    @property
+    def state_file(self):
+        """우리가 만든 설치본의 위치 기록. in-place 설치는 남기지 않는다."""
+        return self.home / ".local" / "state" / "dba-guide" / "install-path"
+
     def head_tag(self):
         return git(self.install_dir, "describe", "--tags", "--exact-match").strip()
 
@@ -667,30 +672,99 @@ class SelfLocatingTest(InstallerTestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertFalse(self.custom_install.exists())
 
-    def test_a_kept_install_prints_a_purge_command_that_works(self):
-        """링크를 지우는 순간 위치를 되읽을 수단이 사라진다.
+    def test_a_plain_uninstall_keeps_the_record_for_a_later_purge(self):
+        """링크를 지워도 위치 기록은 남아야 한다.
 
-        그러니 그때 안내하는 명령은 **그 자체로 완결**돼야 한다. 맨
-        `install.sh --uninstall --purge`는 다음 실행에서 기본 경로를 보고,
-        커스텀 설치본과 학습 기록은 그대로 남는다.
+        `--uninstall`은 런처 링크를 지운다. 위치를 링크에서만 알아냈다면 그
+        순간 단서가 사라져, 나중의 `--uninstall --purge`가 기본 경로를 보고
+        진짜 설치본과 학습 기록을 남긴 채 끝난다.
         """
         r = self.run_installer("--uninstall", xdg=None)
         self.assertEqual(r.returncode, 0, r.stderr)
-        self.assertIn(f'XDG_DATA_HOME="{self.custom}"', r.stdout)
-        self.assertIn(f'rm -rf "{self.custom_install}"', r.stdout)
+        self.assertTrue(self.state_file.is_file(), "기록이 지워졌다")
+        self.assertEqual(self.state_file.read_text().strip(),
+                         str(self.custom_install))
 
-    def test_following_that_printed_command_actually_purges(self):
+    def test_purge_after_a_plain_uninstall_still_finds_the_real_tree(self):
         self.run_installer("--uninstall", xdg=None)
         self.assertTrue(self.custom_install.is_dir(), "아직 남아 있어야 한다")
         r = self.run_installer_on_a_tty("--uninstall", "--purge",
-                                        answer="y\n", xdg=self.custom)
+                                        answer="y\n", xdg=None)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertFalse(self.custom_install.exists())
+        self.assertFalse(self.state_file.exists(), "지운 뒤에도 기록이 남았다")
 
-    def test_an_explicit_default_install_is_untouched_by_this(self):
-        """링크가 없으면 예전대로 계산된 경로를 쓴다."""
-        for name, _ in self.LAUNCHERS:
-            (self.bin_dir / name).unlink()
+    def test_the_record_names_the_managed_install(self):
+        self.assertTrue(self.state_file.is_file())
+        self.assertEqual(self.state_file.read_text().strip(),
+                         str(self.custom_install))
+
+    def test_no_record_means_the_computed_path_is_used(self):
+        """기록이 없으면 예전대로 계산된 경로를 쓴다."""
+        self.state_file.unlink()
         r = self.run_installer()
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertTrue(self.install_dir.is_dir())
+
+    def test_deleting_the_links_relinks_the_recorded_install(self):
+        """링크만 날아간 경우는 수리해야 한다 — 두 번째 설치본을 만들지 않는다."""
+        for name, _ in self.LAUNCHERS:
+            (self.bin_dir / name).unlink()
+        r = self.run_installer(xdg=None)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse(self.install_dir.exists())
+        self.assertEqual(os.readlink(self.bin_dir / "guide"),
+                         str(self.custom_install / "guide"))
+
+
+class InPlaceIsNeverAdoptedTest(InstallerTestCase):
+    """기여자의 작업 클론을 설치본으로 오인하면 안 된다.
+
+    in-place 설치는 사용자의 클론에 링크만 건다. 그 뒤 managed 의도로
+    실행했을 때 그 클론을 설치본으로 채택하면, `fetch`·`checkout --detach`가
+    남의 저장소를 대상으로 돌아 **작업 브랜치가 릴리스 태그로 detached 되고
+    작업 파일이 워킹 트리에서 사라진다** — `install_inplace`가 지키기로 한
+    "HEAD를 옮기지 않는다"를 정면으로 깬다. `--purge`는 그 클론을 통째로
+    지운다. 그래서 위치 기록은 **우리가 만든 설치본에만** 남긴다.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.tag("v1.0.0")
+        self.work = self.tmp / "work"
+        subprocess.run(["git", "clone", "--quiet", self.origin.as_uri(), str(self.work)],
+                       check=True, capture_output=True, text=True)
+        shutil.copy2(INSTALL_SH, self.work / "install.sh")
+        git(self.work, "config", "user.email", "t@example.com")
+        git(self.work, "config", "user.name", "t")
+        git(self.work, "switch", "--quiet", "-c", "my-feature")
+        (self.work / "MY-WORK.md").write_text("작업 중\n", encoding="utf-8")
+        git(self.work, "add", "-A")
+        git(self.work, "commit", "--quiet", "-m", "my feature work")
+        # in-place 설치 — 링크가 작업 클론을 가리키게 된다.
+        r = subprocess.run(["bash", str(self.work / "install.sh")],
+                           env=self.env(), cwd=str(self.work),
+                           input="", capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(os.readlink(self.bin_dir / "guide"), str(self.work / "guide"))
+
+    def _head(self):
+        return git(self.work, "rev-parse", "--abbrev-ref", "HEAD").strip()
+
+    def test_in_place_leaves_no_record(self):
+        self.assertFalse(self.state_file.exists(),
+                         "in-place 설치가 위치 기록을 남겼다")
+
+    def test_a_later_managed_run_does_not_touch_the_clone(self):
+        before = git(self.work, "rev-parse", "HEAD").strip()
+        r = self.run_installer()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self._head(), "my-feature", "작업 브랜치가 detached 됐다")
+        self.assertEqual(git(self.work, "rev-parse", "HEAD").strip(), before)
+        self.assertTrue((self.work / "MY-WORK.md").is_file(), "작업 파일이 사라졌다")
+
+    def test_a_later_purge_does_not_delete_the_clone(self):
+        r = self.run_installer_on_a_tty("--uninstall", "--purge", answer="y\n")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(self.work.is_dir(), "사용자의 클론이 지워졌다")
+        self.assertTrue((self.work / "MY-WORK.md").is_file())
