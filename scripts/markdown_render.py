@@ -233,6 +233,30 @@ def _emit_hanging(head, body, width, color, out, head_style=None, repeat=False):
     읽힌다.
     """
     hw = cwidth(head)
+
+    # 접두가 너무 길면 선행 공백을 줄인다 — 마커는 지킨다. layout() 은
+    # 인자를 max(4, width) 로 클램프하므로, hw > width - 4 인 경우
+    # width - hw 가 음수나 매우 작으면 클램프가 무력화되어 최종 줄이 width 를 넘는다.
+    if hw > width - 4:
+        # head 는 "    • " 형태: 선행 공백 + 마커 + 공간
+        space_end = 0
+        while space_end < len(head) and head[space_end] == ' ':
+            space_end += 1
+
+        if space_end > 0:
+            marker_part = head[space_end:]
+            marker_width = cwidth(marker_part)
+
+            # 본문을 위해 최소 4칸이 필요하므로, 선행 공백은 최대 width - 4 - marker_width
+            available_for_spaces = width - 4 - marker_width
+
+            if available_for_spaces > 0:
+                head = ' ' * available_for_spaces + marker_part
+            else:
+                # 마커조차 4칸과 함께 안 맞으면 마커를 자른다
+                head = fit(marker_part, width - 4)
+            hw = cwidth(head)
+
     rows = layout(inline_spans(body, color), width - hw)
     for n, row in enumerate(rows):
         if n == 0 or repeat:

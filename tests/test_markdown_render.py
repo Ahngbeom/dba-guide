@@ -301,6 +301,46 @@ class QuoteTest(unittest.TestCase):
             if r.strip():
                 self.assertTrue(r.startswith("│ "), repr(r))
 
+    def test_deeply_indented_quotes_fit_width(self):
+        """들여쓰기 0~24 x 폭 20/24/40 을 순회하며 모든 줄이 폭을 넘지 않음을 확인."""
+        for indent_count in range(25):
+            indent = " " * indent_count
+            for width in (20, 24, 40):
+                text = f"{indent}> " + "가나다 " * 10 + "\n"
+                got = mr.render(text, width=width, color=False)
+                for line in got.split("\n"):
+                    if line.strip():  # 빈 줄 제외
+                        self.assertLessEqual(cwidth(line), width,
+                                           f"indent={indent_count}, width={width}: {repr(line)}")
+
+
+class BulletWidthPropertyTest(unittest.TestCase):
+    """들여쓰기와 폭 조합에서 모든 줄이 width 를 넘지 않는지 확인."""
+
+    def test_deeply_indented_bullets_fit_width(self):
+        """들여쓰기 0~24 x 폭 20/24/40 을 순회하며 모든 줄이 폭을 넘지 않음을 확인."""
+        for indent_count in range(25):
+            indent = " " * indent_count
+            for width in (20, 24, 40):
+                text = f"{indent}- " + "가나다 " * 10 + "\n"
+                got = mr.render(text, width=width, color=False)
+                for line in got.split("\n"):
+                    if line.strip():  # 빈 줄 제외
+                        self.assertLessEqual(cwidth(line), width,
+                                           f"indent={indent_count}, width={width}: {repr(line)}")
+
+    def test_deeply_indented_quotes_fit_width(self):
+        """들여쓰기 0~24 x 폭 20/24/40 을 순회하며 모든 줄이 폭을 넘지 않음을 확인."""
+        for indent_count in range(25):
+            indent = " " * indent_count
+            for width in (20, 24, 40):
+                text = f"{indent}> " + "가나다 " * 10 + "\n"
+                got = mr.render(text, width=width, color=False)
+                for line in got.split("\n"):
+                    if line.strip():  # 빈 줄 제외
+                        self.assertLessEqual(cwidth(line), width,
+                                           f"indent={indent_count}, width={width}: {repr(line)}")
+
 
 if __name__ == "__main__":
     unittest.main()
