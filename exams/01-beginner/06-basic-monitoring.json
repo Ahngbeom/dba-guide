@@ -23,7 +23,8 @@
       "dbms": "neutral",
       "q": "로그 파일에 새로 쌓이는 내용을 '실시간으로' 계속 보여 주는 리눅스 명령은? (파일명은 생략)",
       "accept": [
-        "tail -f"
+        "tail -f",
+        "tail --follow"
       ],
       "hint": "파일의 '꼬리'를 보는 명령에 follow 옵션을 붙입니다.",
       "explain": "tail -f 파일 은 실시간 추적, tail -n 50 파일 은 최근 50줄만 본다. 멈추려면 Ctrl+C."
@@ -72,7 +73,8 @@
       "dbms": "neutral",
       "q": "서버의 디스크 파티션별 남은 용량을 사람이 읽기 쉬운 단위로 보는 리눅스 명령은?",
       "accept": [
-        "df -h"
+        "df -h",
+        "df --human-readable"
       ],
       "hint": "disk free 를 뜻하는 명령에, human-readable 옵션을 붙입니다.",
       "explain": "df -h 로 파티션별 여유 공간을 본다. 데이터 디렉터리 파티션의 Use%가 90%를 넘으면 위험 신호."
