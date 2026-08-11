@@ -21,9 +21,14 @@ import tui  # noqa: E402
 class ModeTableTest(unittest.TestCase):
     """메뉴는 모드 목록 데이터다 — 후속의 '챕터 읽기'가 한 줄로 붙어야 한다."""
 
-    def test_all_three_modes_are_offered(self):
+    def test_modes_are_offered_in_learning_order(self):
+        """읽기 → 확인 → 겪기. 메뉴 순서가 곧 학습 순서다.
+
+        `README.md`가 "챕터 읽기 · 학습 점검 · 장애 대응"이라고 적고 있으니
+        메뉴도 그 순서여야 한다. 처음 온 사람에게 첫 줄은 권하는 출발점이다.
+        """
         self.assertEqual([m.key for m in guide.MODES],
-                         ["exam", "shoot", "read"])
+                         ["read", "exam", "shoot"])
 
     def test_scale_reports_the_real_counts(self):
         """`exam.discover_banks()`와 같은 재귀 글롭으로 세어야 한다.
@@ -45,10 +50,12 @@ class ModeTableTest(unittest.TestCase):
     def test_labels_carry_title_and_scale(self):
         labels = guide.menu_labels()
         self.assertEqual(len(labels), len(guide.MODES))
-        self.assertIn("학습 점검", labels[0])
-        self.assertIn("문항", labels[0])
-        self.assertIn("장애 대응", labels[1])
-        self.assertIn("스테이지", labels[1])
+        self.assertIn("챕터 읽기", labels[0])
+        self.assertIn("챕터", labels[0])
+        self.assertIn("학습 점검", labels[1])
+        self.assertIn("문항", labels[1])
+        self.assertIn("장애 대응", labels[2])
+        self.assertIn("스테이지", labels[2])
 
     def test_labels_align_by_display_width_not_char_count(self):
         """`str.ljust`는 글자 수로 세는데 한글은 화면에서 두 칸이다.
@@ -259,13 +266,24 @@ class MainLoopTest(unittest.TestCase):
         finally:
             guide.choose_menu, guide.run_mode = real_choose, real_run
 
+    @staticmethod
+    def _index_of(key):
+        """모드를 **키로** 찾는다.
+
+        인덱스를 박아 두면 메뉴 순서를 바꿀 때마다 배선 테스트가 함께 깨진다.
+        여기서 검사하려는 것은 "고른 항목의 러너가 돈다"이지 그 항목이 몇
+        번째냐가 아니다 — 순서는 `ModeTableTest`가 따로 고정한다.
+        """
+        return [m.key for m in guide.MODES].index(key)
+
     def test_picking_a_mode_runs_that_runner(self):
-        with self._menu([1]) as ran:
+        with self._menu([self._index_of("shoot")]) as ran:
             self.assertEqual(guide.main([]), 0)
         self.assertEqual(ran, ["shoot"])
 
     def test_the_menu_comes_back_until_you_quit(self):
-        with self._menu([0, 1, 0]) as ran:
+        picks = [self._index_of(k) for k in ("exam", "shoot", "exam")]
+        with self._menu(picks) as ran:
             guide.main([])
         self.assertEqual(ran, ["exam", "shoot", "exam"])
 
