@@ -1761,8 +1761,10 @@ def lab_up(wait_seconds=300, with_postgres=False):
                   on_wait=lambda: print("  … 초기화 대기 중")):
         print("랩 준비 완료.")
         return True
+    # 붙여넣어 바로 쓸 수 있어야 하므로 절대경로로 안내한다 — 설치본으로
+    # 쓰는 사람은 저장소 안에 서 있지 않다.
     raise LabError("랩이 제한 시간 안에 준비되지 않았습니다. "
-                   "`docker compose -f shooting/lab/compose.yaml logs`를 확인하세요.")
+                   f"`docker compose -f {COMPOSE_FILE} logs`를 확인하세요.")
 
 
 def lab_down(remove_volumes=True):
@@ -3288,7 +3290,7 @@ def cmd_play(target=None, force_line=False, seed=None, dbms=None):
             if not wait_until(lambda: container_healthy("postgres"), 120,
                               on_wait=lambda: print("  … 초기화 대기 중")):
                 print("PostgreSQL 랩이 제한 시간 안에 준비되지 않았습니다.\n"
-                      "  docker compose -f shooting/lab/compose.yaml"
+                      f"  docker compose -f {COMPOSE_FILE}"
                       " --profile postgresql logs postgres")
                 return 1
 

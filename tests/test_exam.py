@@ -807,3 +807,73 @@ class PickLineContractTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ResolveTargetsTest(unittest.TestCase):
+    """CLI 대상 인자는 **어디서 실행하든** 같게 풀려야 한다.
+
+    `install.sh`로 설치하면 사용자는 저장소 밖에서 명령을 부른다. 그래서
+    현재 디렉터리만 보는 해석은 README가 안내하는 형식을 그대로 못 쓰게
+    만든다 — 실제로 `exam 01-beginner/02-sql-basics.json`은 저장소 안에서도
+    동작한 적이 없었다.
+    """
+
+    @contextlib.contextmanager
+    def _cwd(self, path):
+        import os
+        before = os.getcwd()
+        os.chdir(path)
+        try:
+            yield
+        finally:
+            os.chdir(before)
+
+    def _elsewhere(self):
+        """저장소 밖 — 설치본 사용자가 서 있는 자리."""
+        import tempfile
+        d = tempfile.mkdtemp(prefix="dba-guide-cwd-")
+        self.addCleanup(lambda: __import__("shutil").rmtree(d, ignore_errors=True))
+        return d
+
+    # README가 안내하는 세 형식. 어느 자리에서 실행하든 같아야 한다.
+    FORMS = (
+        "exams/01-beginner/02-sql-basics.json",   # 저장소 기준 경로
+        "01-beginner/02-sql-basics.json",         # exams/ 아래 경로
+        "01-beginner",                            # 티어 전체
+    )
+
+    def test_documented_forms_resolve_from_the_repo_root(self):
+        with self._cwd(REPO_ROOT):
+            for form in self.FORMS:
+                with self.subTest(form=form):
+                    self.assertTrue(exam.resolve_targets(form))
+
+    def test_documented_forms_resolve_from_outside_the_repo(self):
+        with self._cwd(self._elsewhere()):
+            for form in self.FORMS:
+                with self.subTest(form=form):
+                    self.assertTrue(exam.resolve_targets(form))
+
+    def test_a_single_bank_resolves_to_exactly_that_bank(self):
+        with self._cwd(self._elsewhere()):
+            got = exam.resolve_targets("01-beginner/02-sql-basics.json")
+        self.assertEqual([p.name for p in got], ["02-sql-basics.json"])
+
+    def test_a_tier_resolves_to_every_bank_in_it(self):
+        with self._cwd(self._elsewhere()):
+            got = exam.resolve_targets("01-beginner")
+        self.assertGreater(len(got), 1)
+        self.assertTrue(all(p.suffix == ".json" for p in got))
+
+    def test_an_absolute_path_still_wins(self):
+        p = REPO_ROOT / "exams" / "01-beginner" / "02-sql-basics.json"
+        with self._cwd(self._elsewhere()):
+            self.assertEqual(exam.resolve_targets(str(p)), [p])
+
+    def test_an_unknown_target_still_fails_loudly(self):
+        with self._cwd(self._elsewhere()):
+            with self.assertRaises(SystemExit):
+                exam.resolve_targets("없는-티어/없는-은행.json")
+
+    def test_no_target_means_pick_interactively(self):
+        self.assertIsNone(exam.resolve_targets(None))

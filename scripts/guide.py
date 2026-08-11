@@ -50,10 +50,12 @@ def shoot_scale():
     return f"{len(shooting.discover_stages())}스테이지"
 
 
+# 순서가 곧 학습 순서다 — 읽기 → 확인 → 겪기. 처음 온 사람에게 첫 줄은
+# 권하는 출발점이므로, 아직 아무것도 읽지 않은 사람을 퀴즈로 먼저 보내지 않는다.
 MODES = (
+    Mode("read", "챕터 읽기", reading.read_scale, lambda: reading.main([])),
     Mode("exam", "학습 점검 (퀴즈/시험)", exam_scale, lambda: exam.main([])),
     Mode("shoot", "장애 대응 (실전 훈련)", shoot_scale, lambda: shooting.main([])),
-    Mode("read", "챕터 읽기", reading.read_scale, lambda: reading.main([])),
 )
 
 

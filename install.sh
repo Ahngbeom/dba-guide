@@ -158,10 +158,12 @@ install_managed() {
         "  직접 확인하고 치운 뒤 다시 실행하세요."
   fi
 
+  fresh="no"
   if [ ! -d "$INSTALL_DIR" ] || [ -z "$(ls -A "$INSTALL_DIR" 2>/dev/null)" ]; then
     info "저장소를 내려받습니다 → $INSTALL_DIR"
     mkdir -p "$(dirname "$INSTALL_DIR")"
     git clone --quiet "$REPO_URL" "$INSTALL_DIR"
+    fresh="yes"
   elif ! is_our_install "$INSTALL_DIR"; then
     die "$INSTALL_DIR 이 이 학습서의 설치본이 아닙니다." \
         "  git 저장소가 아니거나, 다른 저장소가 그 자리에 있습니다." \
@@ -179,7 +181,11 @@ install_managed() {
 
   current="$(git -C "$INSTALL_DIR" describe --tags --exact-match 2>/dev/null || true)"
   if [ "$current" = "$tag" ]; then
-    info "이미 최신입니다 — $tag"
+    # 갓 클론한 트리도 이 분기를 탄다 — 릴리스 직후에는 최신 태그가 `main`의
+    # tip이라 클론 직후 HEAD가 곧 그 태그다. 첫 설치에 "이미"라고 말하지 않는다.
+    if [ "$fresh" = "no" ]; then
+      info "이미 최신입니다 — $tag"
+    fi
     link_launchers "$INSTALL_DIR"
     report "$INSTALL_DIR" "$tag"
     return 0
