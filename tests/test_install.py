@@ -171,6 +171,19 @@ class FreshInstallTest(InstallerTestCase):
         self.assertEqual(r.returncode, 1)
         self.assertIn("태그", r.stderr)
 
+    def test_a_fresh_install_does_not_claim_to_be_already_up_to_date(self):
+        """첫 설치에 "이미 최신입니다"는 어리둥절하다.
+
+        릴리스 직후에는 최신 태그가 `main`의 tip에 있어, 갓 클론한 HEAD가
+        곧 그 태그다. 조기 반환 분기를 그대로 타면 처음 설치하는 사람이
+        "이미"라는 말을 먼저 읽는다.
+        """
+        self.tag("v1.0.0")
+        r = self.run_installer()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("이미 최신", r.stdout)
+        self.assertIn("설치 완료", r.stdout)
+
     def test_reports_path_guidance_when_bin_dir_is_not_on_path(self):
         self.tag("v1.0.0")
         r = self.run_installer()
