@@ -358,8 +358,14 @@ def _emit_table(lines, i, width, color, out):
     aligns = _alignments(lines[i + 1])
     i += 2
     body = []
-    while i < len(lines) and lines[i].strip().startswith("|"):
-        body.append(_cells(lines[i]))
+    # dbms 마커 주석이 표 행 사이에 끼어들 수 있다(부록 dbms-branch-strategy 의
+    # 행 단위 marking 작업이 그 경로다). 주석에서 표가 끊기면 남은 행이
+    # `_is_separator` 검사를 통과하지 못해 문단으로 떨어지고 파이프가 그대로
+    # 화면에 남는다 — 주석은 건너뛰되 행은 계속 모아 표를 안 끊는다.
+    while i < len(lines) and (lines[i].strip().startswith("|")
+                              or _COMMENT_RE.match(lines[i])):
+        if not _COMMENT_RE.match(lines[i]):
+            body.append(_cells(lines[i]))
         i += 1
 
     rows = [header] + body

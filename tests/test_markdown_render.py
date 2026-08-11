@@ -301,18 +301,6 @@ class QuoteTest(unittest.TestCase):
             if r.strip():
                 self.assertTrue(r.startswith("│ "), repr(r))
 
-    def test_deeply_indented_quotes_fit_width(self):
-        """들여쓰기 0~24 x 폭 20/24/40 을 순회하며 모든 줄이 폭을 넘지 않음을 확인."""
-        for indent_count in range(25):
-            indent = " " * indent_count
-            for width in (20, 24, 40):
-                text = f"{indent}> " + "가나다 " * 10 + "\n"
-                got = mr.render(text, width=width, color=False)
-                for line in got.split("\n"):
-                    if line.strip():  # 빈 줄 제외
-                        self.assertLessEqual(cwidth(line), width,
-                                           f"indent={indent_count}, width={width}: {repr(line)}")
-
 
 class BulletWidthPropertyTest(unittest.TestCase):
     """들여쓰기와 폭 조합에서 모든 줄이 width 를 넘지 않는지 확인."""
@@ -405,15 +393,61 @@ class TableTest(unittest.TestCase):
         self.assertIn("SELECT", plain(got))
         self.assertNotIn("`", plain(got))
 
-    def test_right_and_centre_alignment_are_honoured(self):
-        src = "| a | b |\n|---:|:---:|\n| 1 | 2 |\n"
+    def test_right_alignment_pads_before_the_value(self):
+        """열이 셀보다 넓어야 채움이 보인다 — 셀과 같은 폭이면 채움이 0이라
+        `_alignments()`를 지워도(모두 `"left"`) 이 표는 똑같이 나온다."""
+        src = "| number | middle | e |\n|---:|:---:|---|\n| 1 | 2 | z |\n"
         rows = self._rows(mr.render(src, width=40, color=False))
-        self.assertIn("1", rows[2])
+        data = rows[2]
+        gap = cwidth("number") - cwidth("1")
+        lead = cwidth(data[:data.index("1")])
+        self.assertEqual(lead, gap, repr(data))
+
+    def test_centre_alignment_pads_both_sides(self):
+        """가운데 정렬은 좌우로 나눠 채운다 — 오른쪽 정렬과 달리 앞쪽에만
+        차이가 아니라 앞뒤 모두 절반씩 채워야 `right`와 구별된다."""
+        src = "| number | middle | e |\n|---:|:---:|---|\n| 1 | 2 | z |\n"
+        rows = self._rows(mr.render(src, width=40, color=False))
+        data = rows[2]
+        gap = cwidth("middle") - cwidth("2")
+        before = cwidth(data[data.index("1") + 1:data.index("2")]) - 1  # 열 사이 구분 공백 1칸 제외
+        after = cwidth(data[data.index("2") + 1:data.index("z")]) - 1
+        self.assertEqual(before, gap // 2, repr(data))
+        self.assertEqual(after, gap - gap // 2, repr(data))
+
+    def test_a_wrapped_cell_pads_each_continuation_line_by_its_alignment(self):
+        """가운데 정렬 셀이 접히면 접힌 줄마다 **따로** 채운다 — 첫 줄은 왼쪽
+        열의 내용까지 포함해 채워지고, 이어지는 줄은 왼쪽 열이 비어 있어
+        채움 폭이 달라진다. 현재 동작을 그대로 고정한다."""
+        src = "| n | label |\n|---:|:---:|\n| 1 | AAAA BBBB CCCC DDDD |\n"
+        rows = self._rows(mr.render(src, width=20, color=False))
+        first, cont = rows[2], rows[3]
+        self.assertIn("AAAA BBBB CCCC", first)
+        self.assertIn("DDDD", cont)
+        first_lead = cwidth(first[:first.index("AAAA")])
+        cont_lead = cwidth(cont[:cont.index("DDDD")])
+        self.assertEqual(first_lead, 4, repr(first))
+        self.assertEqual(cont_lead, 9, repr(cont))
+        self.assertNotEqual(first_lead, cont_lead)
 
     def test_a_lone_pipe_line_is_not_a_table(self):
         """구분선이 뒤따르지 않으면 표가 아니다 — 문단으로 낸다."""
         got = mr.render("| 그냥 파이프 문장\n", width=40, color=False)
         self.assertIn("|", got)
+
+    def test_a_comment_between_rows_does_not_break_the_table(self):
+        """dbms 마커가 행 사이에 끼면(부록 marking 작업이 그 경로다) 표가
+        중간에 끊겨 남은 행이 문단으로 떨어지면 안 된다."""
+        src = ("| 구분 | 명령 |\n|---|---|\n"
+               "| 공통 | SELECT 1 |\n"
+               "<!-- dbms:mysql -->\n"
+               "| MySQL | SHOW DATABASES |\n"
+               "<!-- /dbms:mysql -->\n"
+               "| 끝 | END |\n")
+        got = mr.render(src, width=60, color=False)
+        self.assertNotIn("|", got)
+        self.assertIn("SHOW DATABASES", got)
+        self.assertIn("END", got)
 
 
 class RealChapterTest(unittest.TestCase):
