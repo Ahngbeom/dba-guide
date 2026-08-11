@@ -45,14 +45,22 @@ class InstallerTestCase(unittest.TestCase):
         self.origin = self.tmp / "origin"
         self._make_origin()
 
+    # 런처와 그것이 부르는 모듈. `shoot`만 이름이 어긋난다(scripts/shooting.py).
+    LAUNCHERS = (("guide", "guide"), ("exam", "exam"), ("shoot", "shooting"))
+
     def _make_origin(self):
-        """런처 세 개와 scripts/guide.py를 갖춘 최소 저장소."""
+        """런처 세 개와 그 대상 모듈을 갖춘 최소 저장소.
+
+        런처는 **저장소의 진짜 파일을 복사한다.** `echo` 스텁으로 대신하면
+        링크 경유로 불렸을 때 자기 위치를 어떻게 푸는지가 검사 대상에서 빠지고,
+        바로 그 자리에 v1.2.0의 결함이 있었다 — `${BASH_SOURCE[0]}`는 심볼릭
+        링크를 따라가지 않으므로 세 명령 모두 설치 후 동작하지 않았다.
+        """
         (self.origin / "scripts").mkdir(parents=True)
-        (self.origin / "scripts" / "guide.py").write_text("# stub\n")
-        for name in ("guide", "exam", "shoot"):
-            p = self.origin / name
-            p.write_text("#!/usr/bin/env bash\necho %s\n" % name)
-            p.chmod(0o755)
+        for launcher, module in self.LAUNCHERS:
+            shutil.copy2(REPO_ROOT / launcher, self.origin / launcher)
+            (self.origin / "scripts" / f"{module}.py").write_text(
+                "print('%s 실행됨')\n" % launcher, encoding="utf-8")
         git(self.origin, "init", "--quiet")
         git(self.origin, "config", "user.email", "test@example.com")
         git(self.origin, "config", "user.name", "test")
@@ -535,3 +543,42 @@ class UninstallTest(InstallerTestCase):
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("취소했습니다", r.stdout)
         self.assertTrue(self.install_dir.exists())
+
+
+class LinkedCommandTest(InstallerTestCase):
+    """링크를 만드는 것으로 끝이 아니다 — 그 링크로 실제로 실행돼야 한다.
+
+    v1.2.0은 링크가 가리키는 **문자열**만 검사했다. 세 런처는 모두
+    `dirname "${BASH_SOURCE[0]}"`로 자기 위치를 찾는데, 그 값은 심볼릭
+    링크를 따라가지 않고 링크 자신의 경로다. 그래서 설치된 명령은
+    `~/.local/bin/scripts/exam.py`를 찾다 전부 실패했다.
+    """
+
+    def _run_installed(self, name):
+        env = dict(os.environ)
+        env["HOME"] = str(self.home)
+        # cwd를 설치 경로 바깥으로 둔다 — 링크 경유 해석이 시험 대상이다.
+        return subprocess.run([str(self.bin_dir / name)], env=env,
+                              cwd=str(self.tmp), capture_output=True, text=True)
+
+    def test_every_installed_command_runs_through_its_symlink(self):
+        self.tag("v1.0.0")
+        self.assertEqual(self.run_installer().returncode, 0)
+        for name, _ in self.LAUNCHERS:
+            with self.subTest(launcher=name):
+                r = self._run_installed(name)
+                self.assertEqual(r.returncode, 0, f"{name}: {r.stderr}")
+                self.assertIn(f"{name} 실행됨", r.stdout)
+
+    def test_arguments_survive_the_symlink(self):
+        """인자를 그대로 넘기는 것이 런처의 유일한 일이다."""
+        self.tag("v1.0.0")
+        self.assertEqual(self.run_installer().returncode, 0)
+        (self.install_dir / "scripts" / "exam.py").write_text(
+            "import sys\nprint('args=' + ' '.join(sys.argv[1:]))\n", encoding="utf-8")
+        env = dict(os.environ)
+        env["HOME"] = str(self.home)
+        r = subprocess.run([str(self.bin_dir / "exam"), "--dbms", "postgresql"],
+                           env=env, cwd=str(self.tmp), capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("args=--dbms postgresql", r.stdout)

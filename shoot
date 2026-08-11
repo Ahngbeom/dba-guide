@@ -3,5 +3,15 @@
 # 인자 없이 실행하면 스테이지를 골라 바로 시작한다.
 # 모든 인자는 scripts/shooting.py로 그대로 전달된다.
 set -euo pipefail
-here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# `${BASH_SOURCE[0]}`는 심볼릭 링크를 따라가지 않고 링크 자신의 경로를 준다.
+# `install.sh`가 이 런처를 `~/.local/bin`에 링크하므로, 풀지 않으면
+# `~/.local/bin/scripts/*.py`를 찾다 실패한다. `readlink -f`는 이식성이 없어
+# 직접 사슬을 따라간다(상대 대상은 링크가 있던 디렉터리 기준으로 푼다).
+src="${BASH_SOURCE[0]}"
+while [ -L "$src" ]; do
+  dir="$(cd -P "$(dirname "$src")" && pwd)"
+  src="$(readlink "$src")"
+  case "$src" in /*) ;; *) src="$dir/$src" ;; esac
+done
+here="$(cd -P "$(dirname "$src")" && pwd)"
 exec python3 "$here/scripts/shooting.py" "$@"
