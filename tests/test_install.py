@@ -814,7 +814,13 @@ class RecordIsNotBlindlyTrustedTest(InstallerTestCase):
         self._record(str(f))
         self._install_lands_at_default()
 
-    def test_an_empty_record_is_ignored(self):
+    def test_a_zero_byte_record_is_ignored(self):
+        """`[ -n "$recorded" ]` 가드를 실제로 밟는 유일한 입력이다."""
+        self._record("")
+        self._install_lands_at_default()
+
+    def test_a_whitespace_record_is_ignored(self):
+        """공백은 비어 있지 않다 — 여기서 걸러내는 것은 is_our_install 이다."""
         self._record("   \n")
         self._install_lands_at_default()
 
@@ -882,3 +888,121 @@ class RecordingIsBookkeepingTest(InstallerTestCase):
         self.assertEqual(r.returncode, 1)
         self.assertTrue((self.tmp / "tools" / "dba-guide").is_dir())
         self.assertTrue(self.state_file.is_file(), "트리는 만들고 기록은 안 했다")
+
+
+class WarnsAboutAnotherInstallTest(InstallerTestCase):
+    """기록이 없는데 링크가 다른 곳을 가리키는 상태 — 지난 라운드가 추가하고
+    한 번도 실행되지 않았던 경로다.
+
+    모든 호출 경로가 `XDG_DATA_HOME` 미설정을 요구하는데 테스트 헬퍼의
+    기본값은 그 변수를 **항상 설정**했다. 기본값이 안전한 쪽으로 치우쳐
+    있으면 위험한 분기는 영원히 테스트 밖에 남는다.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.tag("v1.0.0")
+        self.commit("after the release")
+        self.work = self.tmp / "work"
+        subprocess.run(["git", "clone", "--quiet", self.origin.as_uri(), str(self.work)],
+                       check=True, capture_output=True, text=True)
+        shutil.copy2(INSTALL_SH, self.work / "install.sh")
+        git(self.work, "config", "user.email", "t@example.com")
+        git(self.work, "config", "user.name", "t")
+        git(self.work, "switch", "--quiet", "-c", "my-feature")
+        (self.work / "MY-WORK.md").write_text("작업 중\n", encoding="utf-8")
+        git(self.work, "add", "-A")
+        git(self.work, "commit", "--quiet", "-m", "my feature work")
+        r = subprocess.run(["bash", str(self.work / "install.sh")],
+                           env=self.env(), cwd=str(self.work),
+                           input="", capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_it_notices_the_other_install(self):
+        r = self.run_installer(xdg=None)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn(str(self.work), r.stdout)
+
+    def test_it_never_advises_pointing_the_installer_at_a_working_clone(self):
+        """치명적이었던 자리 — 그 조언을 따르면 남의 브랜치가 태그로 떨어진다."""
+        r = self.run_installer(xdg=None)
+        notice = r.stdout[:r.stdout.find("저장소를 내려받습니다")] or r.stdout
+        self.assertNotIn("XDG_DATA_HOME", notice)
+
+    def test_the_clone_survives_that_run(self):
+        before = git(self.work, "rev-parse", "HEAD").strip()
+        self.run_installer(xdg=None)
+        self.assertEqual(git(self.work, "rev-parse", "--abbrev-ref", "HEAD").strip(),
+                         "my-feature")
+        self.assertEqual(git(self.work, "rev-parse", "HEAD").strip(), before)
+        self.assertTrue((self.work / "MY-WORK.md").is_file())
+
+    def test_uninstall_does_not_print_the_install_notice(self):
+        """제거 중에 '이 실행은 …에 설치합니다'는 거짓말이다."""
+        r = self.run_installer("--uninstall", xdg=None)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("설치합니다", r.stdout)
+
+
+class AWorkingCloneAtTheInstallPathIsRefusedTest(InstallerTestCase):
+    """계산된 경로에 남의 작업 클론이 있으면 손대지 않는다.
+
+    `is_our_install`은 저장소 루트 + `scripts/guide.py`만 보므로 **기여자의
+    클론도 통과한다**. 그 트리에 `fetch`·`checkout --detach`를 걸면 작업
+    브랜치가 릴리스 태그로 떨어진다. 우리가 만든 설치본은 언제나 detached
+    이거나 기록이 지목하는 경로다.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.tag("v1.0.0")
+        self.commit("after the release")
+        self.install_dir.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(["git", "clone", "--quiet", self.origin.as_uri(), str(self.install_dir)],
+                       check=True, capture_output=True, text=True)
+        git(self.install_dir, "config", "user.email", "t@example.com")
+        git(self.install_dir, "config", "user.name", "t")
+        git(self.install_dir, "switch", "--quiet", "-c", "my-feature")
+        (self.install_dir / "MY-WORK.md").write_text("작업 중\n", encoding="utf-8")
+        git(self.install_dir, "add", "-A")
+        git(self.install_dir, "commit", "--quiet", "-m", "my feature work")
+
+    def test_it_stops_instead_of_detaching_someone_elses_branch(self):
+        before = git(self.install_dir, "rev-parse", "HEAD").strip()
+        r = self.run_installer()
+        self.assertEqual(r.returncode, 1)
+        self.assertIn(str(self.install_dir), r.stderr)
+        self.assertEqual(git(self.install_dir, "rev-parse", "--abbrev-ref", "HEAD").strip(),
+                         "my-feature")
+        self.assertEqual(git(self.install_dir, "rev-parse", "HEAD").strip(), before)
+        self.assertTrue((self.install_dir / "MY-WORK.md").is_file())
+
+
+class AmbientXdgTest(InstallerTestCase):
+    """`+x`와 `:-`가 어긋나면 안 된다.
+
+    `INSTALL_DIR`은 `:-`로 계산되므로 빈 값은 기본 경로를 뜻한다. 그런데
+    채택을 `+x`로 건너뛰면 빈 값이 '명시'가 되어, 기록이 있는데도 무시하고
+    기본 경로에 두 번째 설치본을 만든 뒤 **기록까지 덮어쓴다**.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.tag("v1.0.0")
+        self.commit("after the release")
+        self.custom = self.tmp / "tools"
+        r = self.run_installer(xdg=self.custom)
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_an_empty_variable_is_not_an_explicit_destination(self):
+        r = self.run_installer(xdg="")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse(self.install_dir.exists(), "두 번째 설치본이 생겼다")
+        self.assertEqual(self.state_file.read_text().strip(),
+                         str(self.custom / "dba-guide"))
+
+    def test_an_explicit_destination_that_disagrees_says_so(self):
+        """조용히 무시하면 사용자는 기록이 있다는 사실조차 모른다."""
+        r = self.run_installer(xdg=self.tmp / "elsewhere")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn(str(self.custom / "dba-guide"), r.stdout)

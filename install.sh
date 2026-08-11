@@ -156,6 +156,7 @@ report() {
 
 install_managed() {
   adopt_recorded_install
+  warn_if_another_install_is_linked
 
   # 디렉터리가 아닌 것(일반 파일·끊어진 링크)이 자리를 차지한 경우.
   # 그대로 두면 [ ! -d ] 가 참이라 클론 분기로 흘러 git이 영어 fatal 을
@@ -177,6 +178,11 @@ install_managed() {
         "  git 저장소가 아니거나, 다른 저장소가 그 자리에 있습니다." \
         "  이 스크립트는 자기가 만들지 않은 디렉터리를 지우거나 옮기지 않습니다." \
         "  직접 확인하고 치운 뒤 다시 실행하세요."
+  elif ! is_our_managed_install "$INSTALL_DIR"; then
+    die "$INSTALL_DIR 은 이 스크립트가 만든 설치본이 아닙니다." \
+        "  브랜치가 체크아웃돼 있어 누군가의 작업 클론으로 보입니다." \
+        "  남의 저장소를 fetch 하거나 HEAD를 옮기지 않습니다." \
+        "  다른 곳에 설치하려면 XDG_DATA_HOME 으로 목적지를 지정하세요."
   else
     git -C "$INSTALL_DIR" fetch --quiet --tags origin
   fi
@@ -327,27 +333,59 @@ uninstall() {
   esac
 }
 
+# 두 경로가 같은 곳을 가리키는가. 심볼릭 링크·끝 슬래시 때문에 문자열
+# 비교만으로는 어긋난다 — `is_repo_root`가 `pwd -P`로 정규화하는 것과 같은 이유다.
+same_path() {
+  sp_a="$1"
+  sp_b="$2"
+  if [ -d "$sp_a" ]; then sp_a="$(cd "$sp_a" && pwd -P)"; fi
+  if [ -d "$sp_b" ]; then sp_b="$(cd "$sp_b" && pwd -P)"; fi
+  [ "$sp_a" = "$sp_b" ]
+}
+
+# **우리가 만든** 설치본인가 — `is_our_install`보다 엄격하다.
+#
+# `is_our_install`은 저장소 루트 + `scripts/guide.py`만 보므로 기여자의 작업
+# 클론도 통과한다. 그 트리에 `fetch`·`checkout --detach`를 걸면 남의 작업
+# 브랜치가 릴리스 태그로 떨어지고 워킹 트리가 갈린다(실측). 우리가 만든
+# 설치본은 둘 중 하나로 증명된다 — 기록이 그 경로를 지목하거나, HEAD가
+# detached이거나. 우리는 언제나 `checkout --detach <tag>`로만 만들기 때문이다.
+is_our_managed_install() {
+  if [ -f "$STATE_FILE" ] \
+     && same_path "$(cat "$STATE_FILE" 2>/dev/null || true)" "$1"; then
+    return 0
+  fi
+  ! git -C "$1" symbolic-ref -q HEAD >/dev/null 2>&1
+}
+
 # 기록이 없는데 런처 링크가 **다른 곳**의 유효한 설치본을 가리키는 경우.
 #
-# v1.3.0 이전에 커스텀 경로로 설치한 사람이 여기에 해당한다 — 기록이 없으니
-# 이 실행은 계산된 경로에 새로 설치하게 되고, 조용히 두 벌이 생긴다.
-# 막지는 않는다. 기여자가 자기 클론에 in-place 설치해 둔 상태에서 managed
-# 설치를 하는 정상 흐름이 겉보기에 똑같기 때문이다. 대신 반드시 알린다.
+# v1.3.0 이전에 커스텀 경로로 설치한 사람과, 자기 클론에 in-place 설치한
+# 기여자가 겉보기에 똑같은 상태를 만든다. 막지 않는다 — 둘 다 정상 흐름이다.
+# 대신 조용히 두 벌이 생기지 않도록 알린다.
 #
-# 링크를 근거로 **채택하지는 않는다.** 링크는 어디를 가리켰는지만 알 뿐
-# 그 대상을 우리가 만들었는지 모르고, 실제로 그 오인이 기여자의 작업
-# 브랜치를 릴리스 태그로 떨어뜨린 적이 있다.
+# **작업 클론에 인스톨러를 겨누라고 안내하지 않는다.** 그 조언을 따르면
+# `fetch`·`checkout --detach`가 남의 브랜치를 태그로 떨어뜨리고, 그 경로가
+# 기록에 박혀 이후 `--purge`가 클론을 통째로 지운다. `XDG_DATA_HOME`을
+# 권하는 문장은 대상이 **우리가 만든 설치본임이 증명될 때만** 낸다.
 warn_if_another_install_is_linked() {
   for name in $LAUNCHERS; do
     link="$BIN_DIR/$name"
     is_our_link "$link" "$name" || continue
     other="$(dirname "$(readlink "$link")")"
     is_our_install "$other" || continue
-    [ "$other" != "$INSTALL_DIR" ] || return 0
-    info "참고: 다른 위치에 설치본이 있습니다 — $other" \
-         "  이 실행은 $INSTALL_DIR 에 설치합니다." \
-         "  그쪽을 계속 쓰려면 그 위치의 부모를 XDG_DATA_HOME 으로 주고 다시 실행하세요." \
-         ""
+    ! same_path "$other" "$INSTALL_DIR" || return 0
+    if is_our_managed_install "$other"; then
+      info "참고: 다른 위치에 설치본이 있습니다 — $other" \
+           "  이 실행은 $INSTALL_DIR 에 설치합니다." \
+           "  그쪽을 계속 쓰려면 그 위치의 부모를 XDG_DATA_HOME 으로 주고 다시 실행하세요." \
+           ""
+    else
+      info "참고: $other 에 이 학습서의 클론이 있고 링크가 그쪽을 가리킵니다." \
+           "  브랜치가 체크아웃돼 있어 작업 클론으로 보이므로 건드리지 않습니다." \
+           "  이 실행은 $INSTALL_DIR 에 설치합니다." \
+           ""
+    fi
     return 0
   done
 }
@@ -357,28 +395,38 @@ warn_if_another_install_is_linked() {
 # `INSTALL_DIR`은 매 실행마다 `XDG_DATA_HOME`으로 **계산될 뿐**이라 지난번에
 # 어디에 깔았는지 기억하지 못한다. 커스텀 경로로 설치한 뒤 그 값을 빠뜨리고
 # 다시 실행하면 기본 경로를 대상으로 삼아, 조용히 두 번째 설치본을 만들고
-# 링크를 그쪽으로 옮긴다 — 원래 설치본과 학습 기록은 고아가 된다. `--purge`는
-# 더 나쁘다. 엉뚱한 트리를 지우고 진짜는 남긴다.
+# 링크를 그쪽으로 옮긴다 — 원래 설치본과 학습 기록은 고아가 된다.
 #
-# 다만 **`XDG_DATA_HOME`을 준 실행에서는 기록을 보지 않는다.** 사용자가
-# 목적지를 지정한 것이고, 기록이 그걸 이기면 설치를 옮길 방법이 사라진다 —
-# 평범한 `--uninstall`은 기록을 남기므로 재설치가 옛 경로로 끌려가고, 남는
-# 탈출구는 `--purge`, 즉 백업 없는 학습 기록을 지우는 것뿐이 된다.
+# 계약은 **주면 그 값이 이기고, 주지 않으면 기억한다**. 기록이 명시 지정을
+# 이기면 설치를 옮길 방법이 사라진다 — 평범한 `--uninstall`은 기록을 남기므로
+# 재설치가 옛 경로로 끌려가고, 남는 탈출구는 `--purge`, 즉 백업 없는 학습
+# 기록을 지우는 것뿐이 된다. 다만 **조용히 무시하지는 않는다.**
 #
-# 기록은 신뢰 입력이므로 매번 `is_our_install`로 다시 확인한다. 낡았거나
-# 남의 저장소를 가리키면 조용히 물러나 계산된 경로를 쓴다.
+# 판정은 `[ -n "${XDG_DATA_HOME:-}" ]`로 한다. `+x`를 쓰면 빈 문자열이 '명시'가
+# 되는데, `INSTALL_DIR` 계산은 `:-`라 빈 값을 기본 경로로 읽는다 — 두 판정이
+# 어긋나면 쉘 rc에 빈 값을 export한 사람이 기록을 통째로 잃는다.
+#
+# 기록은 신뢰 입력이므로 매번 `is_our_install`로 다시 확인한다.
 adopt_recorded_install() {
-  if [ -n "${XDG_DATA_HOME+x}" ]; then
+  recorded=""
+  if [ -f "$STATE_FILE" ]; then
+    recorded="$(cat "$STATE_FILE" 2>/dev/null || true)"
+  fi
+
+  if [ -n "${XDG_DATA_HOME:-}" ]; then
+    if [ -n "$recorded" ] && ! same_path "$recorded" "$INSTALL_DIR" \
+       && is_our_install "$recorded"; then
+      info "XDG_DATA_HOME 이 지정돼 지난 설치 위치를 따르지 않습니다." \
+           "  지정한 곳: $INSTALL_DIR" \
+           "  지난 설치: $recorded" \
+           ""
+    fi
     return 0
   fi
-  if [ ! -f "$STATE_FILE" ]; then
-    warn_if_another_install_is_linked
-    return 0
-  fi
-  recorded="$(cat "$STATE_FILE" 2>/dev/null || true)"
+
   [ -n "$recorded" ] || return 0
   is_our_install "$recorded" || return 0
-  [ "$recorded" != "$INSTALL_DIR" ] || return 0
+  ! same_path "$recorded" "$INSTALL_DIR" || return 0
 
   info "기존 설치본을 씁니다 — $recorded" \
        "  계산된 기본 경로는 $INSTALL_DIR 이지만, 지난 설치 기록이 위를 가리킵니다." \
@@ -392,10 +440,11 @@ adopt_recorded_install() {
 #
 # **부기가 설치를 실패시키면 안 된다.** `set -e` 아래에서 mkdir이나
 # 리다이렉트가 죽으면 클론·체크아웃·링크가 다 끝난 실행이 완료 안내도 없이
-# 1로 끝난다.
+# 1로 끝난다. 서브셸로 감싸 리다이렉트 실패의 영어 셸 오류까지 삼킨다 —
+# `printf … > f 2>/dev/null`은 리다이렉트가 먼저 평가돼 오류가 새어 나간다.
 record_install() {
-  if ! mkdir -p "$(dirname "$STATE_FILE")" 2>/dev/null \
-     || ! printf '%s\n' "$1" > "$STATE_FILE" 2>/dev/null; then
+  if ! ( mkdir -p "$(dirname "$STATE_FILE")" \
+         && printf '%s\n' "$1" > "$STATE_FILE" ) 2>/dev/null; then
     info "경고: 설치 위치를 기록하지 못했습니다 — $STATE_FILE" \
          "      다음 실행에서 이 위치를 기억하지 못합니다." \
          "      그때는 XDG_DATA_HOME 으로 직접 지정하세요." \
