@@ -476,6 +476,65 @@ class PauseAfterOutputTest(unittest.TestCase):
         self.assertEqual(asked, [])
 
 
+class PickActionsTest(unittest.TestCase):
+    """`actions`를 주면 추가 동작 키가 생기고 반환 모양이 바뀐다.
+
+    반환 모양이 둘인 것은 냄새지만, 호출부는 자기가 `actions`를 넘겼는지 항상
+    알고 있으므로 어느 모양을 받을지 헷갈릴 여지가 없다. 선택기를 한 벌 더
+    만드는 쪽은 `pick`이 세 벌로 갈라졌다가 합쳐진 전례를 되풀이한다.
+    """
+
+    LABELS = ["primary", "replica", "arbiter"]
+
+    def _pick(self, keys, **kw):
+        screen = _PickScreen(keys)
+        return tui.pick(screen, _PickCurses(), "고르세요", self.LABELS, **kw)
+
+    def test_without_actions_the_return_shape_is_unchanged(self):
+        """기존 호출부 6곳이 한 글자도 안 고쳐도 되는 근거."""
+        got = self._pick([10])
+        self.assertIsInstance(got, int)
+        self.assertEqual(got, 0)
+
+    def test_enter_returns_picked_with_no_action(self):
+        self.assertEqual(self._pick([10], actions="x"), tui.Picked(0, None))
+
+    def test_a_number_key_returns_picked_with_no_action(self):
+        self.assertEqual(self._pick([ord("2")], actions="x"),
+                         tui.Picked(1, None))
+
+    def test_the_action_key_carries_the_highlighted_row(self):
+        """동작은 '지금 커서가 놓인 줄'에 대한 것이다."""
+        got = self._pick([_PickCurses.KEY_DOWN, _PickCurses.KEY_DOWN,
+                          ord("x")], actions="x")
+        self.assertEqual(got, tui.Picked(2, "x"))
+
+    def test_an_unlisted_letter_is_ignored(self):
+        """`z`는 동작 키가 아니다 — 무시되고 계속 고르게 된다."""
+        self.assertEqual(self._pick([ord("z"), 10], actions="x"),
+                         tui.Picked(0, None))
+
+    def test_the_action_key_is_case_sensitive(self):
+        """`actions="x"`가 `X`까지 삼키면 안 된다.
+
+        대소문자를 보존한 `raw`로 비교해야 한다 — `Q`(전역 종료)를 소문자로
+        접기 전에 보는 것과 같은 자리다.
+        """
+        self.assertEqual(self._pick([ord("X"), 10], actions="x"),
+                         tui.Picked(0, None))
+
+    def test_the_string_representation_of_the_action_key_works_too(self):
+        """`read_key(wide=True)`는 정수 대신 문자열을 준다."""
+        self.assertEqual(self._pick(["x"], actions="x"), tui.Picked(0, "x"))
+
+    def test_cancel_still_returns_none(self):
+        self.assertIsNone(self._pick([ord("q")], actions="x"))
+
+    def test_quit_still_raises(self):
+        with self.assertRaises(tui.QuitApp):
+            self._pick([ord("Q")], actions="x")
+
+
 class PageTextCharacterizationTest(unittest.TestCase):
     """옮기기 전 현재 동작을 고정한다.
 
