@@ -197,6 +197,11 @@ _MIN_COL = 4          # 한글 두 글자. 0폭 열이 생기지 않게 하는 �
 # 들쭉날쭉해진다. 1~4칸을 한 단계로 묶는다.
 _MARKERS = ("•", "◦", "-")
 
+# 수평선 길이. **폭을 채우지 않는다** — 채우면 터미널이 좁아지는 순간 `less` 가
+# 접어 구분선 하나가 두 줄이 된다. 가장 좁은 지원 폭(`tui.text_width()` 하한
+# 40)에서도 안 접히면서 구분선 구실을 하는 길이다.
+_RULE_WIDTH = 24
+
 
 def _blank(out):
     """직전 줄이 이미 비어 있지 않을 때만 빈 줄을 넣는다."""
@@ -460,7 +465,7 @@ def render(text, width=80, color=True):
             _blank(out)
             continue
         if _HR_RE.match(line):
-            out.append(paint([("─" * width, "dim")], color))
+            out.append(paint([("─" * min(width, _RULE_WIDTH), "dim")], color))
             continue
         m = _HEADING_RE.match(line)
         if m:

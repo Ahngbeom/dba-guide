@@ -154,12 +154,27 @@ class ParagraphTest(unittest.TestCase):
 
 
 class RuleAndCommentTest(unittest.TestCase):
-    def test_a_horizontal_rule_spans_the_width(self):
+    def test_a_short_width_rule_still_fits_that_width(self):
+        """폭이 _RULE_WIDTH 이하면 폭만큼 그린다 — 여기서는 동작이 안 바뀐다."""
         got = mr.render("---\n", width=20, color=False)
         self.assertIn("─" * 20, got)
+        self.assertNotIn("─" * 21, got)
 
     def test_asterisk_rules_count_too(self):
         self.assertIn("─" * 20, mr.render("***\n", width=20, color=False))
+
+    def test_a_wide_rule_stops_at_the_fixed_length(self):
+        """폭을 채우면 터미널이 좁아지는 순간 `less` 가 접어 두 줄이 된다.
+
+        24칸은 가장 좁은 지원 폭(`tui.text_width()` 하한 40)에서도 안 접히고
+        구분선 구실을 하기에 충분하다.
+        """
+        for width in (40, 78, 120):
+            got = mr.render("---\n", width=width, color=False)
+            rule = [ln for ln in got.split("\n") if "─" in ln]
+            self.assertEqual(len(rule), 1, got)
+            self.assertEqual(cwidth(rule[0]), mr._RULE_WIDTH,
+                             f"width={width}: {rule[0]!r}")
 
     def test_a_dbms_marker_comment_is_hidden(self):
         """'전체' 보기는 filter_lines 를 거치지 않아 마커가 본문에 남는다."""
