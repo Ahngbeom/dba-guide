@@ -229,58 +229,71 @@ class NoEscapesWhenPlainTest(unittest.TestCase):
 
 
 class FenceTest(unittest.TestCase):
-    """코드블록이 본문과 구분되어야 '여기부터 실행할 명령'이 보인다."""
+    """코드블록이 본문과 구분되어야 '여기부터 실행할 명령'이 보인다.
 
-    def test_a_fence_gets_a_box_with_the_language_label(self):
+    테두리 상자를 쓰지 않는다 — `│ ` 거터는 `less` 가 접는 순간 이어지는 줄에
+    다시 찍히지 않아 무너지고, 그걸 피하려던 폭 단위 강제 개행은 원문 코드를
+    토큰 중간에서 끊어 복사를 막았다.
+    """
+
+    def test_a_fence_gets_an_indented_body_under_a_language_label(self):
         got = mr.render("```sql\nSELECT 1;\n```\n", width=40, color=False)
-        self.assertIn("┌─ sql", got)
-        self.assertIn("│ SELECT 1;", got)
-        self.assertIn("└", got)
+        self.assertIn("sql", got)
+        self.assertIn(mr._FENCE_INDENT + "SELECT 1;", got)
 
-    def test_a_fence_without_a_language_still_gets_a_box(self):
+    def test_a_fence_draws_no_box(self):
+        got = mr.render("```sql\nSELECT 1;\n```\n", width=40, color=False)
+        for glyph in ("┌", "└", "│"):
+            self.assertNotIn(glyph, got, got)
+
+    def test_a_fence_without_a_language_gets_no_label_line(self):
+        """뜻 없는 라벨 줄을 지어내지 않는다. 들여쓰기가 구분을 진다."""
         got = mr.render("```\nplain\n```\n", width=40, color=False)
-        self.assertIn("┌", got)
-        self.assertIn("│ plain", got)
+        self.assertIn(mr._FENCE_INDENT + "plain", got)
+        lines = [ln for ln in got.split("\n") if ln.strip()]
+        self.assertEqual(lines, [mr._FENCE_INDENT + "plain"], got)
 
     def test_markup_inside_a_fence_is_not_interpreted(self):
         """SQL 주석 `--`, bash 의 `## `, C 의 `**ptr` 이 펜스 안에 있다."""
         src = "```bash\n## 주석\n**ptr\n| a | b |\n```\n"
         got = mr.render(src, width=40, color=False)
-        self.assertIn("│ ## 주석", got)
-        self.assertIn("│ **ptr", got)
-        self.assertIn("│ | a | b |", got)
+        self.assertIn(mr._FENCE_INDENT + "## 주석", got)
+        self.assertIn(mr._FENCE_INDENT + "**ptr", got)
+        self.assertIn(mr._FENCE_INDENT + "| a | b |", got)
         self.assertNotIn("◆", got)
 
-    def test_a_long_code_line_is_split_not_lost(self):
-        src = "```sql\n" + "SELECT " + "x" * 80 + ";\n```\n"
-        got = mr.render(src, width=40, color=False)
-        for line in got.split("\n"):
-            self.assertLessEqual(cwidth(line), 40, repr(line))
-        self.assertIn("x" * 20, got)
+    def test_a_long_code_line_is_kept_whole(self):
+        """예전에는 폭 단위로 끊었다 — 실측 40칸에서 코드 줄의 49%가 훼손됐다."""
+        code = "SELECT " + "x" * 80 + ";"
+        got = mr.render(f"```sql\n{code}\n```\n", width=40, color=False)
+        self.assertIn(mr._FENCE_INDENT + code, got)
+
+    def test_a_blank_line_inside_a_fence_stays_blank(self):
+        """들여쓰기만 남은 줄을 만들지 않는다 — 뒤에 공백이 붙으면 복사가 지저분해진다."""
+        got = mr.render("```sql\nA\n\nB\n```\n", width=40, color=False)
+        self.assertIn(f"{mr._FENCE_INDENT}A\n\n{mr._FENCE_INDENT}B", got)
 
     def test_an_unclosed_fence_is_closed_instead_of_crashing(self):
         """'전체' 보기는 filter_lines 를 안 거치므로 여기까지 올 수 있다."""
         got = mr.render("```sql\nSELECT 1;\n", width=40, color=False)
-        self.assertIn("│ SELECT 1;", got)
-        self.assertIn("└", got)
+        self.assertIn(mr._FENCE_INDENT + "SELECT 1;", got)
 
-    def test_the_box_never_exceeds_the_width(self):
-        got = mr.render("```sql\nSELECT 1;\n```\n", width=30, color=False)
-        for line in got.split("\n"):
-            self.assertLessEqual(cwidth(line), 30, repr(line))
-
-    def test_long_ascii_language_tag_does_not_overflow(self):
-        """긴 ASCII 언어 태그(34자)가 width=20을 넘지 않는다."""
+    def test_only_the_code_body_may_exceed_the_width(self):
+        """라벨 줄은 폭 안에 유지된다. 넘어도 되는 것은 코드 본문뿐이다."""
         src = "```verylonglanguagename1234567890\ncode\n```\n"
         got = mr.render(src, width=20, color=False)
         for line in got.split("\n"):
+            if line.strip() == "code":
+                continue
             self.assertLessEqual(cwidth(line), 20, repr(line))
 
-    def test_long_korean_language_tag_does_not_overflow(self):
+    def test_a_long_korean_language_tag_does_not_overflow(self):
         """긴 한글 언어 태그(16자=폭32)가 width=20을 넘지 않는다."""
         src = "```가나다라마바사아자차카타파하\ncode\n```\n"
         got = mr.render(src, width=20, color=False)
         for line in got.split("\n"):
+            if line.strip() == "code":
+                continue
             self.assertLessEqual(cwidth(line), 20, repr(line))
 
 
@@ -490,6 +503,26 @@ class TableTest(unittest.TestCase):
         self.assertIn("END", got)
 
 
+def fence_bodies(src):
+    """소스의 코드 펜스 본문이 **렌더되면 나와야 하는 모습** 의 집합.
+
+    폭 보장의 **유일한** 예외를 골라내는 데 쓴다. 코드는 자르지도 접지도 않고
+    내보내므로 폭을 넘을 수 있고, 접는 일은 `less` 가 한다.
+
+    `strip()` 이 아니라 렌더 형태 그대로 담는 것이 중요하다 — 양쪽을 벗겨서
+    비교하면 원문의 **들여쓰기가 사라져도** 테스트가 통과한다. `CREATE TABLE`
+    본문처럼 들여쓴 코드가 챕터에 실제로 있다.
+    """
+    out, in_fence = set(), False
+    for line in src.split("\n"):
+        if mr._FENCE_RE.match(line):
+            in_fence = not in_fence
+            continue
+        if in_fence and line.strip():
+            out.add(mr._FENCE_INDENT + line.rstrip())
+    return out
+
+
 class RealChapterTest(unittest.TestCase):
     """가장 넓은 표를 가진 실제 파일이 폭 안에 들어와야 한다.
 
@@ -502,11 +535,25 @@ class RealChapterTest(unittest.TestCase):
               "appendix/dbms-comparison-matrix.md")
 
     def test_no_rendered_line_exceeds_the_width(self):
+        """코드 펜스 본문을 **제외한** 모든 줄이 폭 안에 들어온다.
+
+        예외는 하나뿐이고 의도된 것이다 — `_emit_fence` 가 코드를 원문 그대로
+        내보내므로 긴 명령은 폭을 넘고 `less` 가 접는다.
+
+        `WIDEST` 세 파일은 전부 비교표라 코드 펜스가 0줄이므로(실측) 지금은
+        이 예외가 실제로 발동하지 않는다. 그래도 걸러 두는 이유는, 치트시트에
+        코드 예시가 한 줄이라도 들어오는 날 이 테스트가 **틀린 이유로** 빨개
+        지지 않게 하기 위해서다. 예외가 실제로 작동하는지는 챕터 전량을 도는
+        `ReflowSafetyTest.test_only_fence_bodies_may_exceed_the_width` 가 본다.
+        """
         for rel in self.WIDEST:
             src = (REPO_ROOT / rel).read_text(encoding="utf-8")
+            code = fence_bodies(src)
             for width in (60, 80, 100):
                 got = mr.render(src, width=width, color=False)
                 for line in got.split("\n"):
+                    if line in code:
+                        continue
                     self.assertLessEqual(cwidth(line), width,
                                          f"{rel} @ {width}: {line!r}")
 
