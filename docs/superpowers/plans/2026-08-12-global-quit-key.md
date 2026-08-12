@@ -1496,9 +1496,10 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 2. 그 챕터 목록에서 `Q`(Shift+q) → 한 타로 셸 프롬프트까지 나오는가. 소문자 `q`는 여전히 티어 선택으로 뒤로 가는가.
 3. `PAGER=/nonexistent-pager ./guide`로 같은 경로 → 본문이 평문으로 찍히고 `계속하려면 Enter (q=종료)...`가 뜨는가. 거기서 `q` + Enter → 앱 종료.
    (`PAGER=cat`이 **아니다** — `cat`은 실행에 성공하므로 `printed_inline`이 `False`가 되어 pause를 건너뛴다. 설계 문서 3절의 알려진 한계.)
-4. `./shoot` 월드 선택에서 `Q` → 종료. traceback이나 `선택 화면에서 오류가 발생해…` 메시지가 **뜨지 않아야** 한다.
-5. `./shoot` → 서버가 둘인 스테이지(`2-2-replication-lag`) 시작 → `c` → 서버 선택 화면에서 `Q`가 **무시되는가**. `Esc`로 취소되고 게임이 계속되는가. 끝나면 `./shoot down`으로 랩을 정리한다.
-6. `python3 scripts/reading.py` 단독 실행 → 챕터 목록에서 `Q` → 트레이스백 없이 종료.
+4. `LESS=-X ./guide`(또는 `PAGER="less -X"`)로 같은 경로 → `less` 종료 뒤에도 챕터 본문이 화면에 그대로 남아 있고, 이번에는 `계속하려면 Enter (q=종료)...`가 **떠야** 한다 — `-X`는 사용자가 대체 화면을 안 쓰겠다고 명시한 것이라 이제 `printed_inline`이 `True`가 된다(리뷰 이후 결정 변경, 설계 문서 3절). `PAGER=cat`(3번 항목)과 달리 이건 고쳐진 경로다.
+5. `./shoot` 월드 선택에서 `Q` → 종료. traceback이나 `선택 화면에서 오류가 발생해…` 메시지가 **뜨지 않아야** 한다.
+6. `./shoot` → 서버가 둘인 스테이지(`2-2-replication-lag`) 시작 → `c` → 서버 선택 화면에서 `Q`가 **취소로 접히는가**(막다른 죽은 키가 아니라 `Esc`와 같은 결과). 게임이 계속되는가. 끝나면 `./shoot down`으로 랩을 정리한다.
+7. `python3 scripts/reading.py` 단독 실행 → 챕터 목록에서 `Q` → 트레이스백 없이 종료. Ctrl-C도 마찬가지로 트레이스백 없이 종료하는가.
 
 ---
 

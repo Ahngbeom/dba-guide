@@ -321,9 +321,17 @@ class PickTest(unittest.TestCase):
         with self.assertRaises(tui.QuitApp):
             self._pick([ord("Q")])
 
-    def test_lowercase_q_still_only_cancels(self):
-        """기존 근육기억을 깨뜨리지 않는다 — 소문자는 여전히 '뒤로'다."""
+    def test_lowercase_cancels_but_uppercase_quits(self):
+        """대소문자가 다른 결과를 내는 유일한 자리 — 대조가 핵심이다.
+
+        `q`만 보거나 `Q`만 보는 단언은 `.lower()`로 접어 버리는 회귀를 잡지
+        못한다(그러면 둘 다 '취소'가 되어 `q` 단언은 여전히 통과한다). 같은
+        화면에서 두 결과가 갈라지는 것까지 한 테스트로 확인해야 그 회귀를
+        잡는다.
+        """
         self.assertIsNone(self._pick([ord("q")])[0])
+        with self.assertRaises(tui.QuitApp):
+            self._pick([ord("Q")])
 
     def test_the_string_representation_quits_too(self):
         """`read_key(wide=True)`는 정수 대신 문자열을 준다.
@@ -337,9 +345,29 @@ class PickTest(unittest.TestCase):
     def test_quit_can_be_disabled(self):
         """게임 진행 중 화면은 `Q`를 막는다 — 랩 컨테이너가 뜬 채로 남는다.
 
-        막으면 `Q`는 그냥 무시되고 계속 고르게 된다(취소가 아니다).
+        **결정**: 막으면 `Q`는 죽은 키가 아니라 이 branch가 생기기 전처럼
+        '취소'로 접힌다. 눌러도 아무 일도 안 일어나는 키는 이 이슈(#95)가
+        고치려는 것과 같은 증상이라, 무시가 아니라 취소를 고른다.
+
+        `Q` 뒤에 실제로 선택을 바꿀 키(↓·Enter)를 더 넣어 둔다 — `_PickScreen`
+        은 큐가 비면 `q`를 대신 흘려보내므로, `Q` 하나만 주면 '죽은 키라 다음
+        키를 기다리다 그 대체 `q`로 우연히 취소되는' 경로와 '`Q`가 곧바로
+        취소하는' 경로를 구별하지 못한다. 뒤 키가 소비되지 않아야
+        (반환값이 그 키로 고른 인덱스가 아니라 `None`이어야) `Q`가 그 자리에서
+        직접 취소했다고 말할 수 있다.
         """
-        idx, _ = self._pick([ord("Q"), 10], allow_quit=False)
+        idx, _ = self._pick([ord("Q"), _PickCurses.KEY_DOWN, 10],
+                            allow_quit=False)
+        self.assertIsNone(idx)
+
+    def test_quit_disabled_and_cancel_disabled_leaves_q_nowhere_to_go(self):
+        """`allow_quit=False`이고 `allow_cancel=False`이면 `Q`는 정말로 갈 곳이 없다.
+
+        이때는 취소로도 종료로도 접을 수 없으니 무시되고 계속 고르는 것이
+        맞다 — Enter로 확정할 때까지.
+        """
+        idx, _ = self._pick([ord("Q"), 10], allow_quit=False,
+                            allow_cancel=False)
         self.assertEqual(idx, 0)
 
     def test_the_default_footer_advertises_quit(self):
@@ -464,13 +492,17 @@ class PageTextCharacterizationTest(unittest.TestCase):
         self.mod = tui
 
     @contextlib.contextmanager
-    def _env(self, pager=None, which=None):
+    def _env(self, pager=None, which=None, less=None):
         real_env = dict(os.environ)
         real_which = self.mod.shutil.which
         if pager is None:
             os.environ.pop("PAGER", None)
         else:
             os.environ["PAGER"] = pager
+        if less is None:
+            os.environ.pop("LESS", None)
+        else:
+            os.environ["LESS"] = less
         self.mod.shutil.which = lambda n, *a, **k: which
         try:
             yield
@@ -527,6 +559,64 @@ class PageTextCharacterizationTest(unittest.TestCase):
         self.assertEqual(buf.getvalue().strip(), "본문")
         self.assertEqual(rc, 0)
         self.assertTrue(printed, "폴백으로 직접 찍어 놓고 아니라고 보고했다")
+
+    def _printed(self, pager, less=None):
+        """`page_text`를 실제 서브프로세스 없이 돌려 `printed_inline`만 본다."""
+        class FakeProc:
+            returncode = 0
+
+            def communicate(self, text):
+                pass
+
+        real = self.mod.subprocess.Popen
+        self.mod.subprocess.Popen = lambda *a, **k: FakeProc()
+        try:
+            with self._env(pager=pager, which="/usr/bin/less", less=less):
+                _, printed = self.mod.page_text("본문")
+        finally:
+            self.mod.subprocess.Popen = real
+        return printed
+
+    def test_plain_less_dash_r_still_pauses(self):
+        # `-X`/`--no-init`가 없으면 `less`는 대체 화면을 쓰고 복원한다.
+        self.assertFalse(self._printed("less -R"))
+
+    def test_less_dash_x_is_handled(self):
+        """`-X`는 "대체 화면을 안 쓰겠다"는 명시적 선언이다 — 처리한다(#95 회귀 수정)."""
+        self.assertTrue(self._printed("less -X"))
+
+    def test_less_dash_fx_is_handled(self):
+        self.assertTrue(self._printed("less -FX"))
+
+    def test_less_long_no_init_is_handled(self):
+        self.assertTrue(self._printed("less --no-init"))
+
+    def test_less_env_dash_x_is_handled(self):
+        # `$LESS`는 커맨드라인과 무관하게 `less`가 항상 얹는 기본 옵션이다.
+        self.assertTrue(self._printed("less", less="-X"))
+
+    def test_less_env_without_leading_dash_is_handled(self):
+        """`$LESS`는 대시가 있어도 없어도 된다 — `LESS=-FRX`와 `LESS=FRX`는 같은 뜻."""
+        self.assertTrue(self._printed("less", less="FRX"))
+
+    def test_dash_f_alone_does_not_trigger(self):
+        """`-F`만으로는 트리거하지 않는다 — 긴 본문에는 여전히 대체 화면을 쓴다.
+
+        이걸 inline으로 오판하면 이 브랜치가 없앤 스퓨리어스 프롬프트가
+        되살아난다.
+        """
+        self.assertFalse(self._printed("less -F"))
+
+    def test_x_inside_a_dash_p_argument_is_not_mistaken_for_the_flag(self):
+        """`-P`는 인자를 받는 글자다 — 그 인자 안의 `X`는 옵션이 아니다.
+
+        글자 단위 스캔이 `-P`에서 멈추지 않으면 인자에 든 `X`를 옵션으로
+        오탐한다(`_with_raw_flag`가 이미 겪은 함정과 같다).
+        """
+        self.assertFalse(self._printed("less -PcurrentX -R"))
+
+    def test_other_pagers_are_never_treated_as_less(self):
+        self.assertFalse(self._printed("most", less="-X"))
 
 
 class PagerColorTest(unittest.TestCase):

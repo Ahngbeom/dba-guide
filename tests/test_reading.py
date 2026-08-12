@@ -368,6 +368,18 @@ class ChapterPauseTest(unittest.TestCase):
         1=PostgreSQL, 1=02-intermediate, 1=그 티어의 두 번째 챕터(은행 있음).
         `offer_exam`이 '예'라고 답하도록 고정한다.
         """
+        # 픽 인덱스 [1, 1, 1]이 실제로 가리키는 챕터를 `discover_chapters`로
+        # 다시 구해 은행이 있는지 미리 확인한다 — `offer_exam`을 `True`로
+        # 고정해 뒀는데 `exam.exam_bank_for`는 스텁하지 않았으므로, 파일
+        # 목록이 바뀌어 이 슬롯에 은행 없는 챕터가 들어오면
+        # `args = [str(exam.REPO_ROOT / bank)]`에서 `bank`가 `None`이 되어
+        # 멈춤 여부와 무관한 자리에서 뜻 모를 `TypeError`가 난다. 여기서
+        # 미리 걸리면 실패 메시지가 "은행이 없다"는 진짜 원인을 바로 보여준다.
+        chapter = reading.discover_chapters("02-intermediate")[1]
+        self.assertIsNotNone(
+            reading.exam.exam_bank_for(chapter),
+            f"{chapter}에 문제은행이 없다 — 픽 인덱스 [1, 1, 1]이 가리키는 "
+            "챕터가 바뀌었다면 이 테스트의 인덱스를 은행 있는 챕터로 옮겨야 한다")
         with self._flow([1, 1, 1], printed=False, took_exam=True) as paused:
             reading.main([])
         self.assertEqual(paused, [1])
@@ -417,3 +429,12 @@ class ReadingQuitKeyTest(unittest.TestCase):
         body = (REPO_ROOT / "scripts" / "reading.py").read_text(
             encoding="utf-8")
         self.assertIn("except QuitApp", body)
+
+    def test_running_it_standalone_survives_ctrl_c(self):
+        """`shooting.py`의 `__main__` 블록은 `KeyboardInterrupt`도 잡는데
+        여기는 빠져 있었다 — `python3 scripts/reading.py`를 직접 돌리다 Ctrl-C를
+        누르면 트레이스백이 떴다. 위 테스트와 같은 이유로 소스만 읽는다.
+        """
+        body = (REPO_ROOT / "scripts" / "reading.py").read_text(
+            encoding="utf-8")
+        self.assertIn("except KeyboardInterrupt", body)
