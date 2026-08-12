@@ -40,6 +40,7 @@ git switch --detach v1.0.0
 - [ ] `./shoot doctor`가 통과한다 — 스테이지 정의 파싱까지 여기서 걸린다. CI에는 없다(docker와 DB 클라이언트가 필요해서)
 - [ ] 챕터를 추가·이동·삭제했다면 `README.md`의 링크가 맞다 — **CI 자동** (`scripts/check_content.py`의 links·orphans)
 - [ ] 챕터를 추가·개정했다면 네 절 구조가 유지된다 — **CI 자동** (structure)
+- [ ] 벤더 마커를 건드렸다면 세 단일 벤더 뷰에서도 네 절 구조가 유지된다 — **CI 자동** (`ShippedContentTest`). 손으로 보려면 `python3 scripts/check_content.py --dbms {postgresql,mysql,oracle}`
 - [ ] 새 명령어를 넣었다면 해당 티어의 `*-commands-cheatsheet.md`에 행이 있다 — 판정 불가, 사람 몫
 - [ ] 새 용어를 넣었다면 `appendix/glossary.md`·`appendix/dbms-comparison-matrix.md` 반영 여부를 판단했다 — 판정 불가, 사람 몫
 - [ ] 챕터를 추가·개정했다면 대응하는 `exams/**/*.json`이 함께 갱신됐다 — 파일 **존재**만 CI 자동(banks). 내용이 챕터와 맞는지는 사람 몫
@@ -102,6 +103,8 @@ gh release edit vX.Y.Z --draft=false
 트리거가 `push: branches: [main]`으로 좁혀져 있는 것은 실수가 아니다. 벤더 브랜치는 `scripts/generate-branch.sh`가 main의 트리를 통째로 복제해 만들므로 이 워크플로 파일도 함께 실려 간다. 브랜치를 한정하지 않으면 뷰를 재생성할 때마다 같은 테스트가 3번 더 돈다.
 
 본문 정합성 검사도 **별도 스텝이 아니라 스위트 안에** 있다. `scripts/check_content.py`가 링크·고아 문서·챕터 네 절 구조·문제은행 존재를 판정하고, `tests/test_check_content.py`의 `ShippedContentTest`가 실제 저장소를 상대로 그것을 돌린다. 릴리스 전에 손으로 보고 싶으면 `python3 scripts/check_content.py`를 직접 실행하면 된다 — 어디가 틀렸는지 한 줄씩 찍어 준다.
+
+구조 검사는 `main`의 트리뿐 아니라 **세 단일 벤더 뷰에도** 돌아간다. 절 하나가 통째로 한 벤더의 마커 안에 들어가면 나머지 두 브랜치에서 그 절이 사라지는데, `main`에서만 보면 정상으로 보인다 — 이슈 #90이 그 모양으로 v1.4.0까지 살아남았다. 필터는 `generate-branch.sh`가 쓰는 `filter_dbms.filter_lines`와 같은 함수라, 검사와 실제 브랜치가 갈라질 수 없다.
 
 검사기는 **판정 가능한 것만** 본다. 무엇이 *새* 명령어인지, 어떤 용어가 용어집에 들어가야 하는지는 본문의 의미를 읽어야 하는 판단이라 자동화하지 않았다. 코드 블록에서 토큰을 긁어 치트시트와 대조하는 방식은 오탐이 압도적이어서, 결국 검사기를 끄게 만든다.
 

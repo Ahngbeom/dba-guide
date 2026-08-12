@@ -63,6 +63,7 @@
 | 논리 복원 | `pg_restore` / `psql` | `mysql <` | `impdp` |
 | 물리 백업 | `pg_basebackup` | XtraBackup | RMAN `BACKUP DATABASE` |
 | 연속 로그 | WAL 아카이빙 | 바이너리 로그(binlog) | 아카이브 로그 |
+| 연속 로그 목록 확인 | `SELECT * FROM pg_ls_waldir();` | `SHOW BINARY LOGS;` | `SELECT * FROM v$archived_log;` |
 | PITR 목표 지정 | `recovery_target_time` | `mysqlbinlog --stop-datetime` | `RECOVER ... UNTIL TIME` |
 
 ## 복제
