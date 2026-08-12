@@ -177,8 +177,13 @@ def main(argv=None):
 
 if __name__ == "__main__":
     # `python3 scripts/reading.py`로 직접 돌릴 때는 `guide.main`의 그물이 없다.
-    # 그대로 두면 `Q` 한 번에 트레이스백이 뜬다.
+    # 그대로 두면 `Q` 한 번에 트레이스백이 뜬다. `shooting.py`의 `__main__`
+    # 블록과 같은 모양으로 맞춘다 — 거기는 Ctrl-C도 함께 잡는데 여기는
+    # 빠져 있었다.
     try:
         sys.exit(main())
     except QuitApp:
         sys.exit(0)
+    except KeyboardInterrupt:
+        print("\n중단했습니다.")
+        sys.exit(130)

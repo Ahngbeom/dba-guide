@@ -429,9 +429,13 @@ def pick(stdscr, curses, title, labels, footer=None,
             sel = (sel + 1) % len(labels)
         elif ch.isdigit() and 1 <= int(ch) <= len(labels):
             return int(ch) - 1
-        # raw(대소문자 보존)로 비교한다 — allow_quit=False일 때 접힌 "Q"가
-        # 소문자 q 취소로 오인되면 안 된다(그냥 무시돼야 한다).
-        elif raw == "q" and allow_cancel:
+        # raw(대소문자 보존)로 비교한다. allow_quit이 켜져 있으면 대문자
+        # Q는 위 raise에서 이미 처리되어 여기 오지 않는다. allow_quit이
+        # 꺼진 화면(예: 게임 진행 중 접속 서버 선택)에서는 **결정**으로
+        # Q도 소문자 q와 똑같이 '취소'다 — 이 branch가 생기기 전 동작을
+        # 그대로 유지한다. 죽은 키로 두면(눌러도 아무 일도 안 일어나면)
+        # 이 이슈(#95)가 고치려는 것과 같은 증상이 된다.
+        elif (raw == "q" or (not allow_quit and raw == "Q")) and allow_cancel:
             return None
 
 
@@ -579,29 +583,82 @@ def text_width():
     return max(40, min(shutil.get_terminal_size((80, 24)).columns - 2, 100))
 
 
+# less의 단축 옵션 중 인자를 붙여 받는 글자들. 이들 뒤의 텍스트는 옵션이
+# 아니라 인자이므로 스캔을 중단해야 한다 (예: -Pcurrent 에서 current는
+# -P의 인자이지 옵션 글자들이 아니다). 부분문자열 검색은 인자값에 들어간
+# 문자를 오탐할 수 있어 글자 단위 스캔이 필수 — `_with_raw_flag`와
+# `_less_wont_restore_screen`이 함께 쓴다.
+_LESS_TAKES_ARG = set("bhjkoOpPtTxyz#")
+
+
+def _less_short_opt_present(letters, flag_chars):
+    """단축 옵션 글자열(대시 뗀 뒤)을 앞에서부터 스캔해 flag_chars 중 하나가 있는지.
+
+    인자를 받는 글자(`_LESS_TAKES_ARG`)를 만나면 그 뒤는 전부 그 옵션의
+    인자이므로 스캔을 멈춘다.
+    """
+    for c in letters:
+        if c in flag_chars:
+            return True
+        if c in _LESS_TAKES_ARG:
+            break
+    return False
+
+
 def _with_raw_flag(argv):
     """`less` 에 `-R` 이 없으면 붙인다. 다른 페이저는 건드리지 않는다."""
     if not argv or os.path.basename(argv[0]) != "less":
         return argv
 
-    # less의 단축 옵션 중 인자를 붙여 받는 글자들. 이들 뒤의 텍스트는 옵션이
-    # 아니라 인자이므로 스캔을 중단해야 한다 (예: -Pcurrent 에서 current는
-    # -P의 인자이지 옵션 글자들이 아니다). 부분문자열 검색은 인자값에 들어간
-    # 'r'/'R'을 오탐할 수 있어 글자 단위 스캔이 필수.
-    takes_arg = set("bhjkoOpPtTxyz#")
-
     for a in argv[1:]:
         if a.startswith("--") and a.lower().startswith("--raw"):
             return argv
         if a.startswith("-") and not a.startswith("--"):
-            # 단축 옵션 글자를 하나하나 검사
-            for c in a[1:]:
-                if c == "R" or c == "r":
-                    return argv
-                if c in takes_arg:
-                    # 이 글자는 인자를 받으므로 뒤의 텍스트는 모두 인자이다
-                    break
+            if _less_short_opt_present(a[1:], ("R", "r")):
+                return argv
     return argv + ["-R"]
+
+
+def _less_wont_restore_screen(argv):
+    """지금 이 실행에서 `less`가 대체 화면을 쓰지 않겠다고 **명시**했는가.
+
+    `-X`/`--no-init`는 사용자가 "화면을 복원하지 않겠다"를 직접 선언한
+    것이다 — 포터블하게 *감지*할 방법이 없는 것과는 다르다(`page_text`의
+    "알려진 한계" 참고. `LESS=-FX`가 몇 년째 널리 권장돼 온 설정이라
+    이건 흔한 개발 환경이지 특이 케이스가 아니다).
+
+    `less`가 아닌 페이저는 무조건 `False` — `page_text`가 실행할 argv로만
+    판단한다. `argv`(페이저 커맨드라인)와 `$LESS`(리스가 커맨드라인과
+    무관하게 항상 얹는 기본 옵션) 둘 다 봐야 한다. `$LESS`는 대시가 있어도
+    없어도 된다 — `LESS=-FRX`와 `LESS=FRX`가 같은 뜻이다.
+
+    `-F`만으로는 트리거하지 않는다: 긴 본문에서는 `-F`가 있어도 `less`가
+    대체 화면을 그대로 쓰므로, `-F`를 inline으로 오판하면 이 브랜치가
+    없앤 스퓨리어스 프롬프트가 되살아난다.
+    """
+    if not argv or os.path.basename(argv[0]) != "less":
+        return False
+
+    def _argv_token_says_no_init(tok):
+        if tok.startswith("--"):
+            return tok.lower() == "--no-init"
+        if tok.startswith("-"):
+            return _less_short_opt_present(tok[1:], ("X",))
+        return False
+
+    for a in argv[1:]:
+        if _argv_token_says_no_init(a):
+            return True
+
+    # `$LESS`는 대시가 있어도 없어도 된다(LESS=-FX 와 LESS=FX 가 같은 뜻).
+    for tok in os.environ.get("LESS", "").split():
+        if tok.startswith("--"):
+            if tok.lower() == "--no-init":
+                return True
+            continue
+        if _less_short_opt_present(tok.lstrip("-"), ("X",)):
+            return True
+    return False
 
 
 def page_text(text):
@@ -618,11 +675,19 @@ def page_text(text):
     판정이 여기 있는 이유: `PAGER` 해석과 `less` 존재 확인 규칙이 이미 이
     함수 안에 있다. 호출부에서 같은 조건을 다시 쓰면 규칙이 두 곳으로 갈라진다.
 
-    **알려진 한계**: `PAGER=cat`처럼 대체 화면을 쓰지 않는 페이저를 지정하면
-    본문이 화면에 남는데도 `printed_inline`은 `False`가 되어 다음 curses
-    프레임이 그것을 지운다. 페이저가 대체 화면을 쓰는지 알아낼 이식성 있는
-    방법이 없다. `COLOR_PAGERS`를 재사용하는 것도 답이 아니다 — 그 목록은
-    "ANSI를 통과시키는가"를 뜻하지 "화면을 복원하는가"를 뜻하지 않는다.
+    `less -X`/`--no-init`(`$LESS`로 얹은 경우 포함)는 **처리한다** — 사용자가
+    대체 화면을 쓰지 않겠다고 직접 선언한 것이므로 `_less_wont_restore_screen`
+    으로 읽어 `printed_inline`을 `True`로 돌린다. `LESS=-FX`가 몇 년째 널리
+    권장돼 온 설정이라, 처리하지 않으면 그 설정을 쓰는 사람의 챕터 본문이
+    다음 curses 프레임에 지워지는 회귀가 된다.
+
+    **알려진 한계**: 남는 것은 `less`도 아니고 스스로 선언하지도 않는
+    페이저다 — `PAGER=cat`처럼 대체 화면을 쓰지 않는데 그 사실을 알릴
+    방법이 없는 경우, 본문이 화면에 남는데도 `printed_inline`은 `False`가
+    되어 다음 curses 프레임이 그것을 지운다. 이건 포터블하게 *감지*할
+    방법이 없어서다(`-X`는 감지가 아니라 사용자가 알려준 것을 읽는 것뿐).
+    `COLOR_PAGERS`를 재사용하는 것도 답이 아니다 — 그 목록은 "ANSI를
+    통과시키는가"를 뜻하지 "화면을 복원하는가"를 뜻하지 않는다.
     """
     pager = os.environ.get("PAGER") or ("less -R" if shutil.which("less")
                                         else None)
@@ -630,10 +695,11 @@ def page_text(text):
         print(text)
         return 0, True
     try:
-        proc = subprocess.Popen(_with_raw_flag(shlex.split(pager)),
+        argv = shlex.split(pager)
+        proc = subprocess.Popen(_with_raw_flag(argv),
                                 stdin=subprocess.PIPE, text=True)
         proc.communicate(text)
-        return proc.returncode, False
+        return proc.returncode, _less_wont_restore_screen(argv)
     except (OSError, KeyboardInterrupt):
         print(text)
         return 0, True
