@@ -1820,6 +1820,122 @@ class ReadmeStageTableTest(unittest.TestCase):
                              f"README:{top + 1} 표의 순서가 스테이지 번호와 다르다")
 
 
+class GlobalQuitTest(unittest.TestCase):
+    """이슈 #95 — `Q`는 앱을 끝내되, 게임이 도는 중에는 막혀 있어야 한다."""
+
+    def setUp(self):
+        self.multi = shooting.load_stage(
+            REPO_ROOT / "shooting" / "stages" / "2-2-replication-lag.json")
+
+    def test_the_in_game_server_picker_disables_the_quit_key(self):
+        """게임 중 `Q`가 앱을 끄면 랩 컨테이너가 뜬 채로 남는다.
+
+        동작으로 확인하지 않고 **배선**으로 확인하는 이유: `_FakeScreen`은 같은
+        키를 무한히 돌려주므로, `Q`가 무시되는 화면에 `Q`만 먹이면 테스트가
+        끝나지 않는다.
+        """
+        seen = {}
+        real = shooting.pick
+
+        def fake_pick(*a, **k):
+            seen["kw"] = k
+            return 0
+
+        shooting.pick = fake_pick
+        try:
+            shooting._pick_client_target(_FakeScreen(ord("1")), _FakeCurses(),
+                                         self.multi)
+        finally:
+            shooting.pick = real
+        self.assertIs(seen["kw"].get("allow_quit"), False)
+
+    def test_choose_stage_does_not_swallow_a_quit_into_the_line_fallback(self):
+        """`choose_stage`는 curses 화면을 `except Exception:`으로 감싼다.
+
+        traceback을 찍고 라인 모드로 떨어지는 그 안전망은 **일부러** 넣은
+        것이라 없앨 수 없다. `QuitApp`이 `BaseException` 하위이므로 걸리지
+        않아야 한다 — 걸리면 `Q`를 누른 사용자가 traceback과 함께 목록 입력으로
+        떨어진다.
+        """
+        stages = [REPO_ROOT / "shooting" / "stages" / n
+                  for n in ("1-1-runaway-query.json",
+                            "1-3-lock-contention.json")]
+        fell_back = []
+        real_curses = shooting._choose_in_worlds_curses
+        real_line = shooting._choose_stage_line
+        real_in = sys.stdin.isatty
+
+        def boom(*a, **k):
+            raise shooting.QuitApp
+
+        shooting._choose_in_worlds_curses = boom
+        shooting._choose_stage_line = lambda *a, **k: fell_back.append(1)
+        sys.stdin.isatty = lambda: True
+        try:
+            with contextlib.redirect_stdout(io.StringIO()) as buf:
+                # redirect_stdout이 sys.stdout 자체를 이 StringIO로 바꿔치기
+                # 하므로, 바깥에서 sys.stdout.isatty를 미리 패치해 둬도 이
+                # 블록 안에서는 무시된다 — 여기서, 바뀐 대상에 다시 패치한다.
+                buf.isatty = lambda: True
+                with self.assertRaises(shooting.QuitApp):
+                    shooting.choose_stage(stages)
+        finally:
+            shooting._choose_in_worlds_curses = real_curses
+            shooting._choose_stage_line = real_line
+            sys.stdin.isatty = real_in
+        self.assertEqual(fell_back, [], "QuitApp이 라인 모드 폴백에 삼켜졌다")
+
+    def _footers(self, can_go_up):
+        """`_pick_world_then_stage`가 두 `pick` 호출에 넘긴 footer들.
+
+        이 함수는 `stdscr`·`curses`를 **인자로** 받으므로 그냥 대역을 넣어
+        직접 부를 수 있다 — 소스를 grep할 이유가 없다. 월드를 고른 뒤 스테이지
+        선택에서 경로를 돌려주게 해서 한 바퀴만 돌고 끝나게 한다.
+        """
+        footers = []
+        real = shooting.pick
+
+        def fake_pick(_stdscr, _curses, _title, _labels, footer=None, **_kw):
+            footers.append(footer)
+            return 0
+
+        shooting.pick = fake_pick
+        try:
+            groups = [(1, [(Path("s.json"), {"title": "t", "id": "1-1"})])]
+            shooting._pick_world_then_stage(
+                _FakeScreen(ord("1")), _FakeCurses(), groups, {},
+                "어느 월드부터 할까요", can_go_up)
+        finally:
+            shooting.pick = real
+        return footers
+
+    def test_the_world_picker_advertises_quit_when_back_means_something_else(self):
+        """`Esc/q`가 'DBMS 선택으로'일 때는 `Q 종료`가 따로 필요하다."""
+        world_footer, stage_footer = self._footers(can_go_up=True)
+        self.assertIn("DBMS 선택으로", world_footer)
+        self.assertIn("Q 종료", world_footer)
+        self.assertIn("월드 선택으로", stage_footer)
+        self.assertIn("Q 종료", stage_footer)
+
+    def test_the_world_picker_does_not_repeat_itself_when_back_is_quit(self):
+        """`Esc/q`가 이미 '종료'면 `Q 종료`를 덧붙이지 않는다.
+
+        같은 결과를 두 번 적으면 읽는 사람이 차이를 찾느라 멈춘다.
+        """
+        world_footer, _ = self._footers(can_go_up=False)
+        self.assertIn("Esc/q 종료", world_footer)
+        self.assertNotIn("Q 종료", world_footer.replace("Esc/q 종료", ""))
+
+    def test_running_it_standalone_survives_a_quit(self):
+        """`__main__` 가드가 없으면 `Q` 한 번에 트레이스백이 뜬다.
+
+        여기만 소스를 읽는다 — `__main__` 블록은 동작으로 도달할 방법이 없다.
+        """
+        body = (REPO_ROOT / "scripts" / "shooting.py").read_text(
+            encoding="utf-8")
+        self.assertIn("except QuitApp", body)
+
+
 class ChooseStageFilterTest(unittest.TestCase):
     """`--dbms` 는 스테이지 개수와 무관하게 지켜져야 한다.
 
