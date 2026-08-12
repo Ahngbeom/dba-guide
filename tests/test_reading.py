@@ -7,6 +7,7 @@
 import contextlib
 import io
 import sys
+import types
 import unittest
 from pathlib import Path
 
@@ -177,10 +178,21 @@ class ReadChapterTest(unittest.TestCase):
     CHAPTER = "01-beginner/03-installation-and-access.md"
 
     @contextlib.contextmanager
-    def _capture(self):
+    def _capture(self, printed=False):
+        """`page_text` 를 가로챈다.
+
+        `page_text` 는 이제 `(returncode, printed_inline)` 튜플을 돌려주므로
+        대역도 같은 모양이어야 한다 — 문자열을 돌려주면 호출부의 언패킹이
+        깨진다.
+        """
         seen = {}
         real = reading.page_text
-        reading.page_text = lambda text: seen.setdefault("text", text)
+
+        def fake(text):
+            seen["text"] = text
+            return 0, printed
+
+        reading.page_text = fake
         try:
             yield seen
         finally:
@@ -216,6 +228,17 @@ class ReadChapterTest(unittest.TestCase):
         with self._capture() as seen:
             reading.read_chapter(self.CHAPTER, dbms="postgresql")
         self.assertNotIn("\x1b", seen["text"])
+
+    def test_it_reports_whether_it_printed_inline(self):
+        """`page_text` 의 `printed_inline` 을 그대로 넘겨야 한다.
+
+        호출부(`main`)가 이 값 하나로 pause 여부를 정한다. 여기서 삼키면
+        페이저가 없는 환경에서 챕터 본문이 다음 curses 프레임에 지워진다.
+        """
+        with self._capture(printed=True):
+            self.assertTrue(reading.read_chapter(self.CHAPTER))
+        with self._capture(printed=False):
+            self.assertFalse(reading.read_chapter(self.CHAPTER))
 
 
 class ReadingMainTest(unittest.TestCase):
@@ -294,3 +317,103 @@ class ReadingMainTest(unittest.TestCase):
         with self._flow([]) as read:
             self.assertEqual(reading.main([]), 0)
         self.assertEqual(read, [])
+
+
+class ChapterPauseTest(unittest.TestCase):
+    """이슈 #95 — 챕터를 읽을 때마다 뜻 없는 'Enter'를 요구하지 않는다.
+
+    `pause_after_output()`은 "다음 curses 프레임의 `erase()`가 방금 찍힌 평문을
+    한 프레임도 못 읽히고 지우는 것"을 막으려고 있다. `less`가 본문을 삼켰다면
+    지킬 평문이 애초에 없다 — 그런데도 무조건 불러서, 챕터를 하나 읽을 때마다
+    Enter를 한 번씩 눌러야 했다.
+    """
+
+    @contextlib.contextmanager
+    def _flow(self, picks, printed=False, took_exam=False):
+        """선택 → 읽기 → (시험) 한 바퀴를 돌리고 pause 호출을 센다."""
+        seq = iter(list(picks) + [None] * 6)
+        paused = []
+        real = {n: getattr(reading, n)
+                for n in ("choose", "read_chapter", "offer_exam",
+                          "pause_after_output")}
+        real_exam_main = reading.exam.main
+        reading.choose = lambda title, labels: next(seq)
+        reading.read_chapter = lambda rel, dbms=None: printed
+        reading.offer_exam = lambda rel, bank, ask=input: took_exam
+        reading.pause_after_output = lambda: paused.append(1)
+        reading.exam.main = lambda argv: 0
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                yield paused
+        finally:
+            for n, fn in real.items():
+                setattr(reading, n, fn)
+            reading.exam.main = real_exam_main
+
+    def test_the_pager_swallowed_it_so_we_do_not_pause(self):
+        """평상시 경로다 — `less`가 있으면 여기로 온다."""
+        with self._flow([0, 0, 0], printed=False) as paused:
+            reading.main([])
+        self.assertEqual(paused, [], "페이저가 삼켰는데도 멈췄다")
+
+    def test_a_plain_text_fallback_still_pauses(self):
+        """`$PAGER`도 `less`도 없으면 본문이 그대로 찍힌다 — 지켜야 한다."""
+        with self._flow([0, 0, 0], printed=True) as paused:
+            reading.main([])
+        self.assertEqual(paused, [1])
+
+    def test_taking_the_exam_pauses_even_when_the_pager_swallowed_it(self):
+        """`exam.main`이 평문을 남겼을 수 있다 — 안전한 쪽으로 떨어진다.
+
+        1=PostgreSQL, 1=02-intermediate, 1=그 티어의 두 번째 챕터(은행 있음).
+        `offer_exam`이 '예'라고 답하도록 고정한다.
+        """
+        with self._flow([1, 1, 1], printed=False, took_exam=True) as paused:
+            reading.main([])
+        self.assertEqual(paused, [1])
+
+
+class ReadingQuitKeyTest(unittest.TestCase):
+    """선택 화면이 종료 키를 안내해야 한다 — 없는 것처럼 보이면 없는 것이다."""
+
+    def test_the_footer_offers_both_back_and_quit(self):
+        seen = {}
+        fake_curses = types.SimpleNamespace(
+            curs_set=lambda _n: None,
+            wrapper=lambda driver: driver(object()))
+
+        def fake_pick(_stdscr, _curses, _title, _labels, footer=None, **_kw):
+            seen["footer"] = footer
+            return 0
+
+        real_pick = reading.pick
+        real_curses = sys.modules.get("curses")
+        real_in, real_out = sys.stdin.isatty, sys.stdout.isatty
+        reading.pick = fake_pick
+        sys.modules["curses"] = fake_curses
+        sys.stdin.isatty = lambda: True
+        sys.stdout.isatty = lambda: True
+        try:
+            reading.choose("제목", ["a", "b"])
+        finally:
+            reading.pick = real_pick
+            if real_curses is None:
+                del sys.modules["curses"]
+            else:
+                sys.modules["curses"] = real_curses
+            sys.stdin.isatty, sys.stdout.isatty = real_in, real_out
+
+        self.assertIn("Esc/q 뒤로", seen["footer"], seen)
+        self.assertIn("Q 종료", seen["footer"], seen)
+
+    def test_running_it_standalone_survives_a_quit(self):
+        """`__main__` 가드가 없으면 `Q` 한 번에 트레이스백이 뜬다.
+
+        여기만 소스를 읽는다 — 파이프로 실행하면 비-tty라 `pick_line` 경로로
+        떨어지고, 그 경로에는 `Q`가 없어서(설계상 범위 밖) 동작으로는 이
+        가드에 도달할 방법이 없다. `test_the_launcher_points_at_the_script`가
+        런처 내용을 읽는 것과 같은 종류의 검사다.
+        """
+        body = (REPO_ROOT / "scripts" / "reading.py").read_text(
+            encoding="utf-8")
+        self.assertIn("except QuitApp", body)
