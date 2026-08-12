@@ -420,26 +420,6 @@ class TableTest(unittest.TestCase):
         self.assertIn("─", rows[1])
         self.assertNotIn("-", rows[1].replace("─", ""))
 
-    def test_a_wide_table_wraps_inside_its_cells(self):
-        src = ("| 구분 | 명령 |\n|---|---|\n"
-               "| 권한 부여 | GRANT SELECT ON schema.table TO someuser; |\n")
-        got = mr.render(src, width=34, color=False)
-        for r in got.split("\n"):
-            self.assertLessEqual(cwidth(r), 34, repr(r))
-        self.assertIn("GRANT", got)
-        self.assertIn("someuser", got)
-
-    def test_a_wrapped_cell_keeps_its_column_start(self):
-        src = ("| 구분 | 명령 |\n|---|---|\n"
-               "| 권한 | AAAA BBBB CCCC DDDD EEEE |\n")
-        rows = self._rows(mr.render(src, width=28, color=False))
-        # 여기도 폭으로 잰다 — 첫 줄의 `권한` 은 2자·폭 4다.
-        first = cwidth(rows[2][:rows[2].index("AAAA")])
-        cont = [r for r in rows[3:] if "CCCC" in r or "DDDD" in r or "EEEE" in r]
-        self.assertTrue(cont, rows)
-        for r in cont:
-            self.assertEqual(cwidth(r) - cwidth(r.lstrip()), first, repr(r))
-
     def test_inline_markup_inside_a_cell_is_rendered(self):
         src = "| a |\n|---|\n| `SELECT` |\n"
         got = mr.render(src, width=40, color=True)
@@ -468,21 +448,6 @@ class TableTest(unittest.TestCase):
         self.assertEqual(before, gap // 2, repr(data))
         self.assertEqual(after, gap - gap // 2, repr(data))
 
-    def test_a_wrapped_cell_pads_each_continuation_line_by_its_alignment(self):
-        """가운데 정렬 셀이 접히면 접힌 줄마다 **따로** 채운다 — 첫 줄은 왼쪽
-        열의 내용까지 포함해 채워지고, 이어지는 줄은 왼쪽 열이 비어 있어
-        채움 폭이 달라진다. 현재 동작을 그대로 고정한다."""
-        src = "| n | label |\n|---:|:---:|\n| 1 | AAAA BBBB CCCC DDDD |\n"
-        rows = self._rows(mr.render(src, width=20, color=False))
-        first, cont = rows[2], rows[3]
-        self.assertIn("AAAA BBBB CCCC", first)
-        self.assertIn("DDDD", cont)
-        first_lead = cwidth(first[:first.index("AAAA")])
-        cont_lead = cwidth(cont[:cont.index("DDDD")])
-        self.assertEqual(first_lead, 4, repr(first))
-        self.assertEqual(cont_lead, 9, repr(cont))
-        self.assertNotEqual(first_lead, cont_lead)
-
     def test_a_lone_pipe_line_is_not_a_table(self):
         """구분선이 뒤따르지 않으면 표가 아니다 — 문단으로 낸다."""
         got = mr.render("| 그냥 파이프 문장\n", width=40, color=False)
@@ -501,6 +466,61 @@ class TableTest(unittest.TestCase):
         self.assertNotIn("|", got)
         self.assertIn("SHOW DATABASES", got)
         self.assertIn("END", got)
+
+
+class TableCardTest(unittest.TestCase):
+    """자연폭이 화면에 안 들어가면 카드로 편다.
+
+    실측: 표 44개의 자연폭 중앙값이 130칸이라 기본 80칸에서도 36개가 압축됐다.
+    압축은 `PostgreSQL` 을 `PostgreSQ`/`L` 로 쪼개고, 채움으로 만든 정렬은
+    `less` 가 접는 순간 어차피 무너진다.
+    """
+
+    WIDE = ("| 항목 | PostgreSQL | MySQL |\n"
+            "|---|---|---|\n"
+            "| 기본 포트 | 5432 | 3306 |\n"
+            "| 클라이언트 | psql | mysql |\n")
+
+    def test_a_table_that_fits_is_still_aligned(self):
+        got = mr.render(self.WIDE, width=60, color=False)
+        self.assertNotIn(mr._CARD_MARK.strip(), got)
+        self.assertIn("─", got)
+
+    def test_a_table_that_does_not_fit_becomes_cards(self):
+        got = mr.render(self.WIDE, width=24, color=False)
+        self.assertIn(f"{mr._CARD_MARK}기본 포트", got)
+        self.assertIn("  PostgreSQL: 5432", got)
+        self.assertIn("  MySQL: 3306", got)
+
+    def test_cards_use_a_marker_the_headings_do_not(self):
+        """`◆`(h2)·`·`(h3) 를 재사용하면 표 카드가 챕터 제목으로 읽힌다."""
+        self.assertNotIn(mr._CARD_MARK.strip(), ("◆", "·"))
+
+    def test_cards_still_fit_the_width(self):
+        """카드 값은 접는다 — 폭을 넘어도 되는 것은 코드 펜스뿐이다."""
+        src = ("| 구분 | 명령 |\n|---|---|\n"
+               "| 권한 부여 | GRANT SELECT ON schema.table TO someuser; |\n")
+        got = mr.render(src, width=28, color=False)
+        for line in got.split("\n"):
+            self.assertLessEqual(cwidth(line), 28, repr(line))
+        self.assertIn("GRANT", got)
+        self.assertIn("someuser", got)
+
+    def test_an_empty_cell_makes_no_line(self):
+        """`MySQL: ` 처럼 값 없는 줄을 만들지 않는다."""
+        src = ("| 항목 | PostgreSQL | MySQL |\n|---|---|---|\n"
+               "| 확장 | CREATE EXTENSION 으로 붙이는 아주 긴 설명 문장 |  |\n")
+        got = mr.render(src, width=24, color=False)
+        self.assertIn("PostgreSQL:", got)
+        self.assertNotIn("MySQL:", got)
+
+    def test_the_pipes_are_gone_in_card_mode_too(self):
+        self.assertNotIn("|", mr.render(self.WIDE, width=24, color=False))
+
+    def test_compression_is_gone(self):
+        """압축이 사라지면 압축 전용 코드도 사라져야 한다."""
+        self.assertFalse(hasattr(mr, "_fit_columns"))
+        self.assertFalse(hasattr(mr, "_MIN_COL"))
 
 
 def fence_bodies(src):

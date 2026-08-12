@@ -190,7 +190,6 @@ _ORDERED_RE = re.compile(r"^(\s*)(\d+)[.)]\s+(.*)$")
 _QUOTE_RE = re.compile(r"^\s*>\s?(.*)$")
 
 _SEP_CELL_RE = re.compile(r"^:?-{1,}:?$")
-_MIN_COL = 4          # 한글 두 글자. 0폭 열이 생기지 않게 하는 하한
 
 # 깊이별 불릿 기호. 이 저장소는 중첩 들여쓰기를 2·3·4칸으로 섞어 쓴다(실측)
 # 이라 `len(indent) // 2` 로 재면 3칸과 4칸이 다른 깊이가 되어 같은 목록이
@@ -205,6 +204,10 @@ _RULE_WIDTH = 24
 # 코드 펜스 본문 들여쓰기. 챕터의 리스트 들여쓰기는 2·3칸 대역이라 겹치지 않고,
 # 마크다운의 indented code block 관습과 맞는다.
 _FENCE_INDENT = "    "
+
+# 표 카드 제목 표지. `◆`(h2)·`·`(h3) 를 재사용하면 표 카드가 챕터 제목으로
+# 읽히므로 겹치지 않는 글리프를 쓴다.
+_CARD_MARK = "▸ "
 
 
 def _blank(out):
@@ -343,18 +346,6 @@ def _alignments(line):
     return out
 
 
-def _fit_columns(natural, width):
-    """자연 폭이 화면을 넘으면 넓은 열부터 1칸씩 깎는다."""
-    cols = list(natural)
-    avail = width - (len(cols) - 1)          # 열 사이 여백 1칸
-    while sum(cols) > avail:
-        widest = max(range(len(cols)), key=lambda j: cols[j])
-        if cols[widest] <= _MIN_COL:
-            break                            # 더 깎을 데가 없다 — less 가 접는다
-        cols[widest] -= 1
-    return cols
-
-
 def _pad(row_spans, col, align):
     """셀 한 줄을 열 폭에 맞춰 채운다."""
     gap = col - swidth(row_spans)
@@ -368,31 +359,14 @@ def _pad(row_spans, col, align):
     return row_spans + [(" " * gap, None)]
 
 
-def _emit_table(lines, i, width, color, out):
-    """파이프 표를 정렬해 낸다 → 다음에 볼 줄 번호."""
-    header = _cells(lines[i])
-    aligns = _alignments(lines[i + 1])
-    i += 2
-    body = []
-    # dbms 마커 주석이 표 행 사이에 끼어들 수 있다(부록 dbms-branch-strategy 의
-    # 행 단위 marking 작업이 그 경로다). 주석에서 표가 끊기면 남은 행이
-    # `_is_separator` 검사를 통과하지 못해 문단으로 떨어지고 파이프가 그대로
-    # 화면에 남는다 — 주석은 건너뛰되 행은 계속 모아 표를 안 끊는다.
-    while i < len(lines) and (lines[i].strip().startswith("|")
-                              or _COMMENT_RE.match(lines[i])):
-        if not _COMMENT_RE.match(lines[i]):
-            body.append(_cells(lines[i]))
-        i += 1
+def _emit_table_aligned(spans, cols, aligns, color, out):
+    """자연폭이 화면에 들어갈 때만 부른다 — 열 폭은 자연폭 그대로다.
 
-    rows = [header] + body
-    ncols = max(len(r) for r in rows)
-    rows = [r + [""] * (ncols - len(r)) for r in rows]
-    aligns = (aligns + ["left"] * ncols)[:ncols]
-
-    spans = [[inline_spans(c, color) for c in r] for r in rows]
-    natural = [max(swidth(r[j]) for r in spans) for j in range(ncols)]
-    cols = _fit_columns(natural, width)
-
+    압축하지 않으므로 셀이 접힐 일이 없지만, `layout` 호출은 남긴다 — 셀 안
+    줄바꿈을 다루는 유일한 통로이고, 여기서만 쓰는 특수 경로를 새로 만들
+    이유가 없다.
+    """
+    ncols = len(cols)
     _blank(out)
     for n, row in enumerate(spans):
         style = "th" if n == 0 else None
@@ -415,6 +389,72 @@ def _emit_table(lines, i, width, color, out):
                 if j < ncols - 1:
                     rule.append((" ", None))
             out.append(paint(rule, color))
+
+
+def _emit_table_cards(spans, width, color, out):
+    """행 하나를 카드 하나로 편다. 첫 열이 카드 제목, 나머지가 `헤더: 값`.
+
+    공백 채움으로 만든 열 정렬은 `less` 가 접는 순간 전부 어긋난다. 카드형은
+    줄머리에 의미를 싣지 않으므로(`헤더:` 가 항목 시작을 알린다) 어느 폭에서
+    접혀도 읽힌다.
+
+    **들여쓰기는 `layout` 뒤에 붙인다.** `layout` 은 `_words` 를 거치는데
+    `_words` 는 공백을 구분자로만 취급해서, 선행 공백을 span 으로 넘기면 그냥
+    사라진다. 그래서 폭을 미리 2칸 줄여 접고 나서 들여쓴다.
+    """
+    header, body = spans[0], spans[1:]
+    ncols = len(header)
+    indent = "  "
+    _blank(out)
+    for row in body:
+        title = [(t, s or "th") for t, s in row[0]]
+        for line in layout([(_CARD_MARK, "th")] + title, width):
+            out.append(paint(line, color).rstrip())
+        for j in range(1, ncols):
+            if not swidth(row[j]):
+                continue                     # 빈 셀은 줄을 만들지 않는다
+            # 콜론 뒤 공백이 **반드시** 있어야 한다. `_words` 는 공백으로만
+            # 단어를 나누므로, `(":", …)` 로 두면 라벨과 값이 한 단어로 붙어
+            # `PostgreSQL:5432` 가 된다(실측).
+            label = [(t, s or "th") for t, s in header[j]] + [(": ", "th")]
+            for line in layout(label + row[j], width - len(indent)):
+                out.append((indent + paint(line, color)).rstrip())
+        _blank(out)
+
+
+def _emit_table(lines, i, width, color, out):
+    """파이프 표를 낸다 → 다음에 볼 줄 번호.
+
+    자연폭이 화면에 들어가면 정렬해서, 안 들어가면 카드로 편다. **압축하지
+    않는다** — 열을 깎으면 `PostgreSQL` 이 `PostgreSQ`/`L` 로 쪼개지고(실측
+    40칸), 채움으로 맞춘 정렬은 `less` 가 접으면 어차피 무너진다.
+
+    dbms 마커 주석이 표 행 사이에 끼어들 수 있다(부록 dbms-branch-strategy 의
+    행 단위 marking 작업이 그 경로다). 주석에서 표가 끊기면 남은 행이
+    `_is_separator` 검사를 통과하지 못해 문단으로 떨어지고 파이프가 그대로
+    화면에 남는다 — 주석은 건너뛰되 행은 계속 모아 표를 안 끊는다.
+    """
+    header = _cells(lines[i])
+    aligns = _alignments(lines[i + 1])
+    i += 2
+    body = []
+    while i < len(lines) and (lines[i].strip().startswith("|")
+                              or _COMMENT_RE.match(lines[i])):
+        if not _COMMENT_RE.match(lines[i]):
+            body.append(_cells(lines[i]))
+        i += 1
+
+    rows = [header] + body
+    ncols = max(len(r) for r in rows)
+    rows = [r + [""] * (ncols - len(r)) for r in rows]
+    aligns = (aligns + ["left"] * ncols)[:ncols]
+
+    spans = [[inline_spans(c, color) for c in r] for r in rows]
+    natural = [max(swidth(r[j]) for r in spans) for j in range(ncols)]
+    if sum(natural) + ncols - 1 <= width:
+        _emit_table_aligned(spans, natural, aligns, color, out)
+    else:
+        _emit_table_cards(spans, width, color, out)
     return i
 
 
