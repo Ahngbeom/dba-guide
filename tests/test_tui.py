@@ -244,6 +244,34 @@ class _PickScreen:
         return "".join(self.drawn).split("\f")
 
 
+class QuitAppTest(unittest.TestCase):
+    """전역 종료 신호는 `Exception`이 아니라 `BaseException`이어야 한다.
+
+    `shooting.py`는 화면 코드를 `except Exception:`으로 감싸 traceback을 찍고
+    라인 모드로 폴백한다 — 선택 화면(`choose_stage`)과 게임 화면(`cmd_play`)
+    두 곳이고, 조용히 넘기지 않으려고 **일부러** 넣은 안전망이라 없앨 수 없다.
+    `QuitApp`이 평범한 `Exception`이면 `Q`를 누른 사용자가 traceback과 함께
+    라인 모드 목록으로 떨어진다.
+
+    `SystemExit`·`KeyboardInterrupt`가 `BaseException`인 이유가 정확히 이것이다
+    — 오류가 아니라 제어 흐름 신호이고, "모든 오류를 잡는" 코드가 삼키면 안 된다.
+    """
+
+    def test_it_is_a_base_exception_but_not_an_exception(self):
+        self.assertTrue(issubclass(tui.QuitApp, BaseException))
+        self.assertFalse(issubclass(tui.QuitApp, Exception))
+
+    def test_except_exception_does_not_swallow_it(self):
+        """계층 관계를 말로만 확인하지 않고 실제 `except`로 확인한다."""
+        swallowed = []
+        with self.assertRaises(tui.QuitApp):
+            try:
+                raise tui.QuitApp
+            except Exception as e:          # noqa: BLE001 - 일부러 넓게 잡는다
+                swallowed.append(e)
+        self.assertEqual(swallowed, [], "except Exception이 QuitApp을 삼켰다")
+
+
 class PickTest(unittest.TestCase):
     """세로 목록 선택기 — exam.py와 shooting.py에 흩어져 있던 것을 모은 것."""
 
@@ -287,6 +315,41 @@ class PickTest(unittest.TestCase):
         # 취소를 막으면 q는 무시되고 계속 고르게 된다.
         idx, _ = self._pick([ord("q"), 10], allow_cancel=False)
         self.assertEqual(idx, 0)
+
+    def test_uppercase_q_quits_the_whole_app(self):
+        """이슈 #95 — 화면 스택 바닥에서도 한 타로 나올 수 있어야 한다."""
+        with self.assertRaises(tui.QuitApp):
+            self._pick([ord("Q")])
+
+    def test_lowercase_q_still_only_cancels(self):
+        """기존 근육기억을 깨뜨리지 않는다 — 소문자는 여전히 '뒤로'다."""
+        self.assertIsNone(self._pick([ord("q")])[0])
+
+    def test_the_string_representation_quits_too(self):
+        """`read_key(wide=True)`는 정수 대신 문자열을 준다.
+
+        `pick`은 `key_char()`로 정규화한 뒤 비교해야 하므로 두 표현이 같은
+        결과를 내야 한다. 한쪽만 처리하면 그 모드에서 키가 조용히 죽는다.
+        """
+        with self.assertRaises(tui.QuitApp):
+            self._pick(["Q"])
+
+    def test_quit_can_be_disabled(self):
+        """게임 진행 중 화면은 `Q`를 막는다 — 랩 컨테이너가 뜬 채로 남는다.
+
+        막으면 `Q`는 그냥 무시되고 계속 고르게 된다(취소가 아니다).
+        """
+        idx, _ = self._pick([ord("Q"), 10], allow_quit=False)
+        self.assertEqual(idx, 0)
+
+    def test_the_default_footer_advertises_quit(self):
+        _, screen = self._pick([10])
+        self.assertIn("Q 종료", "".join(screen.drawn))
+
+    def test_the_default_footer_hides_quit_when_it_is_disabled(self):
+        """없는 키를 안내하면 안내가 거짓말이 된다."""
+        _, screen = self._pick([10], allow_quit=False)
+        self.assertNotIn("Q 종료", "".join(screen.drawn))
 
     def test_single_key_representations_agree(self):
         # read_key(wide=False)는 정수를 준다. 문자열 표현으로 와도 같아야 한다.
