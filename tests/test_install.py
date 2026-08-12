@@ -1187,3 +1187,92 @@ class TheNoticeSaysTheLinksMoveTest(InstallerTestCase):
         r = self.run_installer(xdg=None)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("런처 링크를 그쪽으로 옮깁니다", r.stdout)
+
+
+class TheNotRememberedNoticeFiresWhenItMattersTest(InstallerTestCase):
+    """"기록이 하나라도 있으면" 이 아니라 "이 트리가 기록돼 있지 않으면" 이다.
+
+    기록은 첫 설치에서 생겨 `--purge` 전까지 남는다. 그러니 "기록 파일이
+    없을 때만" 알리면, 한 번이라도 설치를 마친 사람 — 즉 거의 모든 재방문자 —
+    에게는 영영 침묵한다. 정작 그 사람이 이미 있던 다른 트리를 지정했을 때가
+    알려야 할 자리다.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.tag("v1.0.0")
+        self.commit("after the release")
+        self.assertEqual(self.run_installer().returncode, 0)   # 기록 생성
+        self.mine = self.tmp / "dev"
+        subprocess.run(["git", "clone", "--quiet", self.origin.as_uri(),
+                        str(self.mine / "dba-guide")],
+                       check=True, capture_output=True, text=True)
+
+    def test_it_fires_even_though_a_record_already_exists(self):
+        r = self.run_installer(xdg=self.mine)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("기억하지 않습니다", r.stdout)
+
+    def test_it_blames_this_run_not_the_script(self):
+        """스크립트가 만들었는지 아닌지는 알 수 없다 — 아는 것은 이번 실행뿐이다."""
+        r = self.run_installer(xdg=self.mine)
+        self.assertIn("이번 실행이 만든 트리가 아니", r.stdout)
+        self.assertNotIn("이 스크립트가 만든 트리가 아니", r.stdout)
+
+    def test_it_stays_quiet_when_the_variable_names_the_default(self):
+        """기본 경로면 변수를 줄 이유가 없다 — 조언이 무의미하고 매번 뜬다."""
+        self.state_file.unlink()
+        r = self.run_installer(xdg=self.home / ".local" / "share")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("기억하지 않습니다", r.stdout)
+
+    def test_it_stays_quiet_when_the_record_names_this_tree(self):
+        r = self.run_installer(xdg=self.home / ".local" / "share")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("기억하지 않습니다", r.stdout)
+
+
+class TheLinkNoticeDoesNotPredictADeadRunTest(InstallerTestCase):
+    """링크가 옮겨간다는 예고는, 실제로 옮기는 지점 앞에서만 해야 한다."""
+
+    def test_a_run_that_dies_does_not_claim_the_links_moved(self):
+        self.tag("v1.0.0")
+        self.commit("after the release")
+        work = self.tmp / "work"
+        subprocess.run(["git", "clone", "--quiet", self.origin.as_uri(), str(work)],
+                       check=True, capture_output=True, text=True)
+        shutil.copy2(INSTALL_SH, work / "install.sh")
+        r = subprocess.run(["bash", str(work / "install.sh")], env=self.env(),
+                           cwd=str(work), input="", capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        # 설치 경로를 디렉터리가 아닌 것으로 막아 이번 실행을 죽인다.
+        # in-place 설치였으므로 이 경로는 아직 존재하지 않는다.
+        self.install_dir.parent.mkdir(parents=True, exist_ok=True)
+        self.install_dir.write_text("in the way\n")
+        r = self.run_installer(xdg=None)
+        self.assertEqual(r.returncode, 1)
+        self.assertNotIn("옮깁니다", r.stdout)
+
+
+class AHandEditedRelativeRecordStillProducesWorkingLinksTest(InstallerTestCase):
+    """기록은 신뢰 입력이다 — 상대 경로가 들어와도 링크는 절대여야 한다.
+
+    정의 시점의 절대경로 보장만으로는 부족하다. 채택이 `INSTALL_DIR`을
+    기록 값으로 갈아끼우므로, 그 자리에도 같은 보장이 있어야 한다.
+    """
+
+    def test_links_are_absolute_after_adopting_a_relative_record(self):
+        self.tag("v1.0.0")
+        self.commit("after the release")
+        self.assertEqual(self.run_installer(xdg=self.tmp / "spot").returncode, 0)
+        for name, _ in self.LAUNCHERS:
+            (self.bin_dir / name).unlink()
+        self.state_file.write_text("spot/dba-guide\n", encoding="utf-8")
+        r = self.run_installer(xdg=None)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(os.readlink(self.bin_dir / "guide").startswith("/"),
+                        "상대 기록이 상대 링크를 만들었다")
+        env = dict(os.environ); env["HOME"] = str(self.home)
+        run = subprocess.run([str(self.bin_dir / "guide")], env=env,
+                             cwd=str(self.home), capture_output=True, text=True)
+        self.assertEqual(run.returncode, 0, run.stderr)

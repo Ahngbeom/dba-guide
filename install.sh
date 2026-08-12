@@ -18,6 +18,8 @@ INSTALL_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/dba-guide"
 # 기록만 절대경로로 고치면 링크·보고·`is_our_link`가 서로 다른 표기를 본다.
 # 심볼릭 링크는 풀지 않는다 — 사용자가 지정한 표기를 지킨다.
 case "$INSTALL_DIR" in /*) ;; *) INSTALL_DIR="$PWD/$INSTALL_DIR" ;; esac
+# 변수를 주지 않았을 때 가게 될 자리. 안내가 무의미한지 판단하는 데 쓴다.
+DEFAULT_INSTALL_DIR="$HOME/.local/share/dba-guide"
 BIN_DIR="$HOME/.local/bin"
 LAUNCHERS="guide exam shoot"
 # 우리가 만든 설치본의 위치 기록. 링크가 아니라 이 파일이 근거다 — 링크는
@@ -162,7 +164,6 @@ report() {
 
 install_managed() {
   adopt_recorded_install
-  warn_if_another_install_is_linked
 
   # 디렉터리가 아닌 것(일반 파일·끊어진 링크)이 자리를 차지한 경우.
   # 그대로 두면 [ ! -d ] 가 참이라 클론 분기로 흘러 git이 영어 fatal 을
@@ -196,9 +197,11 @@ install_managed() {
   # 그 사실을 말하지 않으면 사용자는 기억됐다고 믿고, 나중에 변수 없이 친
   # `--uninstall`이 링크만 걷어가 설치본을 고아로 만든다. 기본 경로라면
   # 변수를 줄 이유가 없으므로 알릴 것도 없다.
-  if [ "$fresh" = "no" ] && [ -n "${XDG_DATA_HOME:-}" ] && [ ! -f "$STATE_FILE" ]; then
+  if [ "$fresh" = "no" ] && [ -n "${XDG_DATA_HOME:-}" ] \
+     && ! same_path "$INSTALL_DIR" "$DEFAULT_INSTALL_DIR" \
+     && ! record_names "$INSTALL_DIR"; then
     info "참고: 이 위치는 기억하지 않습니다 — $INSTALL_DIR" \
-         "  이 스크립트가 만든 트리가 아니라서입니다(이미 있던 것을 우리 것이라" \
+         "  이번 실행이 만든 트리가 아니라서입니다(이미 있던 것을 우리 것이라" \
          "  주장하면 나중에 엉뚱한 곳을 지울 수 있습니다)." \
          "  업데이트·제거 때도 XDG_DATA_HOME 을 함께 주세요." \
          ""
@@ -217,6 +220,7 @@ install_managed() {
     if [ "$fresh" = "no" ]; then
       info "이미 최신입니다 — $tag"
     fi
+    warn_if_another_install_is_linked
     link_launchers "$INSTALL_DIR"
     report "$INSTALL_DIR" "$tag"
     return 0
@@ -232,6 +236,7 @@ install_managed() {
   fi
 
   git -C "$INSTALL_DIR" checkout --quiet --detach "$tag"
+  warn_if_another_install_is_linked
   link_launchers "$INSTALL_DIR"
   report "$INSTALL_DIR" "$tag"
 }
@@ -405,6 +410,16 @@ warn_if_another_install_is_linked() {
   done
 }
 
+# 기록이 이 경로를 지목하고 있는가.
+#
+# "기록 파일이 있는가"로 물으면 안 된다 — 기록은 첫 설치에서 생겨 `--purge`
+# 전까지 남으므로, 한 번이라도 설치를 마친 사람에게는 언제나 참이다. 정작
+# 알려야 할 자리는 그 사람이 **다른** 트리를 지정했을 때다.
+record_names() {
+  [ -f "$STATE_FILE" ] || return 1
+  same_path "$(cat "$STATE_FILE" 2>/dev/null || true)" "$1"
+}
+
 # 지난 설치 위치를 기록에서 읽어 `INSTALL_DIR`을 갈아끼운다.
 #
 # `INSTALL_DIR`은 매 실행마다 `XDG_DATA_HOME`으로 **계산될 뿐**이라 지난번에
@@ -447,6 +462,9 @@ adopt_recorded_install() {
        "  계산된 기본 경로는 $INSTALL_DIR 이지만, 지난 설치 기록이 위를 가리킵니다." \
        "  다른 곳에 설치하려면 XDG_DATA_HOME 으로 목적지를 지정하세요." \
        ""
+  # 정의 시점의 절대경로 보장이 여기서도 유지돼야 한다 — 손으로 고친 기록이
+  # 상대 경로를 담고 있으면 링크가 `~/.local/bin` 기준으로 풀려 런처가 죽는다.
+  case "$recorded" in /*) ;; *) recorded="$PWD/$recorded" ;; esac
   INSTALL_DIR="$recorded"
 }
 
