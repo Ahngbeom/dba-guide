@@ -605,21 +605,35 @@ def _with_raw_flag(argv):
 
 
 def page_text(text):
-    """텍스트를 페이저로 넘긴다(curses 밖에서 호출).
+    """텍스트를 페이저로 넘긴다 → `(returncode, printed_inline)`.
 
     뷰어를 curses로 만들지 않는다 — `less`가 스크롤·검색(`/`)을 이미 다 한다.
     목록 UI조차 필요 없다: 이어 붙여 넘기면 끝이다.
+
+    `printed_inline`은 **페이저를 못 써서 이 함수가 직접 `print`했는가**다.
+    호출부가 `pause_after_output()`을 부를지 정하는 데 쓴다 — 페이저가
+    삼켰다면 대체 화면이 복원되므로 지킬 평문이 없고, 그때도 멈추면 챕터를
+    읽을 때마다 뜻 없는 Enter를 한 번씩 요구하게 된다(이슈 #95).
+
+    판정이 여기 있는 이유: `PAGER` 해석과 `less` 존재 확인 규칙이 이미 이
+    함수 안에 있다. 호출부에서 같은 조건을 다시 쓰면 규칙이 두 곳으로 갈라진다.
+
+    **알려진 한계**: `PAGER=cat`처럼 대체 화면을 쓰지 않는 페이저를 지정하면
+    본문이 화면에 남는데도 `printed_inline`은 `False`가 되어 다음 curses
+    프레임이 그것을 지운다. 페이저가 대체 화면을 쓰는지 알아낼 이식성 있는
+    방법이 없다. `COLOR_PAGERS`를 재사용하는 것도 답이 아니다 — 그 목록은
+    "ANSI를 통과시키는가"를 뜻하지 "화면을 복원하는가"를 뜻하지 않는다.
     """
     pager = os.environ.get("PAGER") or ("less -R" if shutil.which("less")
                                         else None)
     if not pager:
         print(text)
-        return 0
+        return 0, True
     try:
         proc = subprocess.Popen(_with_raw_flag(shlex.split(pager)),
                                 stdin=subprocess.PIPE, text=True)
         proc.communicate(text)
-        return proc.returncode
+        return proc.returncode, False
     except (OSError, KeyboardInterrupt):
         print(text)
-        return 0
+        return 0, True
