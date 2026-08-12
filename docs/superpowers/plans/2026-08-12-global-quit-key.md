@@ -744,22 +744,58 @@ if __name__ == "__main__":
         sys.exit(0)
 ```
 
-- [ ] **Step 7: footer 테스트를 더한다**
+- [ ] **Step 7: footer 배선 테스트를 더한다**
 
-`tests/test_reading.py`의 `ChapterPauseTest` 뒤에 추가한다:
+`tests/test_reading.py`의 `ChapterPauseTest` 뒤에 추가한다.
+
+**소스를 grep하지 않는다** — `reading.py`에는 이미 `"Esc/q 뒤로"`가 있어서 그런 단언은 변경 전에도 통과한다(실측). `pick`에 **실제로 넘어간** `footer` 값을 본다.
+
+`choose`는 `curses.wrapper`를 함수 안에서 부르므로 진짜 터미널을 잡으려 든다. `import curses`는 `sys.modules`를 먼저 보므로, 거기에 대역을 끼워 넣으면 가로챌 수 있다. `finally`에서 **반드시** 원래대로 되돌린다 — 스위트가 한 프로세스에서 순차로 돌기 때문에 남겨 두면 뒤따르는 테스트가 조용히 망가진다.
+
+파일 상단 import 블록에 `import types`를 더한다(없으면).
 
 ```python
 class ReadingQuitKeyTest(unittest.TestCase):
     """선택 화면이 종료 키를 안내해야 한다 — 없는 것처럼 보이면 없는 것이다."""
 
-    def test_the_footer_mentions_both_back_and_quit(self):
-        body = (REPO_ROOT / "scripts" / "reading.py").read_text(
-            encoding="utf-8")
-        self.assertIn("Esc/q 뒤로", body)
-        self.assertIn("Q 종료", body)
+    def test_the_footer_offers_both_back_and_quit(self):
+        seen = {}
+        fake_curses = types.SimpleNamespace(
+            curs_set=lambda _n: None,
+            wrapper=lambda driver: driver(object()))
+
+        def fake_pick(_stdscr, _curses, _title, _labels, footer=None, **_kw):
+            seen["footer"] = footer
+            return 0
+
+        real_pick = reading.pick
+        real_curses = sys.modules.get("curses")
+        real_in, real_out = sys.stdin.isatty, sys.stdout.isatty
+        reading.pick = fake_pick
+        sys.modules["curses"] = fake_curses
+        sys.stdin.isatty = lambda: True
+        sys.stdout.isatty = lambda: True
+        try:
+            reading.choose("제목", ["a", "b"])
+        finally:
+            reading.pick = real_pick
+            if real_curses is None:
+                del sys.modules["curses"]
+            else:
+                sys.modules["curses"] = real_curses
+            sys.stdin.isatty, sys.stdout.isatty = real_in, real_out
+
+        self.assertIn("Esc/q 뒤로", seen["footer"], seen)
+        self.assertIn("Q 종료", seen["footer"], seen)
 
     def test_running_it_standalone_survives_a_quit(self):
-        """`__main__` 가드가 없으면 `Q` 한 번에 트레이스백이 뜬다."""
+        """`__main__` 가드가 없으면 `Q` 한 번에 트레이스백이 뜬다.
+
+        여기만 소스를 읽는다 — 파이프로 실행하면 비-tty라 `pick_line` 경로로
+        떨어지고, 그 경로에는 `Q`가 없어서(설계상 범위 밖) 동작으로는 이
+        가드에 도달할 방법이 없다. `test_the_launcher_points_at_the_script`가
+        런처 내용을 읽는 것과 같은 종류의 검사다.
+        """
         body = (REPO_ROOT / "scripts" / "reading.py").read_text(
             encoding="utf-8")
         self.assertIn("except QuitApp", body)
@@ -1212,15 +1248,62 @@ class GlobalQuitTest(unittest.TestCase):
             sys.stdin.isatty, sys.stdout.isatty = real_in, real_out
         self.assertEqual(fell_back, [], "QuitApp이 라인 모드 폴백에 삼켜졌다")
 
-    def test_the_world_picker_advertises_the_quit_key(self):
-        body = (REPO_ROOT / "scripts" / "shooting.py").read_text(
-            encoding="utf-8")
-        self.assertIn("Q 종료", body)
+    def _footers(self, can_go_up):
+        """`_pick_world_then_stage`가 두 `pick` 호출에 넘긴 footer들.
+
+        이 함수는 `stdscr`·`curses`를 **인자로** 받으므로 그냥 대역을 넣어
+        직접 부를 수 있다 — 소스를 grep할 이유가 없다. 월드를 고른 뒤 스테이지
+        선택에서 경로를 돌려주게 해서 한 바퀴만 돌고 끝나게 한다.
+        """
+        footers = []
+        real = shooting.pick
+
+        def fake_pick(_stdscr, _curses, _title, _labels, footer=None, **_kw):
+            footers.append(footer)
+            return 0
+
+        shooting.pick = fake_pick
+        try:
+            groups = [(1, [(Path("s.json"), {"title": "t", "id": "1-1"})])]
+            shooting._pick_world_then_stage(
+                _FakeScreen(ord("1")), _FakeCurses(), groups, {},
+                "어느 월드부터 할까요", can_go_up)
+        finally:
+            shooting.pick = real
+        return footers
+
+    def test_the_world_picker_advertises_quit_when_back_means_something_else(self):
+        """`Esc/q`가 'DBMS 선택으로'일 때는 `Q 종료`가 따로 필요하다."""
+        world_footer, stage_footer = self._footers(can_go_up=True)
+        self.assertIn("DBMS 선택으로", world_footer)
+        self.assertIn("Q 종료", world_footer)
+        self.assertIn("월드 선택으로", stage_footer)
+        self.assertIn("Q 종료", stage_footer)
+
+    def test_the_world_picker_does_not_repeat_itself_when_back_is_quit(self):
+        """`Esc/q`가 이미 '종료'면 `Q 종료`를 덧붙이지 않는다.
+
+        같은 결과를 두 번 적으면 읽는 사람이 차이를 찾느라 멈춘다.
+        """
+        world_footer, _ = self._footers(can_go_up=False)
+        self.assertIn("Esc/q 종료", world_footer)
+        self.assertNotIn("Q 종료", world_footer.replace("Esc/q 종료", ""))
 
     def test_running_it_standalone_survives_a_quit(self):
+        """`__main__` 가드가 없으면 `Q` 한 번에 트레이스백이 뜬다.
+
+        여기만 소스를 읽는다 — `__main__` 블록은 동작으로 도달할 방법이 없다.
+        """
         body = (REPO_ROOT / "scripts" / "shooting.py").read_text(
             encoding="utf-8")
         self.assertIn("except QuitApp", body)
+```
+
+**주의:** `_footers`는 `Path`를 쓴다 — `tests/test_shooting.py`는 이미 `from pathlib import Path`를 import하고 있다. `stage_menu_label`·`world_menu_label`이 가짜 스테이지 dict를 읽다 깨지면, 진짜 스테이지 파일 하나를 `load_stage`로 읽어 `groups`에 넣는다:
+
+```python
+            path = REPO_ROOT / "shooting" / "stages" / "1-1-runaway-query.json"
+            groups = [(1, [(path, shooting.load_stage(path))])]
 ```
 
 **주의:** 이 테스트 파일이 `contextlib`·`io`·`sys`를 이미 import하고 있는지 확인한다. 없으면 파일 상단 import 블록에 더한다.
