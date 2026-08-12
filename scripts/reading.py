@@ -18,8 +18,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import exam  # noqa: E402
 import markdown_render  # noqa: E402
 from filter_dbms import filter_lines  # noqa: E402
-from tui import (page_text, pager_supports_color, pause_after_output,  # noqa: E402
-                 pick, pick_line, text_width)
+from tui import (QuitApp, page_text, pager_supports_color,  # noqa: E402
+                 pause_after_output, pick, pick_line, text_width)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -79,20 +79,28 @@ def choose(title, labels):
     def _driver(stdscr):
         curses.curs_set(0)
         return pick(stdscr, curses, title, labels,
-                    footer=" ↑↓ 또는 숫자 선택   Enter 선택   Esc/q 뒤로 ")
+                    footer=" ↑↓ 또는 숫자 선택   Enter 선택   Esc/q 뒤로   Q 종료 ")
 
     return curses.wrapper(_driver)
 
 
 def read_chapter(rel, dbms=None):
-    """본문을 렌더해 `$PAGER` 로 넘긴다. curses 밖에서 부른다.
+    """본문을 렌더해 `$PAGER` 로 넘긴다 → 평문으로 직접 찍었는가.
+
+    curses 밖에서 부른다.
 
     렌더는 벤더 필터 **뒤**다 — 순서가 뒤집히면 `filter_lines` 가 찾는
     `<!-- dbms:… -->` 마커가 이미 지워져 있어 다른 벤더 본문이 그대로 남는다.
+
+    반환값은 `page_text` 의 `printed_inline` 을 그대로 넘긴 것이다. 호출부가
+    `pause_after_output()` 을 부를지 정하는 데 쓴다 — 페이저가 삼켰다면 화면이
+    복원되므로 지킬 평문이 없다(이슈 #95).
     """
-    page_text(markdown_render.render(chapter_text(rel, dbms),
-                                     width=text_width(),
-                                     color=pager_supports_color()))
+    _, printed_inline = page_text(
+        markdown_render.render(chapter_text(rel, dbms),
+                               width=text_width(),
+                               color=pager_supports_color()))
+    return printed_inline
 
 
 def offer_exam(rel, bank, ask=input):
@@ -144,8 +152,9 @@ def main(argv=None):
                     break                  # 티어 선택으로
                 rel = chapters[c_idx]
                 bank = exam.exam_bank_for(rel)
-                read_chapter(rel, dbms)
-                if offer_exam(rel, bank):
+                printed = read_chapter(rel, dbms)
+                ran_exam = offer_exam(rel, bank)
+                if ran_exam:
                     # `exam.main`은 대상 인자를 cwd 기준 상대경로로 받는다
                     # (CLI 계약이라 `exam` 쪽에서 바꾸지 않는다) — 여기서는
                     # `./guide`를 저장소 밖 cwd에서 띄운 경우에도 은행을 찾게
@@ -157,8 +166,19 @@ def main(argv=None):
                     if dbms:
                         args += ["--dbms", dbms]
                     exam.main(args)
-                pause_after_output()
+                # 페이저가 본문을 삼켰고 시험도 보지 않았다면 화면에 지킬 평문이
+                # 없다. 그때도 멈추면 챕터를 읽을 때마다 뜻 없는 Enter를 한 번씩
+                # 요구하게 된다(이슈 #95). 시험을 봤다면 `exam.main`이 평문을
+                # 남겼을 수 있으므로 안전한 쪽(멈춤)으로 떨어진다 — 조용히
+                # 끝났는지까지 알아내려면 `exam` 내부를 들여다봐야 한다.
+                if printed or ran_exam:
+                    pause_after_output()
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    # `python3 scripts/reading.py`로 직접 돌릴 때는 `guide.main`의 그물이 없다.
+    # 그대로 두면 `Q` 한 번에 트레이스백이 뜬다.
+    try:
+        sys.exit(main())
+    except QuitApp:
+        sys.exit(0)
