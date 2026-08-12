@@ -8,6 +8,7 @@
 호출자가 `curses` 모듈을 인자로 넘긴다. 덕분에 tty가 없는 환경(테스트 등)에서도
 폭 계산·줄바꿈 같은 순수 함수를 그대로 쓸 수 있다.
 """
+from collections import namedtuple
 import os
 import re
 import shlex
@@ -40,6 +41,11 @@ class QuitApp(BaseException):
     `except Exception`이 같은 함정을 다시 판다. `SystemExit`·
     `KeyboardInterrupt`가 `BaseException`인 이유와 같다.
     """
+
+
+# `pick`이 동작 키(`actions`)를 받았을 때 돌려주는 값.
+# `action`은 눌린 동작 키이거나, 일반 선택(Enter·숫자)이면 `None`이다.
+Picked = namedtuple("Picked", "index action")
 
 
 # --------------------------------------------------------------------------- #
@@ -367,7 +373,7 @@ def is_affirmative(key):
 # 세로 목록 선택기
 # --------------------------------------------------------------------------- #
 def pick(stdscr, curses, title, labels, footer=None,
-         allow_cancel=True, allow_quit=True):
+         allow_cancel=True, allow_quit=True, actions=""):
     """세로 목록에서 하나 고른다 → 고른 인덱스(취소면 None).
 
     '↑↓로 옮기고 Enter로 고른다'가 이 저장소 여러 화면에 흩어져 따로 구현돼
@@ -381,9 +387,24 @@ def pick(stdscr, curses, title, labels, footer=None,
     소문자 `q`는 그대로 '취소/뒤로'다 — 둘을 가르는 것이 이 화면의 계약이다.
     게임이 진행 중인 화면(`shooting._pick_client_target`)은 이걸 꺼야 한다.
     거기서 앱을 끄면 랩 컨테이너가 뜬 채로 남는다.
+
+    `actions`에 글자를 주면 그 키들이 **추가 동작**이 된다. 그때 반환값은
+    `int`가 아니라 `Picked(index, action)`이다 — 일반 선택이면 `action`이
+    `None`, 동작 키면 그 글자다. 취소는 여전히 `None`, `Q`는 여전히 `QuitApp`.
+    반환 모양이 둘인 것은 호출부가 `actions`를 넘겼는지 스스로 알기 때문에
+    감당할 만하다고 본 것이다 — 선택기를 한 벌 더 만드는 쪽은 이 함수가 세
+    벌로 갈라졌다가 합쳐진 전례를 되풀이한다.
+
+    동작 키는 대소문자를 **보존해** 비교한다. `actions="x"`가 `X`까지 삼키면
+    안 된다. 동작 키가 이동 키(`k`/`j`)나 숫자와 겹치면 그쪽이 죽는다 —
+    호출부 책임이다.
     """
     if not labels:
         return None
+
+    def _result(index, action=None):
+        """`actions`를 준 호출부에만 `Picked`를 돌려준다."""
+        return Picked(index, action) if actions else index
 
     sel = 0
     while True:
@@ -417,18 +438,24 @@ def pick(stdscr, curses, title, labels, footer=None,
         if kind != "key" or key is None:
             continue
         if is_enter(key):
-            return sel
+            return _result(sel)
 
         raw = key_char(key) or ""
         if allow_quit and raw == "Q":       # 소문자로 접기 **전에** 검사한다
             raise QuitApp
+        # 동작 키도 대소문자를 보존해 본다. `raw and` 가드는 **필수**다 —
+        # 파이썬에서 빈 문자열은 어떤 문자열에도 들어 있다(`"" in "x"` 도
+        # 참이다). `key_char` 는 특수키·미매핑 키에 대해 `""` 를 주므로,
+        # 가드가 없으면 방향키 한 번에 동작이 발동한다.
+        if raw and raw in actions:
+            return _result(sel, raw)
         ch = raw.lower()
         if key == curses.KEY_UP or ch == "k":
             sel = (sel - 1) % len(labels)
         elif key == curses.KEY_DOWN or ch == "j":
             sel = (sel + 1) % len(labels)
         elif ch.isdigit() and 1 <= int(ch) <= len(labels):
-            return int(ch) - 1
+            return _result(int(ch) - 1)
         # raw(대소문자 보존)로 비교한다. allow_quit이 켜져 있으면 대문자
         # Q는 위 raise에서 이미 처리되어 여기 오지 않는다. allow_quit이
         # 꺼진 화면(예: 게임 진행 중 접속 서버 선택)에서는 **결정**으로
