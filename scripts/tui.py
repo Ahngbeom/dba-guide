@@ -18,6 +18,31 @@ import unicodedata
 
 
 # --------------------------------------------------------------------------- #
+# 전역 종료 신호
+# --------------------------------------------------------------------------- #
+class QuitApp(BaseException):
+    """어느 화면에서든 앱 전체를 끝내라는 신호.
+
+    이 저장소의 화면 스택은 곧 함수 호출 스택이다(`guide.main` →
+    `reading.main` → 3중 while 루프). '한 층 위로'를 뜻하는 `None` 반환으로는
+    바닥에서 꼭대기까지 나갈 수 없어서, 챕터 목록에서 앱을 끄려면 Esc를 네 번
+    누르고 중간에 Enter 프롬프트까지 통과해야 했다(이슈 #95).
+
+    중간 루프는 이 예외를 **잡지 않는다** — 그게 이 방식의 요점이다. 잡는 곳은
+    `guide.main`과 `reading`·`shooting`의 `__main__` 블록뿐이다.
+
+    `Exception`이 아니라 `BaseException`을 상속하는 것은 **의도**다.
+    `shooting.py`는 화면 코드를 `except Exception:`으로 감싸 traceback을 찍고
+    라인 모드로 폴백한다(`choose_stage`·`cmd_play`). 조용히 넘기지 않으려고
+    일부러 넣은 안전망이라, 평범한 `Exception`이었다면 `Q`를 누른 사용자가
+    traceback과 함께 라인 모드로 떨어졌을 것이다. 그 두 곳에 `except QuitApp:
+    raise`를 다는 것으로도 막을 수 있지만, 그러면 앞으로 추가되는 모든
+    `except Exception`이 같은 함정을 다시 판다. `SystemExit`·
+    `KeyboardInterrupt`가 `BaseException`인 이유와 같다.
+    """
+
+
+# --------------------------------------------------------------------------- #
 # 표시 폭 계산 (순수 함수 — curses 불필요)
 # --------------------------------------------------------------------------- #
 def cwidth(text):
@@ -341,7 +366,8 @@ def is_affirmative(key):
 # --------------------------------------------------------------------------- #
 # 세로 목록 선택기
 # --------------------------------------------------------------------------- #
-def pick(stdscr, curses, title, labels, footer=None, allow_cancel=True):
+def pick(stdscr, curses, title, labels, footer=None,
+         allow_cancel=True, allow_quit=True):
     """세로 목록에서 하나 고른다 → 고른 인덱스(취소면 None).
 
     '↑↓로 옮기고 Enter로 고른다'가 이 저장소 여러 화면에 흩어져 따로 구현돼
@@ -350,6 +376,11 @@ def pick(stdscr, curses, title, labels, footer=None, allow_cancel=True):
 
     목록이 화면보다 길면 선택 위치를 따라 스크롤한다 — 자르면 마지막 항목을
     영영 고를 수 없다.
+
+    `allow_quit`이면 **대문자** `Q`가 `QuitApp`을 올려 앱 전체를 끝낸다.
+    소문자 `q`는 그대로 '취소/뒤로'다 — 둘을 가르는 것이 이 화면의 계약이다.
+    게임이 진행 중인 화면(`shooting._pick_client_target`)은 이걸 꺼야 한다.
+    거기서 앱을 끄면 랩 컨테이너가 뜬 채로 남는다.
     """
     if not labels:
         return None
@@ -372,7 +403,8 @@ def pick(stdscr, curses, title, labels, footer=None, allow_cancel=True):
                 curses.A_REVERSE if selected else 0)
 
         hint = footer or (" ↑↓ 또는 숫자 선택   Enter 확정" +
-                          ("   Esc/q 취소 " if allow_cancel else " "))
+                          ("   Esc/q 취소" if allow_cancel else "") +
+                          ("   Q 종료 " if allow_quit else " "))
         bar(stdscr, curses, h - 1, w, hint)
         stdscr.refresh()
 
@@ -387,14 +419,19 @@ def pick(stdscr, curses, title, labels, footer=None, allow_cancel=True):
         if is_enter(key):
             return sel
 
-        ch = (key_char(key) or "").lower()
+        raw = key_char(key) or ""
+        if allow_quit and raw == "Q":       # 소문자로 접기 **전에** 검사한다
+            raise QuitApp
+        ch = raw.lower()
         if key == curses.KEY_UP or ch == "k":
             sel = (sel - 1) % len(labels)
         elif key == curses.KEY_DOWN or ch == "j":
             sel = (sel + 1) % len(labels)
         elif ch.isdigit() and 1 <= int(ch) <= len(labels):
             return int(ch) - 1
-        elif ch == "q" and allow_cancel:
+        # raw(대소문자 보존)로 비교한다 — allow_quit=False일 때 접힌 "Q"가
+        # 소문자 q 취소로 오인되면 안 된다(그냥 무시돼야 한다).
+        elif raw == "q" and allow_cancel:
             return None
 
 
