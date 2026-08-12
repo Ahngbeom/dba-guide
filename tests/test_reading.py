@@ -15,6 +15,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
 
 import reading  # noqa: E402
+import tui  # noqa: E402
 
 
 class ChapterDiscoveryTest(unittest.TestCase):
@@ -87,89 +88,6 @@ class ChapterTextTest(unittest.TestCase):
         finally:
             path.unlink()
         self.assertIn("읽을 수 없습니다", text)
-
-
-class _TTYStringIO(io.StringIO):
-    """`redirect_stdout` 이 붙인 스트림이 tty 로 보여야 `offer_exam` 이 실제로
-    `ask()` 까지 간다."""
-
-    def isatty(self):
-        return True
-
-
-class ExamOfferTest(unittest.TestCase):
-    """은행이 있는 챕터에서만 묻는다.
-
-    개요·치트시트·부록에는 문제은행이 없다. 없는데 묻고 '예'를 받으면 갈 곳이
-    없다. 비-tty 에서도 묻지 않는다 — `input()` 이 다음 입력 줄을 삼켜 파이프
-    실행이 깨진다(`./guide` 에서 같은 함정을 이미 밟았다).
-    """
-
-    WITH_BANK = "02-intermediate/01-transaction-and-locking.md"
-    NO_BANK = "01-beginner/07-commands-cheatsheet.md"
-
-    def setUp(self):
-        # `offer_exam` 은 이제 은행 경로를 스스로 구하지 않고 호출부가 넘긴
-        # `bank` 를 그대로 쓴다(핸드오프에서 같은 조회를 두 번 하지 않도록
-        # `reading.main` 이 한 번만 구해 재사용한다) — 테스트도 같은 계약을
-        # 따라 실제 매핑을 미리 구해 둔다.
-        self.with_bank = reading.exam.exam_bank_for(self.WITH_BANK)
-        self.no_bank = reading.exam.exam_bank_for(self.NO_BANK)
-        self.assertIsNotNone(self.with_bank, "고정값 자체가 은행 없는 챕터다")
-        self.assertIsNone(self.no_bank, "고정값 자체가 은행 있는 챕터다")
-
-    @contextlib.contextmanager
-    def _stdin_as_tty(self):
-        """`sys.stdin.isatty()` 가 True 를 돌려주게 한다.
-
-        `offer_exam` 은 `sys.stdin.isatty()` 도 함께 본다. 파이프로 돌리는
-        자동화 실행 하네스에서는 프로세스 자체가 tty 에 붙어 있지 않아 이게
-        원래 False 라, `ask` 가 불리기도 전에 짧게 끝나 버려서 이 테스트들이
-        검증하려는 y/Enter/n/EOF 분기를 타지 못한다. 하네스와 무관하게
-        고정해야 이 테스트가 실제 코드 경로를 결정적으로 검증한다.
-        """
-        real = sys.stdin.isatty
-        sys.stdin.isatty = lambda: True
-        try:
-            yield
-        finally:
-            sys.stdin.isatty = real
-
-    def test_it_does_not_ask_when_there_is_no_bank(self):
-        """은행 부재가 묻지 않는 **유일한** 이유임을 증명해야 한다 — tty
-        가드가 먼저 걸리면 이 테스트는 `offer_exam`에서 `not bank or` 를
-        지워도 계속 통과해 버린다(실측: 이전 버전이 그랬다). 그래서 형제
-        테스트들과 같은 `_stdin_as_tty()`/`_TTYStringIO()` 로 tty처럼 보이게
-        고정한 채로, 그래도 묻지 않는지를 본다.
-        """
-        asked = []
-        with self._stdin_as_tty(), contextlib.redirect_stdout(_TTYStringIO()):
-            got = reading.offer_exam(self.NO_BANK, self.no_bank,
-                                     ask=lambda p: asked.append(p) or "y")
-        self.assertFalse(got)
-        self.assertEqual(asked, [])
-
-    def test_yes_accepts(self):
-        with self._stdin_as_tty(), contextlib.redirect_stdout(_TTYStringIO()):
-            self.assertTrue(reading.offer_exam(self.WITH_BANK, self.with_bank,
-                                               ask=lambda _: "y"))
-
-    def test_enter_accepts_because_the_default_is_yes(self):
-        with self._stdin_as_tty(), contextlib.redirect_stdout(_TTYStringIO()):
-            self.assertTrue(reading.offer_exam(self.WITH_BANK, self.with_bank,
-                                               ask=lambda _: ""))
-
-    def test_n_declines(self):
-        with self._stdin_as_tty(), contextlib.redirect_stdout(_TTYStringIO()):
-            self.assertFalse(reading.offer_exam(self.WITH_BANK, self.with_bank,
-                                                ask=lambda _: "n"))
-
-    def test_closed_input_declines(self):
-        def eof(_):
-            raise EOFError
-        with self._stdin_as_tty(), contextlib.redirect_stdout(_TTYStringIO()):
-            self.assertFalse(reading.offer_exam(self.WITH_BANK, self.with_bank,
-                                                ask=eof))
 
 
 class ChapterLabelTest(unittest.TestCase):
@@ -297,75 +215,95 @@ class ReadingMainTest(unittest.TestCase):
     """
 
     @contextlib.contextmanager
-    def _flow(self, picks):
-        """고를 인덱스를 순서대로 돌려준다. 목록이 끝나면 None(뒤로/종료)."""
+    def _flow(self, picks, action=None, printed=False):
+        """DBMS → 티어 → 챕터 한 바퀴를 돌린다.
+
+        `action`은 챕터 화면에서 누를 동작 키(`"x"` 또는 `None`). 가짜 `choose`는
+        진짜와 같은 계약을 지킨다 — `actions`를 받았을 때만 `Picked`를 돌려준다.
+        """
         seq = iter(list(picks) + [None] * 6)
-        read = []
+        read, exams, paused = [], [], []
         real = {n: getattr(reading, n)
-                for n in ("choose", "read_chapter", "offer_exam")}
-        reading.choose = lambda title, labels: next(seq)
-        reading.read_chapter = lambda rel, dbms=None: read.append((rel, dbms))
-        reading.offer_exam = lambda rel, bank, ask=input: False
+                for n in ("choose", "read_chapter", "run_exam",
+                          "pause_after_output")}
+
+        def fake_choose(title, labels, actions=""):
+            idx = next(seq)
+            if not actions or idx is None:
+                return idx
+            return reading.Picked(idx, action)
+
+        reading.choose = fake_choose
+        reading.read_chapter = (
+            lambda rel, dbms=None: read.append((rel, dbms)) or printed)
+        reading.run_exam = (
+            lambda rel, bank, dbms: exams.append((rel, bank, dbms)))
+        reading.pause_after_output = lambda: paused.append(1)
         try:
             with contextlib.redirect_stdout(io.StringIO()):
-                yield read
+                yield read, exams, paused
         finally:
             for n, fn in real.items():
                 setattr(reading, n, fn)
 
     def test_dbms_then_tier_then_chapter_reaches_the_reader(self):
         # 0=전체, 0=01-beginner, 0=그 티어의 첫 챕터
-        with self._flow([0, 0, 0]) as read:
+        with self._flow([0, 0, 0]) as (read, exams, _):
             self.assertEqual(reading.main([]), 0)
         self.assertEqual(len(read), 1)
         self.assertTrue(read[0][0].startswith("01-beginner/"))
         self.assertIsNone(read[0][1])          # '전체'는 필터 없음
+        self.assertEqual(exams, [], "Enter는 읽기다 — 시험이 아니다")
 
     def test_choosing_a_vendor_passes_it_through(self):
-        # 1=PostgreSQL
-        with self._flow([1, 0, 0]) as read:
+        with self._flow([1, 0, 0]) as (read, _, _):
             reading.main([])
         self.assertEqual(read[0][1], "postgresql")
 
-    def test_the_exam_handoff_uses_an_absolute_bank_path_and_forwards_dbms(self):
-        """Important 1 + 2 회귀.
-
-        전에는 `exam.main([exam.exam_bank_for(rel)])`처럼 cwd 기준 상대경로만
-        넘기고 고른 DBMS는 흘렸다 — `./guide`를 저장소 밖 cwd에서 띄우면 은행을
-        못 찾고("대상을 찾을 수 없습니다: exams/...") PostgreSQL 챕터를 읽고도
-        MySQL·Oracle 문항까지 다 나왔다. 이제 절대경로 + `--dbms`를 넘겨야
-        한다.
-        """
-        captured = {}
-        real = {n: getattr(reading, n)
-                for n in ("choose", "read_chapter", "offer_exam")}
-        real_exam_main = reading.exam.main
-        # 1=PostgreSQL, 1=02-intermediate, 1=그 티어의 두 번째 챕터
-        # (00-overview.md 다음, 정렬 순서상 01-transaction-and-locking.md =
-        # ExamOfferTest.WITH_BANK) → offer_exam이 "예"라고 답한다.
-        seq = iter([1, 1, 1] + [None] * 6)
-        reading.choose = lambda title, labels: next(seq)
-        reading.read_chapter = lambda rel, dbms=None: None
-        reading.offer_exam = lambda rel, bank, ask=input: True
-        reading.exam.main = lambda argv: captured.setdefault("argv", argv) or 0
-        try:
-            with contextlib.redirect_stdout(io.StringIO()):
-                reading.main([])
-        finally:
-            for n, fn in real.items():
-                setattr(reading, n, fn)
-            reading.exam.main = real_exam_main
-
-        argv = captured["argv"]
-        self.assertTrue(Path(argv[0]).is_absolute(), argv)
-        self.assertTrue(argv[0].startswith(str(REPO_ROOT)), argv)
-        self.assertTrue(argv[0].endswith(".json"), argv)
-        self.assertEqual(argv[1:], ["--dbms", "postgresql"], argv)
-
     def test_quitting_at_the_first_screen_reads_nothing(self):
-        with self._flow([]) as read:
+        with self._flow([]) as (read, exams, _):
             self.assertEqual(reading.main([]), 0)
         self.assertEqual(read, [])
+        self.assertEqual(exams, [])
+
+    def test_the_action_key_runs_that_chapters_exam_instead_of_reading(self):
+        """1=PostgreSQL, 1=02-intermediate, 1=은행이 있는 챕터.
+
+        `discover_chapters`는 파일명 순이라 인덱스 1은 `00-overview.md` 다음,
+        즉 `01-transaction-and-locking.md`다. 고정값이 흔들리면 아래
+        `assertIsNotNone`이 먼저 알려 준다.
+        """
+        rel = reading.discover_chapters("02-intermediate")[1]
+        self.assertIsNotNone(reading.exam.exam_bank_for(rel),
+                             f"고정값이 틀렸다 — {rel} 에 은행이 없다")
+        with self._flow([1, 1, 1], action="x") as (read, exams, paused):
+            reading.main([])
+        self.assertEqual(read, [], "시험을 골랐는데 챕터를 읽었다")
+        self.assertEqual(len(exams), 1)
+        self.assertEqual(exams[0][0], rel)
+        self.assertIsNotNone(exams[0][1])
+        self.assertEqual(exams[0][2], "postgresql", "고른 벤더를 흘렸다")
+        self.assertEqual(paused, [1], "시험 뒤에는 평문이 남을 수 있다")
+
+    def test_the_action_key_does_nothing_on_a_chapter_without_a_bank(self):
+        """0=전체, 0=01-beginner, 0=`00-overview.md`(은행 없음).
+
+        그 행이 이미 `[시험 없음]`이라 화면이 이유를 적고 있다.
+        """
+        rel = reading.discover_chapters("01-beginner")[0]
+        self.assertIsNone(reading.exam.exam_bank_for(rel),
+                          f"고정값이 틀렸다 — {rel} 에 은행이 생겼다")
+        with self._flow([0, 0, 0], action="x") as (read, exams, paused):
+            reading.main([])
+        self.assertEqual(exams, [], "은행이 없는데 시험을 열었다")
+        self.assertEqual(read, [], "시험 키를 눌렀는데 챕터를 읽었다")
+        self.assertEqual(paused, [], "아무 일도 안 했는데 멈췄다")
+
+    def test_the_action_key_comes_back_to_the_chapter_list(self):
+        """시험을 보고 나면 목록으로 돌아와 다음 챕터를 고를 수 있어야 한다."""
+        with self._flow([1, 1, 1, 1], action="x") as (_, exams, _p):
+            reading.main([])
+        self.assertEqual(len(exams), 2, "한 번 보고 목록을 떠났다")
 
 
 class ChapterPauseTest(unittest.TestCase):
@@ -378,26 +316,28 @@ class ChapterPauseTest(unittest.TestCase):
     """
 
     @contextlib.contextmanager
-    def _flow(self, picks, printed=False, took_exam=False):
-        """선택 → 읽기 → (시험) 한 바퀴를 돌리고 pause 호출을 센다."""
+    def _flow(self, picks, printed=False):
+        """선택 → 읽기 한 바퀴를 돌리고 pause 호출을 센다."""
         seq = iter(list(picks) + [None] * 6)
         paused = []
         real = {n: getattr(reading, n)
-                for n in ("choose", "read_chapter", "offer_exam",
-                          "pause_after_output")}
-        real_exam_main = reading.exam.main
-        reading.choose = lambda title, labels: next(seq)
+                for n in ("choose", "read_chapter", "pause_after_output")}
+
+        def fake_choose(title, labels, actions=""):
+            idx = next(seq)
+            if not actions or idx is None:
+                return idx
+            return reading.Picked(idx, None)
+
+        reading.choose = fake_choose
         reading.read_chapter = lambda rel, dbms=None: printed
-        reading.offer_exam = lambda rel, bank, ask=input: took_exam
         reading.pause_after_output = lambda: paused.append(1)
-        reading.exam.main = lambda argv: 0
         try:
             with contextlib.redirect_stdout(io.StringIO()):
                 yield paused
         finally:
             for n, fn in real.items():
                 setattr(reading, n, fn)
-            reading.exam.main = real_exam_main
 
     def test_the_pager_swallowed_it_so_we_do_not_pause(self):
         """평상시 경로다 — `less`가 있으면 여기로 온다."""
@@ -411,27 +351,48 @@ class ChapterPauseTest(unittest.TestCase):
             reading.main([])
         self.assertEqual(paused, [1])
 
-    def test_taking_the_exam_pauses_even_when_the_pager_swallowed_it(self):
-        """`exam.main`이 평문을 남겼을 수 있다 — 안전한 쪽으로 떨어진다.
 
-        1=PostgreSQL, 1=02-intermediate, 1=그 티어의 두 번째 챕터(은행 있음).
-        `offer_exam`이 '예'라고 답하도록 고정한다.
-        """
-        # 픽 인덱스 [1, 1, 1]이 실제로 가리키는 챕터를 `discover_chapters`로
-        # 다시 구해 은행이 있는지 미리 확인한다 — `offer_exam`을 `True`로
-        # 고정해 뒀는데 `exam.exam_bank_for`는 스텁하지 않았으므로, 파일
-        # 목록이 바뀌어 이 슬롯에 은행 없는 챕터가 들어오면
-        # `args = [str(exam.REPO_ROOT / bank)]`에서 `bank`가 `None`이 되어
-        # 멈춤 여부와 무관한 자리에서 뜻 모를 `TypeError`가 난다. 여기서
-        # 미리 걸리면 실패 메시지가 "은행이 없다"는 진짜 원인을 바로 보여준다.
-        chapter = reading.discover_chapters("02-intermediate")[1]
-        self.assertIsNotNone(
-            reading.exam.exam_bank_for(chapter),
-            f"{chapter}에 문제은행이 없다 — 픽 인덱스 [1, 1, 1]이 가리키는 "
-            "챕터가 바뀌었다면 이 테스트의 인덱스를 은행 있는 챕터로 옮겨야 한다")
-        with self._flow([1, 1, 1], printed=False, took_exam=True) as paused:
-            reading.main([])
-        self.assertEqual(paused, [1])
+class RunExamTest(unittest.TestCase):
+    """핸드오프 인자 계약. 전에는 `main` 안에 인라인으로 있었다.
+
+    `exam.main`은 대상을 cwd 기준 상대경로로 받는다(CLI 계약). `./guide`를
+    저장소 밖 cwd에서 띄운 경우에도 은행을 찾으려면 절대경로여야 하고, 고른
+    벤더를 흘리면 PostgreSQL 챕터를 읽고도 MySQL·Oracle 문항이 다 나온다.
+    """
+
+    CHAPTER = "02-intermediate/01-transaction-and-locking.md"
+
+    @contextlib.contextmanager
+    def _capture(self):
+        captured = {}
+        real = reading.exam.main
+        reading.exam.main = lambda argv: captured.setdefault("argv", argv) or 0
+        try:
+            yield captured
+        finally:
+            reading.exam.main = real
+
+    def test_it_passes_an_absolute_bank_path(self):
+        bank = reading.exam.exam_bank_for(self.CHAPTER)
+        with self._capture() as captured:
+            reading.run_exam(self.CHAPTER, bank, None)
+        argv = captured["argv"]
+        self.assertTrue(Path(argv[0]).is_absolute(), argv)
+        self.assertTrue(argv[0].startswith(str(REPO_ROOT)), argv)
+        self.assertTrue(argv[0].endswith(".json"), argv)
+
+    def test_it_forwards_the_chosen_vendor(self):
+        bank = reading.exam.exam_bank_for(self.CHAPTER)
+        with self._capture() as captured:
+            reading.run_exam(self.CHAPTER, bank, "postgresql")
+        self.assertEqual(captured["argv"][1:], ["--dbms", "postgresql"])
+
+    def test_the_whole_choice_omits_the_flag(self):
+        """`dbms`가 `None`('전체')이면 `exam`이 스스로 묻게 둔다."""
+        bank = reading.exam.exam_bank_for(self.CHAPTER)
+        with self._capture() as captured:
+            reading.run_exam(self.CHAPTER, bank, None)
+        self.assertEqual(captured["argv"][1:], [])
 
 
 class ReadingQuitKeyTest(unittest.TestCase):
@@ -466,6 +427,71 @@ class ReadingQuitKeyTest(unittest.TestCase):
 
         self.assertIn("Esc/q 뒤로", seen["footer"], seen)
         self.assertIn("Q 종료", seen["footer"], seen)
+
+    def _footer(self, **kw):
+        """`choose`가 `pick`에 실제로 넘긴 footer를 가로챈다."""
+        seen = {}
+        fake_curses = types.SimpleNamespace(
+            curs_set=lambda _n: None,
+            wrapper=lambda driver: driver(object()))
+
+        def fake_pick(_stdscr, _curses, _title, _labels, footer=None, **_kw):
+            seen["footer"] = footer
+            return 0
+
+        real_pick = reading.pick
+        real_curses = sys.modules.get("curses")
+        real_in, real_out = sys.stdin.isatty, sys.stdout.isatty
+        reading.pick = fake_pick
+        sys.modules["curses"] = fake_curses
+        sys.stdin.isatty = lambda: True
+        sys.stdout.isatty = lambda: True
+        try:
+            reading.choose("제목", ["a", "b"], **kw)
+        finally:
+            reading.pick = real_pick
+            if real_curses is None:
+                del sys.modules["curses"]
+            else:
+                sys.modules["curses"] = real_curses
+            sys.stdin.isatty, sys.stdout.isatty = real_in, real_out
+        return seen["footer"]
+
+    def test_the_chapter_footer_offers_the_exam_action(self):
+        footer = self._footer(actions="x")
+        self.assertIn("Enter 읽기", footer)
+        self.assertIn("x 시험", footer)
+        self.assertIn("Esc/q 뒤로", footer)
+        self.assertIn("Q 종료", footer)
+
+    def test_a_screen_without_actions_says_nothing_about_the_exam(self):
+        """없는 키를 안내하면 안내가 거짓말이 된다."""
+        footer = self._footer()
+        self.assertIn("Enter 선택", footer)
+        self.assertNotIn("시험", footer)
+
+    def test_the_chapter_footer_fits_an_eighty_column_terminal(self):
+        """`tui.bar`가 잘라내면 안내가 조용히 사라진다.
+
+        `bar`는 폭 `w-1`로 자르므로 80칸 터미널에서 쓸 수 있는 것은 79칸이다.
+        """
+        self.assertLessEqual(tui.cwidth(self._footer(actions="x")), 79)
+
+    def test_the_line_fallback_wraps_its_answer_in_picked(self):
+        """평문 선택기는 동작 키를 모른다 — `choose`가 계약만 맞춰 준다."""
+        real_pick_line = reading.pick_line
+        real_in, real_out = sys.stdin.isatty, sys.stdout.isatty
+        reading.pick_line = lambda title, labels: 1
+        sys.stdin.isatty = lambda: False
+        sys.stdout.isatty = lambda: False
+        try:
+            self.assertEqual(reading.choose("제목", ["a", "b"], actions="x"),
+                             reading.Picked(1, None))
+            reading.pick_line = lambda title, labels: None
+            self.assertIsNone(reading.choose("제목", ["a", "b"], actions="x"))
+        finally:
+            reading.pick_line = real_pick_line
+            sys.stdin.isatty, sys.stdout.isatty = real_in, real_out
 
     def test_running_it_standalone_survives_a_quit(self):
         """`__main__` 가드가 없으면 `Q` 한 번에 트레이스백이 뜬다.
