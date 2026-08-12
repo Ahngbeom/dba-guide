@@ -192,7 +192,9 @@ class PauseAfterModeTest(unittest.TestCase):
     def test_it_does_not_pause_when_not_a_tty(self):
         restore = self._patch_tty(False)
         called = []
-        tui.input = lambda *a, **k: called.append(1)
+        # `pause_after_output`이 이제 반환값을 `.strip()` 한다 —
+        # `list.append`가 돌려주는 `None`으로는 그 경로를 지날 수 없다.
+        tui.input = lambda *a, **k: called.append(1) or ""
         try:
             guide.pause_after_mode()
         finally:
@@ -203,7 +205,9 @@ class PauseAfterModeTest(unittest.TestCase):
     def test_it_pauses_when_a_tty(self):
         restore = self._patch_tty(True)
         called = []
-        tui.input = lambda *a, **k: called.append(1)
+        # `pause_after_output`이 이제 반환값을 `.strip()` 한다 —
+        # `list.append`가 돌려주는 `None`으로는 그 경로를 지날 수 없다.
+        tui.input = lambda *a, **k: called.append(1) or ""
         try:
             guide.pause_after_mode()
         finally:

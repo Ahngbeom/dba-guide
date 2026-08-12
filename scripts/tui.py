@@ -517,13 +517,20 @@ def pause_after_output():
 
     `EOFError`·`KeyboardInterrupt`도 삼킨다 — 호출부가 애써 격리해 둔 것이
     여기서 새면 무의미해진다.
+
+    **`q`로 나갈 수 있다.** 이 프롬프트는 curses가 아니라 평문 `input()`이라
+    Esc도 `q`도 그냥 글자로 먹혔고, 사용자 눈에는 앱이 멈춘 것으로 보였다
+    (이슈 #95). 대소문자를 가르지 않는 것은 의도다 — 여기엔 '뒤로'라는 선택지가
+    없어 `q`/`Q`를 구분할 이유가 없고, 화면에 소문자로 안내하기 때문이다.
     """
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
         return
     try:
-        input("\n계속하려면 Enter를 누르세요...")
+        raw = input("\n계속하려면 Enter (q=종료)...")
     except (EOFError, KeyboardInterrupt):
-        pass
+        return
+    if raw.strip().lower() == "q":
+        raise QuitApp
 
 
 # --------------------------------------------------------------------------- #
