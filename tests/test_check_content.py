@@ -131,6 +131,19 @@ class LinkTest(FixtureTestCase):
             encoding="utf-8")
         self.assertEqual(self.problems("links"), [])
 
+    def test_links_inside_inline_code_are_examples_not_links(self):
+        """인라인 코드 안의 링크도 같은 이유로 예시다.
+
+        펜스와 근거가 같은데 인라인 코드만 빠져 있었다. 마크다운 문법을
+        표로 설명하는 문서는 `[글자](url)` 를 셀 안에 백틱으로 넣지 펜스로
+        감싸지 않는다 — 표 셀 안에서는 펜스를 쓸 수 없기 때문이다.
+        """
+        self.chapter.write_text(
+            CHAPTER + "\n| 문법 | 뜻 |\n|---|---|\n"
+            "| `[글자](url)` | 링크 |\n",
+            encoding="utf-8")
+        self.assertEqual(self.problems("links"), [])
+
     def test_image_paths_are_checked_too(self):
         self.chapter.write_text(
             CHAPTER + "\n![그림](없는그림.png)\n", encoding="utf-8")

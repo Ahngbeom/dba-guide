@@ -29,6 +29,10 @@ LINKED_DIRS = TIERS + ("appendix",)
 
 LINK_RE = re.compile(r"!?\[[^\]]*\]\(([^)]+)\)")
 FENCE_RE = re.compile(r"^\s*```")
+# 인라인 코드. 펜스와 같은 이유로 링크 검사에서 빼낸다 — 표 셀 안에서는
+# 펜스를 쓸 수 없어서, 마크다운 문법을 표로 설명하는 문서는 `[글자](url)`
+# 같은 예시를 백틱에 담는다.
+INLINE_CODE_RE = re.compile(r"`+[^`]*`+")
 HEADING_RE = re.compile(r"^##\s+(?:\d+\.\s*)?(.*?)\s*$")
 
 # 챕터가 갖춰야 하는 절과 그 순서. 각 항목은 허용되는 이름들이다.
@@ -73,7 +77,7 @@ def chapters(root):
 
 
 def link_targets(text):
-    """본문에서 링크 대상을 뽑는다. 코드펜스 안은 예시이므로 건너뛴다."""
+    """본문에서 링크 대상을 뽑는다. 코드펜스와 인라인 코드 안은 예시이므로 건너뛴다."""
     out = []
     in_fence = False
     for line in text.splitlines():
@@ -82,7 +86,9 @@ def link_targets(text):
             continue
         if in_fence:
             continue
-        out += LINK_RE.findall(line)
+        # 지우지 않고 공백으로 바꾼다 — 붙여 버리면 양옆 글자가 새 링크
+        # 모양을 만들 수 있다.
+        out += LINK_RE.findall(INLINE_CODE_RE.sub(" ", line))
     return out
 
 
