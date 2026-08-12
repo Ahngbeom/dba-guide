@@ -513,3 +513,14 @@ class ReadingQuitKeyTest(unittest.TestCase):
         body = (REPO_ROOT / "scripts" / "reading.py").read_text(
             encoding="utf-8")
         self.assertIn("except KeyboardInterrupt", body)
+
+    def test_the_docs_explain_the_exam_action(self):
+        """안내 없는 단축키는 없는 것과 같다.
+
+        `README.md` 의 "한 번에 시작하기" 절이 `./guide` 흐름을 산문으로
+        설명하는 유일한 자리다.
+        """
+        body = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+        self.assertIn("`x`", body, "README에 시험 단축키 안내가 없다")
+        self.assertNotIn("시험을 볼지 물은", body,
+                         "없어진 [Y/n] 프롬프트를 README가 아직 설명한다")
