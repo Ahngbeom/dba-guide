@@ -1,0 +1,75 @@
+# 표준 라이브러리 테스트 스위트를 돌린다.
+#
+# 이 저장소의 유일한 워크플로다. docs/release-policy.md의 「릴리스 전 점검」
+# 10개 항목 중 자동으로 막아 줄 수 있는 것만 여기서 처리하고, 나머지(챕터 링크,
+# 치트시트, 벤더 브랜치 재생성 등)는 여전히 사람 몫이다.
+#
+# `./shoot doctor`는 일부러 넣지 않았다 — docker와 mysql/psql 클라이언트 유무에
+# 따라 결과가 갈리는데, 점검 목록이 doctor에 기대한 「스테이지 정의 파싱」은
+# 이미 tests/test_shooting.py의 ShippedStagesTest가 검증한다.
+name: tests
+
+on:
+  push:
+    # main만 건다. 벤더 브랜치(postgresql/mysql/oracle)는 scripts/generate-branch.sh가
+    # main의 트리를 통째로 복제해 만들므로 이 파일도 거기 실려 간다. 브랜치를
+    # 한정하지 않으면 뷰를 재생성할 때마다 같은 테스트가 3번 더 돈다.
+    branches: [main]
+  pull_request:
+  # 태그를 찍기 전에 손으로 한 번 돌려 볼 수 있게 열어 둔다.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unittest:
+    name: ${{ matrix.os }} / python ${{ matrix.python }}
+    runs-on: ${{ matrix.os }}
+    # 스위트는 로컬에서 ~25초다. test_install.py가 pty를 쓰고 test_guide.py가
+    # 런처를 서브프로세스로 띄우므로, 멈추면 기본 6시간을 태우기 전에 끊는다.
+    timeout-minutes: 10
+    strategy:
+      # 3.9에서만 깨지는 문법인지, 모든 환경에서 깨지는지 한 번에 보고 싶다.
+      fail-fast: false
+      matrix:
+        include:
+          # install.sh와 README가 약속한 하한. 이 잡이 그 약속의 증거다.
+          - { os: ubuntu-latest, python: '3.9' }
+          - { os: ubuntu-latest, python: '3.13' }
+          # macOS는 버전 매트릭스가 아니라 bash 3.2를 보러 온 잡이다.
+          - { os: macos-latest, python: '3.13' }
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python }}
+
+      # install.sh는 `curl | bash`로 실행되고 macOS는 bash 3.2.57을 기본 셸로
+      # 쓴다(CLAUDE.md). 그런데 러너에는 Homebrew bash 5가 PATH 앞에 있을 수
+      # 있어, 그냥 두면 3.2 회귀를 놓친다. tests/test_install.py가 `bash`를
+      # 경로 없이 부르고 런처들도 `#!/usr/bin/env bash`이므로, /bin/bash를
+      # 가리키는 심링크를 PATH 맨 앞에 두면 스위트 전체가 3.2를 탄다.
+      - name: bash 3.2를 PATH 앞에 둔다
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p "$RUNNER_TEMP/bash32"
+          ln -sf /bin/bash "$RUNNER_TEMP/bash32/bash"
+          echo "$RUNNER_TEMP/bash32" >> "$GITHUB_PATH"
+
+      # 무엇을 실제로 테스트했는지 로그에 남긴다. 위 심링크가 헛돌면
+      # (러너 이미지가 /bin/bash를 바꾸면) 여기서 바로 드러난다.
+      - name: 실행 환경
+        run: |
+          python3 -V
+          bash --version | head -1
+          git --version
+
+      - name: unittest
+        run: python3 -m unittest discover -s tests

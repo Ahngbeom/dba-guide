@@ -143,6 +143,117 @@
         "흡수",
         "투자 비용"
       ]
+    },
+    {
+      "id": "iac-tf-pg-slow-query-param",
+      "type": "short",
+      "dbms": "postgresql",
+      "q": "RDS PostgreSQL 파라미터 그룹에서 지정한 시간(ms)을 넘긴 쿼리만 로그에 남기려면 어떤 파라미터를 설정하는가?",
+      "accept": [
+        "log_min_duration_statement"
+      ],
+      "hint": "'최소 지속 시간을 넘긴 문장을 기록한다'는 뜻이 이름에 그대로 들어 있습니다. 하나의 파라미터로 켜기와 임계값이 함께 정해집니다.",
+      "explain": "log_min_duration_statement = 500 — 파라미터 하나로 활성화와 임계값이 동시에 정해진다. MySQL이 slow_query_log(켜기)와 long_query_time(임계값) 둘로 나뉘는 것과 다른 지점이다."
+    },
+    {
+      "id": "iac-gcp-pg-pitr-flag",
+      "type": "short",
+      "dbms": "postgresql",
+      "q": "GCP Cloud SQL PostgreSQL 인스턴스에서 특정 시점 복구를 켜려면 backup_configuration 안에 어떤 설정을 true로 두는가?",
+      "accept": [
+        "point_in_time_recovery_enabled"
+      ],
+      "hint": "PITR이라는 약어를 그대로 풀어 쓴 이름입니다.",
+      "explain": "point_in_time_recovery_enabled = true — Cloud SQL PostgreSQL의 PITR 스위치다. 같은 자리에서 MySQL은 binary_log_enabled를 쓴다."
+    },
+    {
+      "id": "iac-ansible-pg-repl-user",
+      "type": "mcq",
+      "dbms": "postgresql",
+      "q": "셀프 매니지드 PostgreSQL에서 Ansible로 복제 계정을 만들 때 쓰는 모듈과 권한 지정 방식으로 옳은 것은?",
+      "choices": [
+        "community.postgresql.postgresql_user 모듈에 role_attr_flags: REPLICATION 을 준다",
+        "community.postgresql.postgresql_db 모듈에 priv: \"*.*:REPLICATION SLAVE\" 를 주면 계정까지 생성된다",
+        "ansible.builtin.user 모듈로 OS 계정을 만들면 같은 이름의 DB 복제 계정이 함께 만들어진다",
+        "ansible.builtin.command 로 CREATE ROLE 을 직접 실행하는 방법밖에 없어 멱등성을 포기해야 한다"
+      ],
+      "answer": 0,
+      "hint": "역할의 속성 플래그로 복제 권한을 주는 모듈입니다. 비밀번호는 Vault에서 주입합니다.",
+      "explain": "community.postgresql.postgresql_user 에 role_attr_flags: REPLICATION 을 주면 복제 권한을 가진 롤이 멱등하게 만들어진다. MySQL 쪽 대응은 community.mysql.mysql_user 의 priv 문자열이다."
+    },
+    {
+      "id": "iac-tf-mysql-slow-query-param",
+      "type": "short",
+      "dbms": "mysql",
+      "q": "RDS MySQL 파라미터 그룹에서 느린 쿼리 기록 기능 자체를 켜는 파라미터 이름은? (임계 시간을 정하는 파라미터 말고)",
+      "accept": [
+        "slow_query_log"
+      ],
+      "hint": "값 1을 주어 켜고 끄는 스위치이며, 임계값은 옆의 다른 파라미터가 따로 맡습니다.",
+      "explain": "slow_query_log = 1 로 켜고 long_query_time = 0.5 로 임계값을 준다. 스위치와 임계값이 둘로 나뉘어 있어, 하나만 잡고 끝난 줄 알면 아무것도 기록되지 않는다."
+    },
+    {
+      "id": "iac-gcp-mysql-binlog-flag",
+      "type": "short",
+      "dbms": "mysql",
+      "q": "GCP Cloud SQL MySQL 인스턴스의 backup_configuration 에서 바이너리 로그를 켜는 설정 이름은?",
+      "accept": [
+        "binary_log_enabled"
+      ],
+      "hint": "복제와 시점 복구의 근거가 되는 그 로그의 이름이 설정 이름에 그대로 들어갑니다.",
+      "explain": "binary_log_enabled = true — Cloud SQL MySQL은 이 로그가 있어야 시점 복구가 가능하다. PostgreSQL 쪽은 같은 자리에서 point_in_time_recovery_enabled 를 쓴다."
+    },
+    {
+      "id": "iac-ansible-mysql-repl-user",
+      "type": "mcq",
+      "dbms": "mysql",
+      "q": "셀프 매니지드 MySQL에서 Ansible로 복제 계정을 만들 때 권한을 지정하는 방식으로 옳은 것은?",
+      "choices": [
+        "community.mysql.mysql_user 모듈에 priv: \"*.*:REPLICATION SLAVE\" 를 준다",
+        "community.mysql.mysql_user 모듈에 role_attr_flags: REPLICATION 을 주면 같은 결과가 된다",
+        "ansible.builtin.package 로 mysql-server 를 설치하면 복제 계정이 기본으로 함께 만들어진다",
+        "ansible.builtin.template 으로 my.cnf 를 배포하면 그 안의 설정으로 계정이 생성된다"
+      ],
+      "answer": 0,
+      "hint": "권한을 '대상:권한' 형태의 문자열 하나로 적습니다.",
+      "explain": "community.mysql.mysql_user 의 priv 는 \"DB.테이블:권한\" 형식이고, 복제 계정은 서버 전역 권한이라 \"*.*:REPLICATION SLAVE\" 가 된다. role_attr_flags 는 PostgreSQL 모듈의 인자다."
+    },
+    {
+      "id": "iac-tf-oracle-license-model",
+      "type": "short",
+      "dbms": "oracle",
+      "q": "RDS Oracle 인스턴스를 Terraform으로 만들 때, 면허를 직접 들고 오는지 요금에 포함하는지를 고르는 인자 이름은?",
+      "accept": [
+        "license_model"
+      ],
+      "hint": "PostgreSQL·MySQL 리소스에는 쓸 일이 없는 인자이며, 이름이 고르는 대상을 그대로 말해 줍니다.",
+      "explain": "license_model = \"bring-your-own-license\" 또는 \"license-included\". Oracle 엔진에서만 의미가 있는 인자라, 다른 엔진의 예시를 복사해 오면 빠지기 쉽다."
+    },
+    {
+      "id": "iac-tf-oracle-audit-param",
+      "type": "short",
+      "dbms": "oracle",
+      "q": "RDS Oracle 파라미터 그룹에서 감사 로깅을 DB,EXTENDED 수준으로 켜는 파라미터 이름은?",
+      "accept": [
+        "audit_trail"
+      ],
+      "hint": "'감사 기록'을 그대로 옮긴 두 단어입니다.",
+      "explain": "audit_trail = DB,EXTENDED — 감사 레코드를 DB에 남기되 SQL 문과 바인드 값까지 포함한다. 05장의 감사 요구사항을 IaC로 고정하는 자리다."
+    },
+    {
+      "id": "iac-ansible-oracle-idempotent-install",
+      "type": "mcq",
+      "dbms": "oracle",
+      "q": "EC2에 Oracle을 사일런트 설치하는 Ansible 태스크를 재실행해도 안전하게 만들려면 어떻게 하는가?",
+      "choices": [
+        "command 태스크에 creates: 로 설치가 끝나면 생기는 파일 경로를 지정해 둔다",
+        "command 태스크 앞에 shell 로 설치 여부를 검사하는 조건문을 매번 직접 작성한다",
+        "ansible.builtin.package 모듈에 state: present 를 주면 runInstaller 도 같은 방식으로 판단된다",
+        "실행 전에 기존 ORACLE_HOME 을 지우고 항상 처음부터 다시 설치해 결과를 같게 만든다"
+      ],
+      "answer": 0,
+      "hint": "그 파일이 이미 있으면 태스크를 건너뛴다고 Ansible에게 알려 주는 인자가 있습니다.",
+      "explain": "creates: /u01/app/oracle/product/19.0.0/dbhome_1/bin/sqlplus — 그 경로가 이미 있으면 태스크를 건너뛴다. runInstaller 는 package 모듈처럼 상태를 스스로 판단하지 못하므로, 멱등성을 이렇게 손으로 붙여 준다."
     }
   ]
 }
