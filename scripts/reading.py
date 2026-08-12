@@ -4,8 +4,9 @@
 읽기(챕터) → 확인(`./exam`) → 겪기(`./shoot`) 중 첫 축이다. 다 읽으면 그 챕터의
 시험으로 이어 준다 — 경로를 손으로 찾게 하면 거기서 끊긴다.
 
-본문은 `$PAGER` 에 넘긴다. 뷰어를 curses 로 만들지 않는다는 것이 이 저장소의
-규약이고(`CLAUDE.md`), `less` 가 스크롤·검색을 이미 다 한다.
+본문은 `markdown_render` 로 서식을 입힌 뒤 `$PAGER` 에 넘긴다. 뷰어를 curses 로
+만들지 않는다는 것이 이 저장소의 규약이고(`CLAUDE.md`), `less` 가 스크롤·검색을
+이미 다 한다 — 렌더러는 화면을 그리지 않고 텍스트를 텍스트로 바꿀 뿐이다.
 
 외부 의존성 없음(Python3 표준 라이브러리만).
 """
@@ -15,8 +16,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import exam  # noqa: E402
+import markdown_render  # noqa: E402
 from filter_dbms import filter_lines  # noqa: E402
-from tui import page_text, pause_after_output, pick, pick_line  # noqa: E402
+from tui import (page_text, pager_supports_color, pause_after_output,  # noqa: E402
+                 pick, pick_line, text_width)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -82,8 +85,14 @@ def choose(title, labels):
 
 
 def read_chapter(rel, dbms=None):
-    """본문을 `$PAGER` 로 넘긴다. curses 밖에서 부른다."""
-    page_text(chapter_text(rel, dbms))
+    """본문을 렌더해 `$PAGER` 로 넘긴다. curses 밖에서 부른다.
+
+    렌더는 벤더 필터 **뒤**다 — 순서가 뒤집히면 `filter_lines` 가 찾는
+    `<!-- dbms:… -->` 마커가 이미 지워져 있어 다른 벤더 본문이 그대로 남는다.
+    """
+    page_text(markdown_render.render(chapter_text(rel, dbms),
+                                     width=text_width(),
+                                     color=pager_supports_color()))
 
 
 def offer_exam(rel, bank, ask=input):
