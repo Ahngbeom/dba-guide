@@ -583,5 +583,113 @@ class RealChapterTest(unittest.TestCase):
         self.assertNotIn("\x1b", mr.render(src, width=80, color=False))
 
 
+ALL_CHAPTERS = sorted(
+    p for d in ("01-beginner", "02-intermediate", "03-advanced", "appendix")
+    for p in (REPO_ROOT / d).glob("*.md"))
+
+
+class ReflowSafetyTest(unittest.TestCase):
+    """불변식: 렌더 출력의 어떤 줄도 줄머리 위치에 의미를 싣지 않는다.
+
+    `less` 는 소프트 랩할 때 SGR 속성은 유지하지만 줄머리 글리프와 공백 채움은
+    이어지는 줄에 다시 찍지 않는다. 그래서 읽는 중 창을 줄이면 거터·표 정렬·
+    폭을 채운 구분선이 무너졌다. 이 클래스가 그 회귀를 막는다.
+    """
+
+    def test_every_code_line_survives_verbatim(self):
+        """강제 개행 부재의 직접 검증 — 화면에서 복사한 명령이 실행돼야 한다.
+
+        비교는 벗기지 않고 한다. 양쪽을 `strip()` 하면 원문 들여쓰기가 사라져도
+        통과하는데, `CREATE TABLE` 본문처럼 들여쓴 코드가 챕터에 실제로 있다.
+        """
+        for path in ALL_CHAPTERS:
+            src = path.read_text(encoding="utf-8")
+            code = fence_bodies(src)
+            if not code:
+                continue
+            rendered = set(mr.render(src, width=40, color=False).split("\n"))
+            self.assertEqual(code - rendered, set(), path.name)
+
+    def test_horizontal_rules_do_not_depend_on_the_width(self):
+        """폭을 채운 구분선은 창이 좁아지는 순간 두 줄이 된다."""
+        src = "문단\n\n---\n\n문단\n"
+        seen = set()
+        for width in (40, 78, 120):
+            got = mr.render(src, width=width, color=False)
+            rules = [ln for ln in got.split("\n") if set(ln.strip()) == {"─"}]
+            self.assertEqual(len(rules), 1, f"width={width}: {got!r}")
+            seen.add(cwidth(rules[0]))
+        self.assertEqual(seen, {mr._RULE_WIDTH})
+
+    def test_no_heading_text_is_ever_dropped(self):
+        """폭을 좁혀도 제목의 글자가 사라지지 않는다.
+
+        **공백을 지우고 비교한다.** 폭보다 긴 한 단어는 `layout` 이 강제 분할
+        하는데(`tui.wrap` 과 같은 계약), 그건 손실이 아니라 줄바꿈이다. 단어
+        단위로 단정하면 `옵티마이저·파티셔닝·캐싱·커넥션`(폭 31, 공백 없음)
+        같은 한국어 제목에서 정상 동작을 실패로 신고한다 — 실측으로 폭 24에서
+        `…캐싱` / `·커넥션…` 으로 갈렸다. 한국어는 조사와 중점으로 이어져
+        공백 없는 긴 단어가 흔하므로 영어 기준의 단어 단정이 맞지 않는다.
+        """
+        def squash(text):
+            return "".join(text.split())
+
+        heading_re = re.compile(r"^(#{1,6})\s+(.*?)\s*#*\s*$")
+        for path in ALL_CHAPTERS:
+            src = path.read_text(encoding="utf-8")
+            headings, in_fence = [], False
+            for line in src.split("\n"):
+                if mr._FENCE_RE.match(line):
+                    in_fence = not in_fence
+                    continue
+                if in_fence:
+                    continue
+                m = heading_re.match(line)
+                if m:
+                    headings.append(m.group(2))
+            for width in (24, 40, 78, 120):
+                flat = squash(plain(mr.render(src, width=width, color=False)))
+                for text in headings:
+                    self.assertIn(squash(text), flat,
+                                  f"{path.name} @ {width}: {text!r}")
+
+    def test_wrapped_headings_keep_the_heading_style(self):
+        """접힌 제목이 본문과 구분되는 유일한 수단이다."""
+        got = mr.render("## " + "가나다라마 " * 8 + "\n", width=40, color=True)
+        lines = [ln for ln in got.split("\n") if ln.strip()]
+        self.assertGreater(len(lines), 1, got)
+        for line in lines:
+            self.assertIn(f"\x1b[{mr.SGR['h2']}m", line, repr(line))
+
+    def test_no_line_head_glyph_survives_from_the_old_box(self):
+        """`┌ └ │` 는 접히면 무너지는 줄머리 장식이었다 — 인용의 `│` 만 남는다."""
+        for path in ALL_CHAPTERS:
+            got = mr.render(path.read_text(encoding="utf-8"),
+                            width=40, color=False)
+            for glyph in ("┌", "└"):
+                self.assertNotIn(glyph, got, f"{path.name}: {glyph}")
+
+    def test_only_fence_bodies_may_exceed_the_width(self):
+        """폭 보장의 예외는 코드 펜스 본문 하나뿐이다."""
+        for path in ALL_CHAPTERS:
+            src = path.read_text(encoding="utf-8")
+            code = fence_bodies(src)
+            for width in (40, 78, 120):
+                got = mr.render(src, width=width, color=False)
+                for line in got.split("\n"):
+                    if line in code:
+                        continue
+                    self.assertLessEqual(cwidth(line), width,
+                                         f"{path.name} @ {width}: {line!r}")
+
+    def test_wide_tables_never_squeeze_a_column(self):
+        """압축은 `PostgreSQL` 을 `PostgreSQ`/`L` 로 쪼갰다. 카드형이 그걸 없앤다."""
+        src = (REPO_ROOT / "01-beginner/07-commands-cheatsheet.md").read_text(
+            encoding="utf-8")
+        got = mr.render(src, width=40, color=False)
+        self.assertIn(mr._CARD_MARK.strip(), got)
+        self.assertNotIn("PostgreSQ\n", got)
+
+
 if __name__ == "__main__":
     unittest.main()
