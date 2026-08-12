@@ -95,7 +95,7 @@ RMAN> BACKUP INCREMENTAL LEVEL 1 DATABASE;  -- 증분
 
 시나리오: 상시 전체 백업을 받고 그 사이의 변경은 연속 로그로 아카이빙하는 운영 중, 오후 2시 30분에 실수로 전체 `DELETE`가 발생했다. 2시 29분 상태로 되돌린다.
 
-세 DBMS의 원리는 같다 — **목표 시각 이전의 백업을 복원한 뒤, 그 시점부터 목표 시각까지의 로그만 재적용한다.** 다른 것은 로그의 이름, 재적용을 멈추는 방법, 그리고 복구를 끝내고 서비스를 여는 절차다.
+DBMS가 달라도 원리는 같다 — **목표 시각 이전의 백업을 복원한 뒤, 그 시점부터 목표 시각까지의 로그만 재적용한다.** 다른 것은 로그의 이름, 재적용을 멈추는 방법, 그리고 복구를 끝내고 서비스를 여는 절차다.
 
 <!-- dbms:postgresql -->
 ### PostgreSQL — base backup + WAL 재생
@@ -142,10 +142,10 @@ mysql < /backup/full_20260715.sql        # 논리 백업인 경우
 # (XtraBackup이면 --prepare 후 데이터 디렉터리를 교체한다)
 
 # 2) 재적용을 시작할 binlog 좌표 확인
-head -30 /backup/full_20260715.sql       # --master-data가 남긴 CHANGE MASTER 주석
+head -30 /backup/full_20260715.sql       # --source-data(구 --master-data)가 남긴 CHANGE REPLICATION SOURCE TO 주석
 mysql -e "SHOW BINARY LOGS;"             # 그 이후 파일들의 목록
 
-# 3) 백업 시점 이후부터 목표 시각 직전까지만 재적용
+# 3) 백업 시점 이후부터 목표 시각 직전까지만 재적용 (--start-position은 2)에서 확인한 값)
 mysqlbinlog --start-position=194 \
             --stop-datetime="2026-07-15 14:29:00" \
             /var/log/mysql/binlog.000123 /var/log/mysql/binlog.000124 \
@@ -179,10 +179,10 @@ RMAN> RUN {
 RMAN> ALTER DATABASE OPEN RESETLOGS;
 ```
 
-`OPEN RESETLOGS`는 로그 순번을 1부터 다시 매긴다. **그 이전의 백업과 아카이브 로그로는 더 이상 복구할 수 없으므로, 개방 직후 전체 백업을 새로 받는 것까지가 절차다.**
+`OPEN RESETLOGS`는 로그 순번을 1부터 다시 매기고 새 인카네이션(incarnation)을 만든다. 10g 이후 RMAN은 인카네이션을 인식하므로 이전 백업으로도 (`RESET DATABASE TO INCARNATION`을 거쳐) 복구할 수 있지만 절차가 눈에 띄게 복잡해지고 실수 여지가 커진다 — **개방 직후 전체 백업을 새로 받는 것까지가 절차다.**
 <!-- /dbms:oracle -->
 
-세 절차 모두 검증하는 것은 "백업이 있다"가 아니라 **"백업으로 목표 시각까지 실제로 되돌려 봤다"** 이다. 아카이브 한 조각이 비어 있으면 재적용은 정확히 그 지점에서 멈추는데, 사고 당일에 알게 되면 이미 늦다. 아래 정책이 분기 1회 복구 훈련을 요구하는 이유가 이것이다.
+어느 절차든 검증하는 것은 "백업이 있다"가 아니라 **"백업으로 목표 시각까지 실제로 되돌려 봤다"** 이다. 아카이브 한 조각이 비어 있으면 재적용은 정확히 그 지점에서 멈추는데, 사고 당일에 알게 되면 이미 늦다. 아래 정책이 분기 1회 복구 훈련을 요구하는 이유가 이것이다.
 
 ## 백업 주기/보관 정책 설계
 
@@ -207,7 +207,7 @@ RMAN> ALTER DATABASE OPEN RESETLOGS;
 - [ ] MySQL에서 전체 백업을 복원한 뒤 binlog를 목표 시각까지 재적용할 수 있다.
 <!-- /dbms:mysql -->
 <!-- dbms:oracle -->
-- [ ] Oracle에서 RMAN 불완전 복구를 수행하고, `OPEN RESETLOGS` 이후 전체 백업이 필요한 이유를 설명할 수 있다.
+- [ ] Oracle에서 RMAN 불완전 복구를 수행하고, `OPEN RESETLOGS` 이후 전체 백업을 새로 받는 이유를 설명할 수 있다.
 <!-- /dbms:oracle -->
 - [ ] 3-2-1 원칙에 따른 백업 주기·보관·원격 저장 정책을 설계할 수 있다.
 - [ ] 백업 암호화와 정기 복구 훈련의 필요성을 이해한다.
