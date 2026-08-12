@@ -137,6 +137,31 @@ class HeadingTest(unittest.TestCase):
         lines = mr.render("문단\n## 제목\n", width=60, color=False).split("\n")
         self.assertEqual(lines[1], "", lines)
 
+    def test_a_long_heading_wraps_instead_of_losing_its_tail(self):
+        """제목을 자르면 꼬리가 조용히 사라진다 — 렌더러의 유일한 데이터 손실이었다."""
+        body = '시나리오: "프로덕션 DB CPU 100%, 애플리케이션 전면 5xx" (PostgreSQL 기준)'
+        got = mr.render(f"### {body}\n", width=40, color=False)
+        for word in ("시나리오:", "5xx", "(PostgreSQL", "기준)"):
+            self.assertIn(word, got, got)
+        for line in got.split("\n"):
+            self.assertLessEqual(cwidth(line), 40, repr(line))
+
+    def test_a_wrapped_h1_keeps_its_closing_bars(self):
+        """`━━━ … ━━━` 는 한 줄 안의 장식이다. 접히면 닫는 막대가 마지막 줄로 간다."""
+        got = mr.render("# " + "가나다라마 " * 8 + "\n", width=40, color=False)
+        lines = [ln for ln in got.split("\n") if ln.strip()]
+        self.assertGreater(len(lines), 1, got)
+        self.assertTrue(lines[0].startswith("━━━"), lines)
+        self.assertTrue(lines[-1].endswith("━━━"), lines)
+
+    def test_every_wrapped_heading_line_carries_the_heading_style(self):
+        """접힌 제목이 본문과 구분되는 유일한 수단이다 — 줄마다 스타일이 실려야 한다."""
+        got = mr.render("## " + "가나다라마 " * 8 + "\n", width=40, color=True)
+        lines = [ln for ln in got.split("\n") if ln.strip()]
+        self.assertGreater(len(lines), 1, got)
+        for line in lines:
+            self.assertIn(f"\x1b[{mr.SGR['h2']}m", line, repr(line))
+
 
 class ParagraphTest(unittest.TestCase):
     def test_a_long_paragraph_wraps_to_width(self):

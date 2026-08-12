@@ -214,6 +214,14 @@ def _emit_heading(level, body, width, color, out):
 
     제목 안의 `` `코드` `` 를 따로 색칠하면 제목 색과 싸워서 오히려 단계가
     안 읽힌다. 기호만 떼고 제목 색으로 통일한다.
+
+    **자르지 않고 접는다.** 예전에는 `fit` 으로 잘랐고 그 근거는 "접힌 제목은
+    본문과 구분이 안 된다" 였다. 접힌 줄마다 제목 스타일을 실으면 색이 있는
+    한 구분되고, 무색에서는 구분이 약해지지만 **꼬리가 조용히 사라지는 것보다
+    낫다** — 실측으로 제목 322개의 최대 폭이 73칸이라 40·60칸에서 잘려 나갔다.
+
+    h1 의 `━━━ … ━━━` 은 통째로 `layout` 에 넘긴다. 막대가 공백으로 분리된
+    단어라 여는 막대는 첫 줄, 닫는 막대는 마지막 줄에 자연히 놓인다.
     """
     plain_body = "".join(t for t, _ in inline_spans(body, color))
     _blank(out)
@@ -223,9 +231,8 @@ def _emit_heading(level, body, width, color, out):
     else:
         prefix, style = ("◆ ", "h2") if level == 2 else ("· ", "h3")
         text = prefix + plain_body
-    # 제목은 접지 않고 자른다 — 접힌 제목은 본문과 구분이 안 된다. 자르지
-    # 않으면 `less` 가 접어서 같은 결과가 되고, 폭 회귀 테스트도 깨진다.
-    out.append(paint([(fit(text, width), style)], color))
+    for row in layout([(text, style)], width):
+        out.append(paint(row, color))
 
 
 def _depth(indent):
