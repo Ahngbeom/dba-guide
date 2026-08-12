@@ -172,19 +172,50 @@ class ExamOfferTest(unittest.TestCase):
 
 
 class ReadChapterTest(unittest.TestCase):
-    """본문은 `$PAGER` 로 간다 — curses 안에 뷰어를 만들지 않는다."""
+    """본문은 렌더를 거쳐 `$PAGER` 로 간다 — curses 안에 뷰어를 만들지 않는다."""
 
-    def test_it_hands_the_filtered_text_to_the_pager(self):
+    CHAPTER = "01-beginner/03-installation-and-access.md"
+
+    @contextlib.contextmanager
+    def _capture(self):
         seen = {}
         real = reading.page_text
         reading.page_text = lambda text: seen.setdefault("text", text)
         try:
-            reading.read_chapter("01-beginner/03-installation-and-access.md",
-                                 dbms="postgresql")
+            yield seen
         finally:
             reading.page_text = real
+
+    def test_it_hands_the_filtered_text_to_the_pager(self):
+        with self._capture() as seen:
+            reading.read_chapter(self.CHAPTER, dbms="postgresql")
         self.assertIn("설치", seen["text"])
         self.assertNotIn("<!-- dbms:", seen["text"])
+
+    def test_the_text_is_rendered_not_raw(self):
+        """마크업 기호가 그대로 가면 렌더를 안 거친 것이다."""
+        with self._capture() as seen:
+            reading.read_chapter(self.CHAPTER, dbms="postgresql")
+        self.assertNotIn("## ", seen["text"])
+        self.assertIn("◆", seen["text"])
+
+    def test_rendering_happens_after_the_vendor_filter(self):
+        """순서가 뒤집히면 필터가 마커를 못 찾아 다른 벤더 본문이 남는다."""
+        raw = reading.chapter_text(self.CHAPTER)
+        if "<!-- dbms:" not in raw:
+            self.skipTest("벤더 브랜치 — 이미 필터된 뷰라 걷어낼 마커가 없다")
+        with self._capture() as seen:
+            reading.read_chapter(self.CHAPTER, dbms="postgresql")
+        rendered_full = reading.markdown_render.render(
+            raw, width=reading.text_width(),
+            color=reading.pager_supports_color())
+        self.assertLess(len(seen["text"]), len(rendered_full))
+
+    def test_a_pipe_gets_no_escape_sequences(self):
+        """테스트는 tty 가 아니다 — 색이 꺼져야 한다."""
+        with self._capture() as seen:
+            reading.read_chapter(self.CHAPTER, dbms="postgresql")
+        self.assertNotIn("\x1b", seen["text"])
 
 
 class ReadingMainTest(unittest.TestCase):

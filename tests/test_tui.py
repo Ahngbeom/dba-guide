@@ -385,6 +385,171 @@ class PageTextCharacterizationTest(unittest.TestCase):
         self.assertEqual(rc, 0)
 
 
+class PagerColorTest(unittest.TestCase):
+    """ANSI 를 넣어도 안전한 페이저인지 판정한다.
+
+    지금보다 나빠지는 유일한 경우가 여기다 — `PAGER=more` 에 이스케이프를
+    보내면 `ESC[1m` 이 글자로 찍힌다.
+    """
+
+    class _TTY(io.StringIO):
+        def isatty(self):
+            return True
+
+    class _Pipe(io.StringIO):
+        def isatty(self):
+            return False
+
+    @contextlib.contextmanager
+    def _env(self, **kv):
+        real = dict(os.environ)
+        os.environ.pop("NO_COLOR", None)
+        os.environ.pop("PAGER", None)
+        os.environ["TERM"] = "xterm-256color"
+        for k, v in kv.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        try:
+            yield
+        finally:
+            os.environ.clear()
+            os.environ.update(real)
+
+    def test_no_pager_set_means_we_will_use_less_dash_r(self):
+        with self._env():
+            self.assertTrue(tui.pager_supports_color(self._TTY()))
+
+    def test_less_is_fine(self):
+        with self._env(PAGER="less"):
+            self.assertTrue(tui.pager_supports_color(self._TTY()))
+
+    def test_less_with_flags_is_fine(self):
+        with self._env(PAGER="less -FRX"):
+            self.assertTrue(tui.pager_supports_color(self._TTY()))
+
+    def test_an_absolute_path_to_less_is_fine(self):
+        with self._env(PAGER="/usr/bin/less"):
+            self.assertTrue(tui.pager_supports_color(self._TTY()))
+
+    def test_more_is_not(self):
+        with self._env(PAGER="more"):
+            self.assertFalse(tui.pager_supports_color(self._TTY()))
+
+    def test_formatters_are_not_treated_as_colour_pagers(self):
+        # bat과 delta는 포맷터다. 입력을 재해석·재장식하므로 ANSI를 그대로
+        # 통과시킨다는 보장이 없다. 모르는 페이저로 분류되면 무색으로 안전하게 떨어진다.
+        with self._env(PAGER="bat"):
+            self.assertFalse(tui.pager_supports_color(self._TTY()))
+        with self._env(PAGER="delta"):
+            self.assertFalse(tui.pager_supports_color(self._TTY()))
+
+    def test_moar_and_ov_are_colour_pagers(self):
+        # moar와 ov는 순수 페이저다.
+        with self._env(PAGER="moar"):
+            self.assertTrue(tui.pager_supports_color(self._TTY()))
+        with self._env(PAGER="ov"):
+            self.assertTrue(tui.pager_supports_color(self._TTY()))
+
+    def test_no_color_env_wins_over_everything(self):
+        with self._env(PAGER="less", NO_COLOR="1"):
+            self.assertFalse(tui.pager_supports_color(self._TTY()))
+
+    def test_a_pipe_gets_no_colour(self):
+        with self._env(PAGER="less"):
+            self.assertFalse(tui.pager_supports_color(self._Pipe()))
+
+    def test_a_dumb_terminal_gets_no_colour(self):
+        with self._env(PAGER="less", TERM="dumb"):
+            self.assertFalse(tui.pager_supports_color(self._TTY()))
+
+    def test_an_unparseable_pager_gets_no_colour(self):
+        with self._env(PAGER="less 'unclosed"):
+            self.assertFalse(tui.pager_supports_color(self._TTY()))
+
+
+class TextWidthTest(unittest.TestCase):
+    """가로 200칸에서 한글 문단이 한 줄로 늘어지면 오히려 못 읽는다."""
+
+    @contextlib.contextmanager
+    def _cols(self, n):
+        real = tui.shutil.get_terminal_size
+        tui.shutil.get_terminal_size = lambda fallback=(80, 24): os.terminal_size(
+            (n, 24))
+        try:
+            yield
+        finally:
+            tui.shutil.get_terminal_size = real
+
+    def test_a_narrow_terminal_gets_the_floor(self):
+        with self._cols(30):
+            self.assertEqual(tui.text_width(), 40)
+
+    def test_a_wide_terminal_gets_the_ceiling(self):
+        with self._cols(200):
+            self.assertEqual(tui.text_width(), 100)
+
+    def test_a_normal_terminal_gets_two_columns_of_margin(self):
+        with self._cols(90):
+            self.assertEqual(tui.text_width(), 88)
+
+
+class LessRawFlagTest(unittest.TestCase):
+    """`less` 에 `-R` 이 없으면 ANSI 가 글자로 찍힌다. 없을 때만 붙인다."""
+
+    def _cmd(self, pager):
+        seen = {}
+
+        class FakeProc:
+            returncode = 0
+
+            def communicate(self, text):
+                pass
+
+        real_popen = tui.subprocess.Popen
+        real_env = dict(os.environ)
+        tui.subprocess.Popen = lambda *a, **k: (seen.setdefault("cmd", a[0])
+                                                and None or FakeProc())
+        os.environ["PAGER"] = pager
+        try:
+            tui.page_text("본문")
+        finally:
+            tui.subprocess.Popen = real_popen
+            os.environ.clear()
+            os.environ.update(real_env)
+        return seen["cmd"]
+
+    def test_bare_less_gets_dash_r(self):
+        self.assertEqual(self._cmd("less"), ["less", "-R"])
+
+    def test_existing_dash_r_is_not_duplicated(self):
+        self.assertEqual(self._cmd("less -R"), ["less", "-R"])
+
+    def test_a_bundled_flag_counts(self):
+        self.assertEqual(self._cmd("less -FRX"), ["less", "-FRX"])
+
+    def test_the_long_form_counts(self):
+        self.assertEqual(self._cmd("less --RAW-CONTROL-CHARS"),
+                         ["less", "--RAW-CONTROL-CHARS"])
+
+    def test_other_pagers_are_left_alone(self):
+        self.assertEqual(self._cmd("more"), ["more"])
+
+    def test_short_option_with_prompt_argument(self):
+        # -P는 인자를 받는 옵션. -Pcurrent에서 current는 인자이지 옵션글자가 아니다.
+        # 이전에는 current에 r이 있어서 오탐했다.
+        self.assertEqual(self._cmd("less -Pcurrent"), ["less", "-Pcurrent", "-R"])
+
+    def test_short_option_with_tab_argument(self):
+        # -x는 인자를 받는 옵션.
+        self.assertEqual(self._cmd("less -x4"), ["less", "-x4", "-R"])
+
+    def test_short_option_with_file_argument(self):
+        # -o는 인자를 받는 옵션.
+        self.assertEqual(self._cmd("less -ofile.log"), ["less", "-ofile.log", "-R"])
+
+
 class PickLineTest(unittest.TestCase):
     """`pick()`의 평문 짝. 파이프로 돌릴 때도 고를 수 있어야 한다."""
 

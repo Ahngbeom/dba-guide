@@ -7,7 +7,8 @@
 #
 # 저장소는 ${XDG_DATA_HOME:-~/.local/share}/dba-guide 에 두고, 런처 세 개를
 # ~/.local/bin 에 심볼릭 링크한다. 설치 지점은 항상 최신 정식 릴리스 태그다 —
-# 이 저장소에는 CI가 없어 main HEAD는 아무도 점검하지 않은 상태이기 때문이다.
+# CI는 테스트만 돌릴 뿐이고, 챕터 링크·치트시트·문제은행 같은 내용 점검은
+# 릴리스 시점에만 사람이 하기 때문이다(docs/release-policy.md).
 #
 # macOS 기본 bash는 3.2다. 연관 배열·mapfile·${var,,} 를 쓰지 않는다.
 set -euo pipefail

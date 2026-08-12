@@ -50,7 +50,8 @@
       "dbms": "neutral",
       "q": "app_user에게서 employees 테이블의 INSERT 권한을 회수하는 SQL을 작성하시오.",
       "accept": [
-        "revoke insert on employees from app_user"
+        "revoke insert on employees from app_user",
+        "revoke insert on table employees from app_user"
       ],
       "hint": "권한 회수는 부여(GRANT)의 반대 명령이며 ... FROM ... 형식입니다.",
       "explain": "REVOKE INSERT ON employees FROM app_user;"

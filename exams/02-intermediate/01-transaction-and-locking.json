@@ -103,7 +103,9 @@
       "dbms": "mysql",
       "q": "MySQL에서 가장 최근에 감지된 데드락의 상세 정보(LATEST DETECTED DEADLOCK 섹션)를 보려면 어떤 명령을 실행하는가?",
       "accept": [
-        "show engine innodb status"
+        "show engine innodb status",
+        "show engine innodb status\\G",
+        "show engine innodb status \\G"
       ],
       "hint": "InnoDB 스토리지 엔진의 전체 상태를 덤프하는 SHOW 계열 명령입니다.",
       "explain": "SHOW ENGINE INNODB STATUS; 의 LATEST DETECTED DEADLOCK 섹션에서 어떤 두 트랜잭션이 어떤 락을 두고 충돌했는지 확인할 수 있다."

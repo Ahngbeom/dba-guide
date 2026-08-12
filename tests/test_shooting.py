@@ -1094,21 +1094,43 @@ class ClientCheckSymmetryTest(unittest.TestCase):
 
     @contextlib.contextmanager
     def _clients(self, mysql=True, psql=True):
-        real_which = shooting.shutil.which
+        """클라이언트 유무만 남기고 doctor 의 나머지 판정 입력을 고정한다.
+
+        docker 를 일부러 '있고 떠 있음'으로 못박는다. 실제 PATH 로 흘려보내면
+        doctor 의 docker 항목이 실행 머신 상태를 그대로 타서, 이 클래스가 묻는
+        것과 무관한 이유로 종료 코드가 1 이 된다 — docker 가 없는 macOS CI
+        러너에서 실제로 그렇게 깨졌다(ubuntu 러너와 개발 머신에는 docker 가
+        있어 오래 드러나지 않았다).
+        """
+        real_which, real_run = shooting.shutil.which, shooting.subprocess.run
         have = {"mysql": mysql, "psql": psql}
 
-        def fake(name, *a, **k):
+        def fake_which(name, *a, **k):
             if name in have:
                 return f"/usr/bin/{name}" if have[name] else None
+            if name == "docker":
+                return "/usr/bin/docker"
             return real_which(name, *a, **k)
 
-        shooting.shutil.which = fake
+        def fake_run(cmd, *a, **k):
+            if not (cmd and cmd[0] == "docker"):
+                return real_run(cmd, *a, **k)
+            # `info` 만 성공시킨다 — 데몬은 떠 있고 랩 컨테이너는 내려가 있는
+            # 상태다. 어느 쪽도 doctor 의 verdict 를 바꾸지 않으므로, 남는
+            # 변수는 클라이언트 유무뿐이다.
+            rc = 0 if "info" in cmd else 1
+            return shooting.subprocess.CompletedProcess(
+                cmd, rc, stdout="99.9.9\n" if rc == 0 else "", stderr="")
+
+        shooting.shutil.which = fake_which
+        shooting.subprocess.run = fake_run
         buf = io.StringIO()
         try:
             with contextlib.redirect_stdout(buf):
                 yield buf
         finally:
             shooting.shutil.which = real_which
+            shooting.subprocess.run = real_run
 
     def _run(self, **kw):
         with self._clients(**kw) as buf:

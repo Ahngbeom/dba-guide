@@ -492,6 +492,74 @@ def pause_after_output():
 # --------------------------------------------------------------------------- #
 # 외부 도구 위임
 # --------------------------------------------------------------------------- #
+# 색을 살려 넘길 수 있는 순수 페이저들. 포맷터(bat, delta)는 입력을 재해석·
+# 재장식하므로 이미 ANSI 가 들어간 마크다운을 먹이면 결과를 예측할 수 없다.
+# 모르는 페이저로 분류되면 무색으로 안전하게 떨어진다. `more` 에 이스케이프를
+# 보내면 `ESC[1m` 이 글자로 찍혀 **지금보다 나빠진다.**
+COLOR_PAGERS = ("less", "most", "moar", "ov")
+
+
+def pager_supports_color(stream=None):
+    """지금 이 실행에서 ANSI 를 내보내도 안전한가.
+
+    부르는 쪽이 색을 넣을지 결정하는 데 쓴다. 페이저 명령줄 조립은
+    `page_text` 안에서만 일어나지만, 색 여부는 `page_text` 가 알 수 없다 —
+    같은 함수가 `shoot` 의 등급표 같은 평문도 받기 때문이다.
+    """
+    stream = stream if stream is not None else sys.stdout
+    if os.environ.get("NO_COLOR") is not None:
+        return False
+    if not (hasattr(stream, "isatty") and stream.isatty()):
+        return False
+    if os.environ.get("TERM", "") in ("", "dumb"):
+        return False
+    pager = os.environ.get("PAGER")
+    if not pager:
+        return True                      # page_text 가 `less -R` 을 쓴다
+    try:
+        argv = shlex.split(pager)
+    except ValueError:
+        return False                     # 따옴표가 안 닫힌 설정 — 안전한 쪽으로
+    if not argv:
+        return True
+    return os.path.basename(argv[0]) in COLOR_PAGERS
+
+
+def text_width():
+    """본문 렌더 폭.
+
+    가로 200칸 터미널에서 한글 문단이 한 줄로 늘어지면 오히려 못 읽는다.
+    `get_terminal_size` 는 비-tty 에서 `COLUMNS` 또는 폴백으로 떨어지므로
+    따로 처리할 것이 없다.
+    """
+    return max(40, min(shutil.get_terminal_size((80, 24)).columns - 2, 100))
+
+
+def _with_raw_flag(argv):
+    """`less` 에 `-R` 이 없으면 붙인다. 다른 페이저는 건드리지 않는다."""
+    if not argv or os.path.basename(argv[0]) != "less":
+        return argv
+
+    # less의 단축 옵션 중 인자를 붙여 받는 글자들. 이들 뒤의 텍스트는 옵션이
+    # 아니라 인자이므로 스캔을 중단해야 한다 (예: -Pcurrent 에서 current는
+    # -P의 인자이지 옵션 글자들이 아니다). 부분문자열 검색은 인자값에 들어간
+    # 'r'/'R'을 오탐할 수 있어 글자 단위 스캔이 필수.
+    takes_arg = set("bhjkoOpPtTxyz#")
+
+    for a in argv[1:]:
+        if a.startswith("--") and a.lower().startswith("--raw"):
+            return argv
+        if a.startswith("-") and not a.startswith("--"):
+            # 단축 옵션 글자를 하나하나 검사
+            for c in a[1:]:
+                if c == "R" or c == "r":
+                    return argv
+                if c in takes_arg:
+                    # 이 글자는 인자를 받으므로 뒤의 텍스트는 모두 인자이다
+                    break
+    return argv + ["-R"]
+
+
 def page_text(text):
     """텍스트를 페이저로 넘긴다(curses 밖에서 호출).
 
@@ -504,8 +572,8 @@ def page_text(text):
         print(text)
         return 0
     try:
-        proc = subprocess.Popen(shlex.split(pager), stdin=subprocess.PIPE,
-                                text=True)
+        proc = subprocess.Popen(_with_raw_flag(shlex.split(pager)),
+                                stdin=subprocess.PIPE, text=True)
         proc.communicate(text)
         return proc.returncode
     except (OSError, KeyboardInterrupt):
