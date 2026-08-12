@@ -30,6 +30,15 @@ class ModeTableTest(unittest.TestCase):
         self.assertEqual([m.key for m in guide.MODES],
                          ["read", "exam", "shoot"])
 
+    def test_only_the_read_mode_skips_the_launcher_pause(self):
+        """`reading`은 페이저 사용 여부를 보고 스스로 판단한다 (이슈 #95).
+
+        `exam`·`shoot`은 평문을 남기므로 런처가 멈춰 줘야 한다 — `shoot`은
+        등급표·후일담을, `exam`은 라인 모드 진행을 평문으로 찍는다.
+        """
+        self.assertEqual({m.key: m.pause for m in guide.MODES},
+                         {"read": False, "exam": True, "shoot": True})
+
     def test_scale_reports_the_real_counts(self):
         """`exam.discover_banks()`와 같은 재귀 글롭으로 세어야 한다.
 
@@ -66,9 +75,11 @@ class ModeTableTest(unittest.TestCase):
         """
         from tui import cwidth
         fake_modes = (
-            guide.Mode("a", "학습 점검 (퀴즈/시험)", lambda: "0문항", lambda: 0),
-            guide.Mode("b", "장애 대응 (실전 훈련)", lambda: "0스테이지", lambda: 0),
-            guide.Mode("c", "챕터 읽기", lambda: "0챕터", lambda: 0),
+            guide.Mode("a", "학습 점검 (퀴즈/시험)", lambda: "0문항",
+                       lambda: 0, True),
+            guide.Mode("b", "장애 대응 (실전 훈련)", lambda: "0스테이지",
+                       lambda: 0, True),
+            guide.Mode("c", "챕터 읽기", lambda: "0챕터", lambda: 0, False),
         )
         real = guide.MODES
         guide.MODES = fake_modes
@@ -116,7 +127,7 @@ class ModeIsolationTest(unittest.TestCase):
     """
 
     def _mode(self, boom):
-        return guide.Mode("t", "테스트", lambda: "0개", boom)
+        return guide.Mode("t", "테스트", lambda: "0개", boom, False)
 
     def _run(self, boom):
         buf = io.StringIO()
@@ -126,6 +137,27 @@ class ModeIsolationTest(unittest.TestCase):
 
     def test_a_normal_return_comes_back(self):
         self.assertEqual(self._run(lambda: 0), "")
+
+    def test_a_normal_return_reports_nothing_was_printed(self):
+        """`main`이 이 값으로 멈출지 정한다 — 안 찍었으면 멈출 이유가 없다."""
+        self.assertFalse(guide.run_mode(self._mode(lambda: 0)))
+
+    def test_a_reported_failure_says_it_printed(self):
+        def boom():
+            raise SystemExit("출제할 문항이 없습니다(필터 조건 확인).")
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertTrue(guide.run_mode(self._mode(boom)))
+
+    def test_an_interrupt_says_it_printed(self):
+        def boom():
+            raise KeyboardInterrupt
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertTrue(guide.run_mode(self._mode(boom)))
+
+    def test_a_silent_system_exit_says_nothing_was_printed(self):
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertFalse(guide.run_mode(
+                self._mode(lambda: (_ for _ in ()).throw(SystemExit(0)))))
 
     def test_system_exit_does_not_escape(self):
         def boom():
@@ -227,18 +259,23 @@ class PauseAfterModeTest(unittest.TestCase):
             del tui.input
             restore()
 
-    def test_main_pauses_after_each_mode_but_not_after_quitting(self):
+    def test_main_pauses_after_a_pausing_mode_but_not_after_quitting(self):
         """배선 테스트: `main()`이 `run_mode` 뒤에 `pause_after_mode`를 부르는가.
 
         마지막에 메뉴에서 바로 종료(`None`)할 때는 `run_mode`가 안 불리므로
         `pause_after_mode`도 불리면 안 된다.
+
+        모드를 **키로** 찾는다 — 인덱스를 박아 두면 메뉴 순서를 바꿀 때마다
+        이 배선 테스트가 함께 깨진다(`MainLoopTest._index_of`와 같은 이유).
         """
+        keys = [m.key for m in guide.MODES]
+        picks = [keys.index("exam"), keys.index("shoot")]
         real_choose, real_run, real_pause = (
             guide.choose_menu, guide.run_mode, guide.pause_after_mode)
-        seq = iter([0, 1, None])
+        seq = iter(picks + [None])
         paused = []
         guide.choose_menu = lambda labels: next(seq)
-        guide.run_mode = lambda mode: None
+        guide.run_mode = lambda mode: False      # 아무것도 찍지 않았다
         guide.pause_after_mode = lambda: paused.append(1)
         try:
             with contextlib.redirect_stdout(io.StringIO()):
@@ -247,6 +284,50 @@ class PauseAfterModeTest(unittest.TestCase):
             guide.choose_menu, guide.run_mode, guide.pause_after_mode = (
                 real_choose, real_run, real_pause)
         self.assertEqual(paused, [1, 1])
+
+    def test_the_read_mode_does_not_pause_because_reading_decides_itself(self):
+        """`reading`이 페이저 사용 여부를 보고 더 정확하게 판단한다 (이슈 #95).
+
+        여기서 또 멈추면 그 판단이 무의미해지고, 챕터 하나 읽고 나갈 때 Enter
+        프롬프트를 두 번 통과해야 한다.
+        """
+        keys = [m.key for m in guide.MODES]
+        real_choose, real_run, real_pause = (
+            guide.choose_menu, guide.run_mode, guide.pause_after_mode)
+        seq = iter([keys.index("read"), None])
+        paused = []
+        guide.choose_menu = lambda labels: next(seq)
+        guide.run_mode = lambda mode: False
+        guide.pause_after_mode = lambda: paused.append(1)
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                guide.main([])
+        finally:
+            guide.choose_menu, guide.run_mode, guide.pause_after_mode = (
+                real_choose, real_run, real_pause)
+        self.assertEqual(paused, [])
+
+    def test_a_mode_that_printed_pauses_even_if_it_does_not_normally(self):
+        """`run_mode`가 사유를 찍었다면 `pause` 값과 무관하게 멈춰야 한다.
+
+        `read` 모드도 여기 해당한다 — `reading.main`이 `exam.main`의
+        `SystemExit`을 그대로 흘려보낸다.
+        """
+        keys = [m.key for m in guide.MODES]
+        real_choose, real_run, real_pause = (
+            guide.choose_menu, guide.run_mode, guide.pause_after_mode)
+        seq = iter([keys.index("read"), None])
+        paused = []
+        guide.choose_menu = lambda labels: next(seq)
+        guide.run_mode = lambda mode: True       # 뭔가 찍었다
+        guide.pause_after_mode = lambda: paused.append(1)
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                guide.main([])
+        finally:
+            guide.choose_menu, guide.run_mode, guide.pause_after_mode = (
+                real_choose, real_run, real_pause)
+        self.assertEqual(paused, [1])
 
 
 class MainLoopTest(unittest.TestCase):
@@ -344,3 +425,49 @@ class ReadingModeWiringTest(unittest.TestCase):
     def test_its_scale_counts_chapters(self):
         mode = next(m for m in guide.MODES if m.key == "read")
         self.assertIn("챕터", mode.scale())
+
+
+class GlobalQuitTest(unittest.TestCase):
+    """이슈 #95 — 어느 화면에서든 `Q` 한 타로 앱이 끝나야 한다.
+
+    `run_mode`는 `QuitApp`을 **잡지 않는다**. 지금도 `SystemExit`·
+    `KeyboardInterrupt`만 잡으므로 그대로 통과하는데, 나중에
+    `except Exception`으로 넓히는 사람을 막으려면 그 계약을 테스트로 못 박아야
+    한다.
+    """
+
+    def test_run_mode_does_not_swallow_a_quit(self):
+        def boom():
+            raise tui.QuitApp
+        mode = guide.Mode("t", "테스트", lambda: "0개", boom, False)
+        with self.assertRaises(tui.QuitApp):
+            with contextlib.redirect_stdout(io.StringIO()):
+                guide.run_mode(mode)
+
+    def test_main_ends_cleanly_when_a_mode_quits(self):
+        real_choose, real_run = guide.choose_menu, guide.run_mode
+
+        def boom(mode):
+            raise tui.QuitApp
+
+        guide.choose_menu = lambda labels: 0
+        guide.run_mode = boom
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(guide.main([]), 0)
+        finally:
+            guide.choose_menu, guide.run_mode = real_choose, real_run
+
+    def test_main_ends_cleanly_when_the_menu_quits(self):
+        """최상위 메뉴에서 `Q`를 눌러도 같은 경로로 끝나야 한다."""
+        real_choose = guide.choose_menu
+
+        def boom(labels):
+            raise tui.QuitApp
+
+        guide.choose_menu = boom
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(guide.main([]), 0)
+        finally:
+            guide.choose_menu = real_choose

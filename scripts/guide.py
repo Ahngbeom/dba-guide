@@ -22,13 +22,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import exam  # noqa: E402
 import shooting  # noqa: E402
 import reading  # noqa: E402
-from tui import cwidth, pause_after_output, pick, pick_line  # noqa: E402
+from tui import (QuitApp, cwidth, pause_after_output, pick,  # noqa: E402
+                 pick_line)
 
 # key   프로그램 안에서 쓰는 짧은 이름
 # title 메뉴에 보이는 이름
 # scale "216문항"처럼 규모를 한마디로 (개인 기록은 읽지 않는다 — 얇게 유지)
 # run   고르면 부를 것. 인자 없이 대화형으로 시작한다
-Mode = namedtuple("Mode", "key title scale run")
+# pause 모드가 끝난 뒤 런처가 멈춰야 하는가. `read`만 False다 — `reading`이
+#       페이저 사용 여부를 보고 스스로 더 정확하게 판단하므로, 여기서 또 멈추면
+#       챕터 하나 읽고 나갈 때 Enter 프롬프트를 두 번 통과하게 된다(이슈 #95).
+Mode = namedtuple("Mode", "key title scale run pause")
 
 
 def exam_scale():
@@ -53,9 +57,12 @@ def shoot_scale():
 # 순서가 곧 학습 순서다 — 읽기 → 확인 → 겪기. 처음 온 사람에게 첫 줄은
 # 권하는 출발점이므로, 아직 아무것도 읽지 않은 사람을 퀴즈로 먼저 보내지 않는다.
 MODES = (
-    Mode("read", "챕터 읽기", reading.read_scale, lambda: reading.main([])),
-    Mode("exam", "학습 점검 (퀴즈/시험)", exam_scale, lambda: exam.main([])),
-    Mode("shoot", "장애 대응 (실전 훈련)", shoot_scale, lambda: shooting.main([])),
+    Mode("read", "챕터 읽기", reading.read_scale,
+         lambda: reading.main([]), False),
+    Mode("exam", "학습 점검 (퀴즈/시험)", exam_scale,
+         lambda: exam.main([]), True),
+    Mode("shoot", "장애 대응 (실전 훈련)", shoot_scale,
+         lambda: shooting.main([]), True),
 )
 
 
@@ -72,7 +79,7 @@ def menu_labels():
 
 
 def run_mode(mode):
-    """모드를 돌리고 **반드시** 메뉴로 돌아온다.
+    """모드를 돌리고 **반드시** 메뉴로 돌아온다 → 평문 메시지를 찍었는가.
 
     `main()`들은 끝나는 방식이 다르다. `exam.main`은 SystemExit을 여러 곳에서
     올리고(대상 없음·출제할 문항 없음·문제은행 없음 …), `shooting.main`은
@@ -83,7 +90,13 @@ def run_mode(mode):
     이유다. 잡지 않으면 모드 하나가 끝나는 것이 런처를 통째로 죽인다.
 
     **그 둘만 잡는다.** 예상 못 한 예외까지 삼키면 트레이스백이 사라져 버그를
-    고칠 수 없게 된다.
+    고칠 수 없게 된다. `tui.QuitApp`(전역 종료)도 여기서 잡지 않고 위로
+    흘려보내는 것이 **의도**다 — `main`이 잡아 프로그램을 끝낸다. `QuitApp`은
+    `BaseException` 하위라 `except Exception`으로 넓혀도 걸리지 않지만, 애초에
+    넓히지 않는다.
+
+    반환값은 화면에 평문을 남겼는지다. `main`이 이 값으로 멈출지 정한다 —
+    아무것도 안 찍혔는데 멈추면 뜻 없는 Enter를 요구하게 된다(이슈 #95).
     """
     try:
         mode.run()
@@ -94,8 +107,11 @@ def run_mode(mode):
         if e.code not in (None, 0):
             print(e.code if isinstance(e.code, str)
                   else f"모드가 코드 {e.code} 로 끝났습니다.")
+            return True
     except KeyboardInterrupt:
         print("\n중단했습니다.")
+        return True
+    return False
 
 
 def pause_after_mode():
@@ -132,18 +148,28 @@ def main(argv=None):
     모드 안의 '종료'는 그 모드만 끝낸다 — 여러 모드를 오갈 수 있어야 하므로
     끝내는 자리를 한 곳으로 모은다. 같은 이유로 모드의 종료 코드는 전파하지
     않는다: 여러 번 돌 수 있어 대표할 코드가 없다.
+
+    **예외는 `Q`(전역 종료)뿐이다.** 화면 스택이 곧 호출 스택이라 바닥에서
+    한 층씩 되짚어 나오는 것이 유일한 길이었고, 챕터 목록에서 나가려면 Esc를
+    네 번 누르고 중간에 Enter 프롬프트까지 통과해야 했다(이슈 #95). `tui.pick`이
+    올리는 `QuitApp`은 중간 루프를 그대로 통과해 여기서 끝난다.
     """
     argparse.ArgumentParser(
         prog="guide",
         description="DBA 학습 가이드 — 챕터 읽기·학습 점검·장애 대응을 한 자리에서"
     ).parse_args(argv)
 
-    while True:
-        idx = choose_menu(menu_labels())
-        if idx is None:
-            return 0
-        run_mode(MODES[idx])
-        pause_after_mode()
+    try:
+        while True:
+            idx = choose_menu(menu_labels())
+            if idx is None:
+                return 0
+            mode = MODES[idx]
+            # 모드가 사유를 찍었다면 `pause` 값과 무관하게 멈춰야 한다.
+            if run_mode(mode) or mode.pause:
+                pause_after_mode()
+    except QuitApp:
+        return 0
 
 
 if __name__ == "__main__":
