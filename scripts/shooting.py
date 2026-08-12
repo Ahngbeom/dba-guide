@@ -3143,11 +3143,17 @@ def _pick_world_then_stage(stdscr, curses, groups, best, heading, can_go_up):
 
     `can_go_up`은 안내 문구만 바꾼다 — DBMS 단계가 없을 때 "DBMS 선택으로"라고
     적으면 있지도 않은 화면을 가리키게 된다.
+
+    `can_go_up=False`일 때도 `Q 종료`는 덧붙인다. 이 화면의 `Esc`/`q`와 `Q`는
+    **다른 결과를 낸다** — `./guide` 아래에서 `Esc`/`q`는 이 모드를 나가
+    가이드 메뉴로 돌아갈 뿐이고, `Q`(대문자)만 `tui.QuitApp`을 올려 앱 전체를
+    끝낸다(독립 실행한 `./shoot`에서는 결과가 같아 보이지만, 그건 `./shoot`
+    자체가 프로그램의 꼭대기이기 때문이다). 전에는 "Esc/q가 이미 종료를
+    뜻하니 덧붙이지 않는다"는 규칙으로 여기서 뺐었는데, 그건 Esc/q가 정말로
+    앱을 끝내는 화면에만 맞는 규칙이었다 — 여기서는 그렇지 않다.
     """
-    back = "DBMS 선택으로" if can_go_up else "종료"
-    # Esc/q가 이미 '종료'를 뜻하는 경우에는 `Q 종료`를 덧붙이지 않는다 — 같은
-    # 결과를 두 번 적으면 읽는 사람이 차이를 찾느라 멈춘다.
-    quit_hint = "   Q 종료" if can_go_up else ""
+    back = "DBMS 선택으로" if can_go_up else "나가기"
+    quit_hint = "   Q 종료"
     while True:
         w_idx = pick(
             stdscr, curses, heading,
@@ -3188,7 +3194,12 @@ def _choose_in_worlds_curses(dbms_groups, best):
                 d_idx = pick(
                     stdscr, curses, "어느 DBMS로 할까요",
                     [dbms_menu_label(d, e, best) for d, e in dbms_groups],
-                    footer=" ↑↓ 또는 숫자 선택   Enter 들어가기   Esc/q 종료 ")
+                    # `Esc/q`는 이 모드를 나가 가이드 메뉴로 돌아갈 뿐이고,
+                    # `Q`만 앱 전체를 끝낸다 — `_pick_world_then_stage`의
+                    # `can_go_up=False` 분기와 같은 이유로 `나가기`/`종료`를
+                    # 구분해 둘 다 적는다.
+                    footer=" ↑↓ 또는 숫자 선택   Enter 들어가기   "
+                           "Esc/q 나가기   Q 종료 ")
                 if d_idx is None:
                     return None
                 dbms, entries = dbms_groups[d_idx]

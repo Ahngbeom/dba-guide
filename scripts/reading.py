@@ -116,6 +116,9 @@ def choose(title, labels, actions=""):
     import curses
 
     # 동작 키가 있는 화면은 Enter의 뜻도 달라진다 — '선택'이 아니라 '읽기'다.
+    # "시험"이라는 낱말을 `actions` 글자에 그대로 붙여 문구를 만든다 — 여러
+    # 동작 키를 넣지 않기로 한 결정(YAGNI) 위에서만 성립하는 결합이다.
+    # `actions="xy"` 를 넘기면 이 줄이 "xy 시험"이라고 읽는다.
     verb = f"Enter 읽기   {actions} 시험" if actions else "Enter 선택"
 
     def _driver(stdscr):

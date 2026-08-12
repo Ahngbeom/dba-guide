@@ -1917,14 +1917,67 @@ class GlobalQuitTest(unittest.TestCase):
         self.assertIn("월드 선택으로", stage_footer)
         self.assertIn("Q 종료", stage_footer)
 
-    def test_the_world_picker_does_not_repeat_itself_when_back_is_quit(self):
-        """`Esc/q`가 이미 '종료'면 `Q 종료`를 덧붙이지 않는다.
+    def test_the_world_picker_advertises_quit_even_when_esc_only_exits_the_mode(self):
+        """`can_go_up=False`(단일 DBMS)일 때도 `Q 종료`를 덧붙인다.
 
-        같은 결과를 두 번 적으면 읽는 사람이 차이를 찾느라 멈춘다.
+        `./guide` 아래에서는 이 화면의 `Esc`/`q`가 앱을 끝내지 않는다 — 이
+        모드를 나가 가이드 메뉴로 돌아갈 뿐이다. `Q`(대문자)만 앱 전체를
+        끝내므로 두 키가 다른 결과를 낸다 — 둘 다 안내해야 하고, 같은
+        낱말이면 안 된다(`나가기` != `종료`).
         """
         world_footer, _ = self._footers(can_go_up=False)
-        self.assertIn("Esc/q 종료", world_footer)
-        self.assertNotIn("Q 종료", world_footer.replace("Esc/q 종료", ""))
+        self.assertIn("Esc/q 나가기", world_footer)
+        self.assertIn("Q 종료", world_footer)
+        self.assertNotIn("Esc/q 종료", world_footer)
+
+    def _dbms_picker_footer(self):
+        """`_choose_in_worlds_curses`가 DBMS 선택 화면에 넘긴 footer.
+
+        `_pick_world_then_stage`와 달리 이 화면은 `curses.wrapper(...)` 안에
+        있어 `stdscr`·`curses`를 인자로 받지 않는다 — `reading.py`의
+        `ReadingQuitKeyTest`가 하듯 `sys.modules["curses"]`를 대역으로
+        바꿔 끼워야 한다. `_init_screen`도 함께 대역으로 바꾼다 — 진짜
+        `curses.start_color` 등을 흉내 낼 필요 없이 footer 문구만 보면
+        된다.
+        """
+        footers = []
+        real_pick = shooting.pick
+        real_init = shooting._init_screen
+        real_curses = sys.modules.get("curses")
+
+        def fake_pick(_stdscr, _curses, _title, _labels, footer=None, **_kw):
+            footers.append(footer)
+            return None            # Esc/q 취급 — 한 바퀴만 돌고 끝난다
+
+        fake_curses = types.SimpleNamespace(wrapper=lambda driver: driver(object()))
+
+        shooting.pick = fake_pick
+        shooting._init_screen = lambda _curses: None
+        sys.modules["curses"] = fake_curses
+        try:
+            dbms_groups = [
+                ("postgresql", [(Path("a.json"), {"id": "a"})]),
+                ("mysql", [(Path("b.json"), {"id": "b"})]),
+            ]
+            self.assertIsNone(shooting._choose_in_worlds_curses(dbms_groups, {}))
+        finally:
+            shooting.pick = real_pick
+            shooting._init_screen = real_init
+            if real_curses is None:
+                del sys.modules["curses"]
+            else:
+                sys.modules["curses"] = real_curses
+        return footers[0]
+
+    def test_the_dbms_picker_advertises_both_quit_meanings(self):
+        """DBMS 선택 화면도 `./guide` 아래에서는 `Esc`/`q`가 가이드 메뉴로
+        돌아갈 뿐이고 `Q`만 앱 전체를 끝낸다 — 이전에는 `Esc/q 종료`만 적혀
+        `Q`가 안내 없이 숨어 있었다.
+        """
+        footer = self._dbms_picker_footer()
+        self.assertIn("Esc/q 나가기", footer)
+        self.assertIn("Q 종료", footer)
+        self.assertNotIn("Esc/q 종료", footer)
 
     def test_running_it_standalone_survives_a_quit(self):
         """`__main__` 가드가 없으면 `Q` 한 번에 트레이스백이 뜬다.
