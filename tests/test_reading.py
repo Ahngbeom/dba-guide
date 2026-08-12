@@ -172,6 +172,55 @@ class ExamOfferTest(unittest.TestCase):
                                                 ask=eof))
 
 
+class ChapterLabelTest(unittest.TestCase):
+    """목록만 보고 어느 챕터에 시험이 있고 지난 기록이 어떤지 알 수 있어야 한다.
+
+    조용한 쪽이 기본이다. 은행이 있는 챕터가 23개로 다수라 거기 전부
+    `[시험 있음]`을 붙이면 그게 잡음이 된다 — 소수인 '없음'과 실제 기록만
+    표시한다.
+    """
+
+    WITH_BANK = "02-intermediate/01-transaction-and-locking.md"
+    NO_BANK = "01-beginner/00-overview.md"
+
+    def setUp(self):
+        # 고정값이 틀리면 아래 단언들이 엉뚱한 것을 증명한다.
+        self.assertIsNotNone(reading.exam.exam_bank_for(self.WITH_BANK),
+                             f"{self.WITH_BANK} 에 은행이 없다")
+        self.assertIsNone(reading.exam.exam_bank_for(self.NO_BANK),
+                          f"{self.NO_BANK} 에 은행이 생겼다")
+
+    def test_a_chapter_without_a_bank_says_so(self):
+        self.assertEqual(reading.chapter_labels([self.NO_BANK], []),
+                         ["00-overview.md   [시험 없음]"])
+
+    def test_a_banked_chapter_with_no_record_stays_quiet(self):
+        self.assertEqual(reading.chapter_labels([self.WITH_BANK], []),
+                         ["01-transaction-and-locking.md"])
+
+    def test_a_record_is_appended_in_the_exam_modules_wording(self):
+        """같은 정보가 두 화면에서 다르게 보이면 안 된다.
+
+        `exam._chapter_labels`가 쓰는 서식 그대로다.
+        """
+        records = [{"chapter": self.WITH_BANK, "auto_total": 10,
+                    "score": 0.92, "grade": "A"}]
+        self.assertEqual(
+            reading.chapter_labels([self.WITH_BANK], records),
+            ["01-transaction-and-locking.md   [지난 최고 A·92%]"])
+
+    def test_a_record_for_another_chapter_does_not_leak(self):
+        records = [{"chapter": "01-beginner/99-없는챕터.md", "auto_total": 10,
+                    "score": 0.92, "grade": "A"}]
+        self.assertEqual(reading.chapter_labels([self.WITH_BANK], records),
+                         ["01-transaction-and-locking.md"])
+
+    def test_it_keeps_the_given_order(self):
+        got = reading.chapter_labels([self.NO_BANK, self.WITH_BANK], [])
+        self.assertEqual(got[0], "00-overview.md   [시험 없음]")
+        self.assertEqual(got[1], "01-transaction-and-locking.md")
+
+
 class ReadChapterTest(unittest.TestCase):
     """본문은 렌더를 거쳐 `$PAGER` 로 간다 — curses 안에 뷰어를 만들지 않는다."""
 

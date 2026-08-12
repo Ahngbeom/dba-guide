@@ -36,6 +36,35 @@ def discover_chapters(tier):
     return sorted(f"{tier}/{p.name}" for p in (REPO_ROOT / tier).glob("*.md"))
 
 
+def chapter_labels(chapters, records):
+    """챕터 목록에 붙일 라벨 — 파일명 + 시험 상태 접미.
+
+    조용한 쪽이 기본이다. 은행이 있는 챕터가 다수(23/31)라 거기 전부
+    `[시험 있음]`을 붙이면 그게 잡음이 된다 — 소수인 '없음'과 실제 기록만
+    표시한다.
+
+    `exam.best_result_for` 에 챕터 상대경로를 **그대로** 넘긴다. 은행 JSON의
+    `chapter` 필드가 그 경로와 같아서(실측 23/23) 파일을 열 이유가 없다.
+    `exam._chapter_labels` 가 `_bank_meta` 로 파일을 여는 것은 그쪽이 **은행
+    경로**에서 출발하기 때문이고, 읽기 모드는 **챕터 경로**에서 출발한다.
+
+    문구·서식은 `exam._chapter_labels` 의 것을 그대로 쓴다 — 같은 정보가 두
+    화면에서 다르게 보이면 안 된다.
+    """
+    labels = []
+    for rel in chapters:
+        name = Path(rel).name
+        if not exam.exam_bank_for(rel):
+            labels.append(f"{name}   [시험 없음]")
+            continue
+        best = exam.best_result_for(rel, records)
+        if best:
+            name += (f"   [지난 최고 {best['grade']}"
+                     f"·{best['score'] * 100:.0f}%]")
+        labels.append(name)
+    return labels
+
+
 def chapter_count():
     return sum(len(discover_chapters(t)) for t in TIERS)
 
