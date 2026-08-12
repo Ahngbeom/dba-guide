@@ -202,6 +202,10 @@ _MARKERS = ("•", "◦", "-")
 # 40)에서도 안 접히면서 구분선 구실을 하는 길이다.
 _RULE_WIDTH = 24
 
+# 코드 펜스 본문 들여쓰기. 챕터의 리스트 들여쓰기는 2·3칸 대역이라 겹치지 않고,
+# 마크다운의 indented code block 관습과 맞는다.
+_FENCE_INDENT = "    "
+
 
 def _blank(out):
     """직전 줄이 이미 비어 있지 않을 때만 빈 줄을 넣는다."""
@@ -420,31 +424,36 @@ def _emit_paragraph(line, width, color, out):
 
 
 def _emit_fence(lines, i, width, color, out):
-    """` ```lang ` 블록을 테두리 상자로 낸다 → 다음에 볼 줄 번호.
+    """` ```lang ` 블록을 들여쓴 덩어리로 낸다 → 다음에 볼 줄 번호.
 
-    상자 안에서는 마크업을 **전혀** 해석하지 않는다. SQL 주석 `--`, bash 의
+    블록 안에서는 마크업을 **전혀** 해석하지 않는다. SQL 주석 `--`, bash 의
     `## `, C 의 `**ptr` 이 그대로 들어 있다 — `filter_dbms.filter_lines` 가
     `in_fence` 를 추적하는 것과 같은 이유다.
 
-    긴 코드 줄은 폭 단위로 자른다. 단어 단위로 접으면 보기에는 낫지만 `│`
-    거터가 어긋나고, 자르지 않으면 `less` 가 접으면서 거터가 무너진다.
+    **테두리 상자와 `│ ` 거터를 쓰지 않는다.** 예전에는 상자를 그리고 폭을
+    넘는 줄을 `fit` 으로 강제 개행했는데, 둘 다 같은 곳에서 무너졌다. 거터는
+    `less` 가 접는 순간 이어지는 줄에 다시 찍히지 않아 코드가 블록 밖처럼
+    보이고, 강제 개행은 원문을 토큰 중간에서 끊어(실측 코드 줄 1,867개 중
+    80칸 6%, 60칸 25%, 40칸 49%) 화면에서 복사한 명령이 실행되지 않게 만든다.
+    들여쓰기와 색으로 구분하면 둘 다 사라진다.
+
+    그래서 **코드 줄은 이 모듈에서 유일하게 `width` 를 넘을 수 있다.** 접는
+    일은 `less` 에 맡긴다. 언어 태그가 없으면 라벨 줄도 내지 않는다 — 뜻 없는
+    라벨을 지어내는 쪽이 더 나쁘다(실측상 저장소의 펜스 259개는 전부 태그가
+    있어 이 경로는 새 챕터를 위한 방어다).
     """
     lang = _FENCE_RE.match(lines[i]).group(1)
     i += 1
-    head = fit(f"┌─ {lang} ", width) if lang else "┌"
-    out.append(paint([(head + "─" * max(0, width - cwidth(head)), "dim")],
-                     color))
+    _blank(out)
+    if lang:
+        out.append(paint([(fit(lang, width), "dim")], color))
     while i < len(lines) and not _FENCE_RE.match(lines[i]):
         body = lines[i].rstrip()
-        # 폭 - 2 = `│ ` 만큼 뺀 나머지. 빈 줄도 거터는 남긴다.
-        while True:
-            part = fit(body, width - 2)
-            out.append(paint([("│ ", "dim"), (part, "fence")], color))
-            body = body[len(part):]
-            if not body:
-                break
+        # 빈 줄에 들여쓰기만 남기지 않는다 — 복사하면 공백이 딸려 온다.
+        out.append(paint([(_FENCE_INDENT + body, "fence")], color)
+                   if body else "")
         i += 1
-    out.append(paint([("└" + "─" * (width - 1), "dim")], color))
+    _blank(out)
     # 닫는 펜스가 없으면(파일 끝) i 는 이미 끝이다 — 한 칸 더 넘겨도 안전하다.
     return i + 1
 
