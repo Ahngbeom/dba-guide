@@ -44,8 +44,8 @@ NOTES_DIR = PROGRESS_DIR / "notes"                # 포스트모템 노트(비�
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from tui import (  # noqa: E402
-    bar, cwidth, is_affirmative, is_backspace, is_enter, is_idle, key_char,
-    page_text, pick, pick_line, put, read_key, wrap,
+    QuitApp, bar, cwidth, is_affirmative, is_backspace, is_enter, is_idle,
+    key_char, page_text, pick, pick_line, put, read_key, wrap,
 )
 from exam import (  # noqa: E402
     exam_bank_for, grade_mcq, grade_short, shuffle_choices,
@@ -2502,6 +2502,9 @@ def _pick_client_target(stdscr, curses, stage):
 
     서버가 하나뿐인 스테이지에서는 화면을 띄우지 않고 바로 돌려준다 — 선택지가
     하나인 질문은 물어볼 이유가 없다.
+
+    **`Q`(전역 종료)를 막는다.** 여기는 게임이 도는 중이라, 앱이 끊기면
+    `dbshoot-primary`/`dbshoot-replica` 컨테이너가 뜬 채로 남는다.
     """
     targets = client_targets(stage)
     if len(targets) == 1:
@@ -2509,7 +2512,8 @@ def _pick_client_target(stdscr, curses, stage):
 
     idx = pick(stdscr, curses, "어느 서버에 접속할까요",
                [f"{t}  ({PLAYER_HOST}:{PLAYER_PORTS[t]})" for t in targets],
-               footer=" ↑↓ 또는 숫자 선택   Enter 접속   Esc/q 취소 ")
+               footer=" ↑↓ 또는 숫자 선택   Enter 접속   Esc/q 취소 ",
+               allow_quit=False)
     return None if idx is None else targets[idx]
 
 
@@ -3141,11 +3145,14 @@ def _pick_world_then_stage(stdscr, curses, groups, best, heading, can_go_up):
     적으면 있지도 않은 화면을 가리키게 된다.
     """
     back = "DBMS 선택으로" if can_go_up else "종료"
+    # Esc/q가 이미 '종료'를 뜻하는 경우에는 `Q 종료`를 덧붙이지 않는다 — 같은
+    # 결과를 두 번 적으면 읽는 사람이 차이를 찾느라 멈춘다.
+    quit_hint = "   Q 종료" if can_go_up else ""
     while True:
         w_idx = pick(
             stdscr, curses, heading,
             [world_menu_label(w, items, best) for w, items in groups],
-            footer=f" ↑↓ 또는 숫자 선택   Enter 들어가기   Esc/q {back} ")
+            footer=f" ↑↓ 또는 숫자 선택   Enter 들어가기   Esc/q {back}{quit_hint} ")
         if w_idx is None:
             return None
         world, items = groups[w_idx]
@@ -3153,7 +3160,7 @@ def _pick_world_then_stage(stdscr, curses, groups, best, heading, can_go_up):
             stdscr, curses,
             f"월드 {world} · {WORLD_TITLES.get(world, '미분류')}",
             [stage_menu_label(p, st, best) for p, st in items],
-            footer=" ↑↓ 또는 숫자 선택   Enter 시작   Esc/q 월드 선택으로 ")
+            footer=" ↑↓ 또는 숫자 선택   Enter 시작   Esc/q 월드 선택으로   Q 종료 ")
         if s_idx is not None:
             return items[s_idx][0]
         # 스테이지 선택에서 나가면 월드 선택으로 되돌아간다.
@@ -3427,6 +3434,9 @@ def main(argv=None):
 if __name__ == "__main__":
     try:
         sys.exit(main())
+    except QuitApp:
+        # 선택 화면의 `Q`. `./shoot`를 직접 띄우면 `guide.main`의 그물이 없다.
+        sys.exit(0)
     except KeyboardInterrupt:
         print("\n중단했습니다.")
         sys.exit(130)
