@@ -454,6 +454,9 @@ class PageTextCharacterizationTest(unittest.TestCase):
     `page_text` 에는 테스트가 하나도 없었다. 테스트 없이 옮기면 전체 스위트가
     통과해도 이 함수에 대해서는 아무것도 증명하지 못한다.
     (`shooting.py` 에서 옮겨 온 뒤에도 같은 동작이어야 한다.)
+
+    v1.3.x 부터 `(returncode, printed_inline)` 튜플을 돌려준다 — 호출부가
+    `pause_after_output()` 을 부를지 정하는 데 두 번째 값을 쓴다(이슈 #95).
     """
 
     def setUp(self):
@@ -490,20 +493,22 @@ class PageTextCharacterizationTest(unittest.TestCase):
             "cmd", a[0]) and None or FakeProc()
         try:
             with self._env(pager="less -R"):
-                rc = self.mod.page_text("본문")
+                rc, printed = self.mod.page_text("본문")
         finally:
             self.mod.subprocess.Popen = real
         self.assertEqual(seen["cmd"], ["less", "-R"])
         self.assertEqual(seen["text"], "본문")
         self.assertEqual(rc, 7)
+        self.assertFalse(printed, "페이저가 삼켰는데 평문으로 찍었다고 보고했다")
 
     def test_prints_plainly_when_there_is_no_pager(self):
         buf = io.StringIO()
         with self._env(pager=None, which=None):
             with contextlib.redirect_stdout(buf):
-                rc = self.mod.page_text("본문")
+                rc, printed = self.mod.page_text("본문")
         self.assertEqual(buf.getvalue().strip(), "본문")
         self.assertEqual(rc, 0)
+        self.assertTrue(printed, "직접 찍어 놓고 아니라고 보고했다")
 
     def test_a_failing_pager_falls_back_to_printing(self):
         real = self.mod.subprocess.Popen
@@ -516,11 +521,12 @@ class PageTextCharacterizationTest(unittest.TestCase):
         try:
             with self._env(pager="없는페이저"):
                 with contextlib.redirect_stdout(buf):
-                    rc = self.mod.page_text("본문")
+                    rc, printed = self.mod.page_text("본문")
         finally:
             self.mod.subprocess.Popen = real
         self.assertEqual(buf.getvalue().strip(), "본문")
         self.assertEqual(rc, 0)
+        self.assertTrue(printed, "폴백으로 직접 찍어 놓고 아니라고 보고했다")
 
 
 class PagerColorTest(unittest.TestCase):
