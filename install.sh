@@ -15,8 +15,17 @@ set -euo pipefail
 
 REPO_URL="${DBA_GUIDE_REPO_URL:-https://github.com/Ahngbeom/dba-guide.git}"
 INSTALL_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/dba-guide"
+# 상대 경로면 링크가 `~/.local/bin` 기준으로 풀려 런처 셋이 전부 죽는다.
+# 기록만 절대경로로 고치면 링크·보고·`is_our_link`가 서로 다른 표기를 본다.
+# 심볼릭 링크는 풀지 않는다 — 사용자가 지정한 표기를 지킨다.
+case "$INSTALL_DIR" in /*) ;; *) INSTALL_DIR="$PWD/$INSTALL_DIR" ;; esac
+# 변수를 주지 않았을 때 가게 될 자리. 안내가 무의미한지 판단하는 데 쓴다.
+DEFAULT_INSTALL_DIR="$HOME/.local/share/dba-guide"
 BIN_DIR="$HOME/.local/bin"
 LAUNCHERS="guide exam shoot"
+# 우리가 만든 설치본의 위치 기록. 링크가 아니라 이 파일이 근거다 — 링크는
+# "어디에 걸었는가"만 알 뿐 "그 대상을 우리가 만들었는가"를 모른다.
+STATE_FILE="${XDG_STATE_HOME:-$HOME/.local/state}/dba-guide/install-path"
 
 info() { printf '%s\n' "$@"; }
 die() { printf '%s\n' "$@" >&2; exit 1; }
@@ -37,6 +46,11 @@ usage() {
 
 환경 변수:
   XDG_DATA_HOME       설치 경로의 부모 (기본: ~/.local/share)
+                      주면 그 값이 이깁니다. 주지 않으면 **직접 내려받았던**
+                      위치를 기억해 그대로 씁니다. 이미 있던 디렉터리를
+                      지정하면 기록하지 않으니, 그때는 업데이트·제거에도
+                      함께 주세요.
+  XDG_STATE_HOME      설치 위치 기록의 부모 (기본: ~/.local/state)
   DBA_GUIDE_REPO_URL  클론 원본 (기본: GitHub)
 EOF
 }
@@ -150,6 +164,8 @@ report() {
 }
 
 install_managed() {
+  adopt_recorded_install
+
   # 디렉터리가 아닌 것(일반 파일·끊어진 링크)이 자리를 차지한 경우.
   # 그대로 두면 [ ! -d ] 가 참이라 클론 분기로 흘러 git이 영어 fatal 을
   # 뱉고 128로 죽는다. 같은 상황이니 같은 한국어 안내로 멈춘다.
@@ -165,6 +181,10 @@ install_managed() {
     mkdir -p "$(dirname "$INSTALL_DIR")"
     git clone --quiet "$REPO_URL" "$INSTALL_DIR"
     fresh="yes"
+    # 기록은 여기서 한다. 뒤로 미루면 그 사이에서 죽은 실행이 **우리가 만든**
+    # 트리를 영원히 기록 없이 남기고, 이후 실행은 그것을 "이미 있던 트리"로
+    # 보아 끝내 기록하지 않는다.
+    record_install "$INSTALL_DIR"
   elif ! is_our_install "$INSTALL_DIR"; then
     die "$INSTALL_DIR 이 이 학습서의 설치본이 아닙니다." \
         "  git 저장소가 아니거나, 다른 저장소가 그 자리에 있습니다." \
@@ -172,6 +192,20 @@ install_managed() {
         "  직접 확인하고 치운 뒤 다시 실행하세요."
   else
     git -C "$INSTALL_DIR" fetch --quiet --tags origin
+  fi
+
+  # 이미 있던 트리는 기록하지 않는다(`record_install`은 클론 직후에만 부른다).
+  # 그 사실을 말하지 않으면 사용자는 기억됐다고 믿고, 나중에 변수 없이 친
+  # `--uninstall`이 링크만 걷어가 설치본을 고아로 만든다. 기본 경로라면
+  # 변수를 줄 이유가 없으므로 알릴 것도 없다.
+  if [ "$fresh" = "no" ] && [ -n "${XDG_DATA_HOME:-}" ] \
+     && ! same_path "$INSTALL_DIR" "$DEFAULT_INSTALL_DIR" \
+     && ! record_names "$INSTALL_DIR"; then
+    info "참고: 이 위치는 기억하지 않습니다 — $INSTALL_DIR" \
+         "  이번 실행이 만든 트리가 아니라서입니다(이미 있던 것을 우리 것이라" \
+         "  주장하면 나중에 엉뚱한 곳을 지울 수 있습니다)." \
+         "  업데이트·제거 때도 XDG_DATA_HOME 을 함께 주세요." \
+         ""
   fi
 
   tag="$(latest_release_tag "$INSTALL_DIR")"
@@ -187,6 +221,7 @@ install_managed() {
     if [ "$fresh" = "no" ]; then
       info "이미 최신입니다 — $tag"
     fi
+    warn_if_another_install_is_linked
     link_launchers "$INSTALL_DIR"
     report "$INSTALL_DIR" "$tag"
     return 0
@@ -202,6 +237,7 @@ install_managed() {
   fi
 
   git -C "$INSTALL_DIR" checkout --quiet --detach "$tag"
+  warn_if_another_install_is_linked
   link_launchers "$INSTALL_DIR"
   report "$INSTALL_DIR" "$tag"
 }
@@ -257,8 +293,11 @@ uninstall() {
     if [ -d "$INSTALL_DIR" ]; then
       info "" \
            "저장소는 남겨 뒀습니다 — $INSTALL_DIR" \
-           "  학습 기록(시험 결과·정리 노트)이 그 안에 있습니다." \
-           "  전부 지우려면: install.sh --uninstall --purge"
+           "  학습 기록(시험 결과·정리 노트)이 그 안에 있습니다."
+      # 링크는 방금 지웠지만 위치 기록은 남겨 둔다 — 나중에 이 명령을
+      # 그대로 쳐도 진짜 설치본을 찾아간다. 기록까지 지우면 커스텀 경로에
+      # 설치한 사람은 단서를 잃고, `--purge`가 엉뚱한 트리를 본다.
+      info "  전부 지우려면: install.sh --uninstall --purge"
     else
       # in-place 설치였다면 이 경로는 만들어진 적이 없다. 없는 디렉터리를
       # 학습 기록이 있는 곳이라고 알리면 사용자가 엉뚱한 데를 찾는다.
@@ -281,6 +320,12 @@ uninstall() {
         "$INSTALL_DIR 이 이 학습서의 설치본이 아니라 지우지 않았습니다." \
         "  이 스크립트는 자기가 만들지 않은 디렉터리를 지우지 않습니다." \
         "  내용을 직접 확인하고 지우세요: rm -rf \"$INSTALL_DIR\""
+  fi
+
+  if [ -L "$INSTALL_DIR" ]; then
+    die "$INSTALL_DIR 이 심볼릭 링크입니다 — 지우면 링크만 사라지고" \
+        "  실제 트리와 학습 기록은 그대로 남습니다." \
+        "  실제 위치를 확인해 직접 지우세요: $(readlink "$INSTALL_DIR")"
   fi
 
   n_exam=0
@@ -310,9 +355,141 @@ uninstall() {
     return 0
   fi
   case "$answer" in
-    y|Y|yes|YES) rm -rf "$INSTALL_DIR"; info "삭제했습니다." ;;
+    y|Y|yes|YES)
+      # 지운 트리를 가리키던 기록만 지운다. 설치본이 둘일 때 남의 기록까지
+      # 지우면, 살아 있는 쪽이 위치를 잃어 다음 실행이 또 한 벌을 만든다.
+      # 판정은 **삭제 전에** 한다 — 사라진 디렉터리는 `pwd -P`로 정규화할 수
+      # 없어, 뒤에 비교하면 표기만 다른 같은 경로를 놓친다.
+      record_points_here="no"
+      if [ -f "$STATE_FILE" ] \
+         && same_path "$(cat "$STATE_FILE" 2>/dev/null || true)" "$INSTALL_DIR"; then
+        record_points_here="yes"
+      fi
+      rm -rf "$INSTALL_DIR"
+      if [ "$record_points_here" = "yes" ]; then
+        rm -f "$STATE_FILE"
+      fi
+      info "삭제했습니다." ;;
     *) info "취소했습니다." ;;
   esac
+}
+
+# 두 경로가 같은 곳을 가리키는가. 심볼릭 링크·끝 슬래시 때문에 문자열
+# 비교만으로는 어긋난다 — `is_repo_root`가 `pwd -P`로 정규화하는 것과 같은 이유다.
+same_path() {
+  sp_a="$1"
+  sp_b="$2"
+  # 풀 수 없는 두 값을 "같다"고 답하면 안 된다 — 빈 문자열 둘이 대표적이다.
+  [ -n "$sp_a" ] && [ -n "$sp_b" ] || return 1
+  if [ -d "$sp_a" ]; then sp_a="$(cd "$sp_a" && pwd -P)"; fi
+  if [ -d "$sp_b" ]; then sp_b="$(cd "$sp_b" && pwd -P)"; fi
+  [ "$sp_a" = "$sp_b" ]
+}
+
+# 기록이 없는데 런처 링크가 **다른 곳**의 유효한 설치본을 가리키는 경우.
+#
+# v1.3.0 이전에 커스텀 경로로 설치한 사람과, 자기 클론에 in-place 설치한
+# 기여자가 겉보기에 똑같은 상태를 만든다. 막지 않는다 — 둘 다 정상 흐름이다.
+# 대신 조용히 두 벌이 생기지 않도록 알린다.
+#
+# **작업 클론에 인스톨러를 겨누라고 안내하지 않는다.** 그 조언을 따르면
+# `fetch`·`checkout --detach`가 남의 브랜치를 태그로 떨어뜨리고, 그 경로가
+# 기록에 박혀 이후 `--purge`가 클론을 통째로 지운다. `XDG_DATA_HOME`을
+# 권하는 문장은 대상이 **우리가 만든 설치본임이 증명될 때만** 낸다.
+warn_if_another_install_is_linked() {
+  for name in $LAUNCHERS; do
+    link="$BIN_DIR/$name"
+    is_our_link "$link" "$name" || continue
+    other="$(dirname "$(readlink "$link")")"
+    is_our_install "$other" || continue
+    ! same_path "$other" "$INSTALL_DIR" || return 0
+    info "참고: 링크가 다른 곳을 가리키고 있습니다 — $other" \
+         "  이 실행은 $INSTALL_DIR 에 설치하고 런처 링크를 그쪽으로 옮깁니다." \
+         "  $other 는 건드리지 않습니다. 두 벌을 원치 않으면 직접 정리하세요." \
+         ""
+    return 0
+  done
+}
+
+# 기록이 이 경로를 지목하고 있는가.
+#
+# "기록 파일이 있는가"로 물으면 안 된다 — 기록은 첫 설치에서 생겨 `--purge`
+# 전까지 남으므로, 한 번이라도 설치를 마친 사람에게는 언제나 참이다. 정작
+# 알려야 할 자리는 그 사람이 **다른** 트리를 지정했을 때다.
+record_names() {
+  [ -f "$STATE_FILE" ] || return 1
+  same_path "$(cat "$STATE_FILE" 2>/dev/null || true)" "$1"
+}
+
+# 지난 설치 위치를 기록에서 읽어 `INSTALL_DIR`을 갈아끼운다.
+#
+# `INSTALL_DIR`은 매 실행마다 `XDG_DATA_HOME`으로 **계산될 뿐**이라 지난번에
+# 어디에 깔았는지 기억하지 못한다. 커스텀 경로로 설치한 뒤 그 값을 빠뜨리고
+# 다시 실행하면 기본 경로를 대상으로 삼아, 조용히 두 번째 설치본을 만들고
+# 링크를 그쪽으로 옮긴다 — 원래 설치본과 학습 기록은 고아가 된다.
+#
+# 계약은 **주면 그 값이 이기고, 주지 않으면 기억한다**. 기록이 명시 지정을
+# 이기면 설치를 옮길 방법이 사라진다 — 평범한 `--uninstall`은 기록을 남기므로
+# 재설치가 옛 경로로 끌려가고, 남는 탈출구는 `--purge`, 즉 백업 없는 학습
+# 기록을 지우는 것뿐이 된다. 다만 **조용히 무시하지는 않는다.**
+#
+# 판정은 `[ -n "${XDG_DATA_HOME:-}" ]`로 한다. `+x`를 쓰면 빈 문자열이 '명시'가
+# 되는데, `INSTALL_DIR` 계산은 `:-`라 빈 값을 기본 경로로 읽는다 — 두 판정이
+# 어긋나면 쉘 rc에 빈 값을 export한 사람이 기록을 통째로 잃는다.
+#
+# 기록은 신뢰 입력이므로 매번 `is_our_install`로 다시 확인한다.
+adopt_recorded_install() {
+  recorded=""
+  if [ -f "$STATE_FILE" ]; then
+    recorded="$(cat "$STATE_FILE" 2>/dev/null || true)"
+  fi
+
+  if [ -n "${XDG_DATA_HOME:-}" ]; then
+    if [ -n "$recorded" ] && ! same_path "$recorded" "$INSTALL_DIR" \
+       && is_our_install "$recorded"; then
+      info "XDG_DATA_HOME 이 지정돼 지난 설치 위치를 따르지 않습니다." \
+           "  지정한 곳: $INSTALL_DIR" \
+           "  지난 설치: $recorded" \
+           ""
+    fi
+    return 0
+  fi
+
+  [ -n "$recorded" ] || return 0
+  is_our_install "$recorded" || return 0
+  ! same_path "$recorded" "$INSTALL_DIR" || return 0
+
+  info "기존 설치본을 씁니다 — $recorded" \
+       "  계산된 기본 경로는 $INSTALL_DIR 이지만, 지난 설치 기록이 위를 가리킵니다." \
+       "  다른 곳에 설치하려면 XDG_DATA_HOME 으로 목적지를 지정하세요." \
+       ""
+  # 정의 시점의 절대경로 보장이 여기서도 유지돼야 한다 — 손으로 고친 기록이
+  # 상대 경로를 담고 있으면 링크가 `~/.local/bin` 기준으로 풀려 런처가 죽는다.
+  case "$recorded" in /*) ;; *) recorded="$PWD/$recorded" ;; esac
+  INSTALL_DIR="$recorded"
+}
+
+# 우리가 만든 설치본의 위치를 기록한다. in-place 설치는 부르지 않는다 —
+# 그 트리는 우리 것이 아니다.
+#
+# **부기가 설치를 실패시키면 안 된다.** `set -e` 아래에서 mkdir이나
+# 리다이렉트가 죽으면 클론·체크아웃·링크가 다 끝난 실행이 완료 안내도 없이
+# 1로 끝난다. 서브셸로 감싸 리다이렉트 실패의 영어 셸 오류까지 삼킨다 —
+# `printf … > f 2>/dev/null`은 리다이렉트가 먼저 평가돼 오류가 새어 나간다.
+record_install() {
+  # **이번 실행이 만든 트리만 기록한다.** 기록은 소유권 주장이고, 이미 있던
+  # 트리에 그 주장을 붙이면 한 번의 실수가 영구 조준점이 된다 — 자기 클론을
+  # 한 번 겨눈 사람은 이후 변수 없이도 매번 그 클론이 다시 detach 되고,
+  # 맨손으로 친 `--uninstall --purge`가 그것을 지운다. 우리가 만들지 않은
+  # 트리는 우리 것인지 알 방법이 없다(그 구분을 시도한 것이 이 브랜치의
+  # 지난 결함들이다). 그래서 주장하지 않는다.
+  if ! ( mkdir -p "$(dirname "$STATE_FILE")" \
+         && printf '%s\n' "$1" > "$STATE_FILE" ) 2>/dev/null; then
+    info "경고: 설치 위치를 기록하지 못했습니다 — $STATE_FILE" \
+         "      다음 실행에서 이 위치를 기억하지 못합니다." \
+         "      그때는 XDG_DATA_HOME 으로 직접 지정하세요." \
+         ""
+  fi
 }
 
 main() {
@@ -334,6 +511,7 @@ main() {
   fi
 
   if [ "$mode" = "uninstall" ]; then
+    adopt_recorded_install
     uninstall "$purge"
     exit 0
   fi

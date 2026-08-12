@@ -75,21 +75,32 @@ class InstallerTestCase(unittest.TestCase):
         git(self.origin, "add", "-A")
         git(self.origin, "commit", "--quiet", "-m", message)
 
-    def env(self):
+    def env(self, xdg="default"):
+        """실행 환경. `xdg`로 `XDG_DATA_HOME`을 갈아끼운다.
+
+        기본값은 임시 HOME 아래의 표준 경로다. 다른 경로를 주면 설치 위치가
+        따라 움직이고, `None`을 주면 변수 자체를 지운다 — 커스텀 경로로
+        설치한 뒤 그 값을 빠뜨리고 다시 실행하는 상황을 재현하기 위해서다.
+        """
         env = dict(os.environ)
         env["HOME"] = str(self.home)
-        env["XDG_DATA_HOME"] = str(self.home / ".local" / "share")
         env["DBA_GUIDE_REPO_URL"] = self.origin.as_uri()
+        if xdg == "default":
+            env["XDG_DATA_HOME"] = str(self.home / ".local" / "share")
+        elif xdg is None:
+            env.pop("XDG_DATA_HOME", None)
+        else:
+            env["XDG_DATA_HOME"] = str(xdg)
         return env
 
-    def run_installer(self, *args, stdin=""):
+    def run_installer(self, *args, stdin="", xdg="default"):
         return subprocess.run(
             ["bash", str(self.script), *args],
-            env=self.env(), cwd=str(self.tmp),
+            env=self.env(xdg), cwd=str(self.tmp),
             input=stdin, capture_output=True, text=True,
         )
 
-    def run_installer_on_a_tty(self, *args, answer=""):
+    def run_installer_on_a_tty(self, *args, answer="", xdg="default"):
         """진짜 tty를 stdin에 붙여 실행한다.
 
         `install.sh`의 확인 프롬프트는 `[ -t 0 ]` 뒤에 있어, 파이프로는
@@ -103,7 +114,7 @@ class InstallerTestCase(unittest.TestCase):
                 os.write(master, answer.encode())
             return subprocess.run(
                 ["bash", str(self.script), *args],
-                env=self.env(), cwd=str(self.tmp), stdin=slave,
+                env=self.env(xdg), cwd=str(self.tmp), stdin=slave,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
             )
         finally:
@@ -117,6 +128,11 @@ class InstallerTestCase(unittest.TestCase):
     @property
     def bin_dir(self):
         return self.home / ".local" / "bin"
+
+    @property
+    def state_file(self):
+        """우리가 만든 설치본의 위치 기록. in-place 설치는 남기지 않는다."""
+        return self.home / ".local" / "state" / "dba-guide" / "install-path"
 
     def head_tag(self):
         return git(self.install_dir, "describe", "--tags", "--exact-match").strip()
@@ -476,6 +492,14 @@ class UninstallTest(InstallerTestCase):
             self.assertFalse((self.bin_dir / name).is_symlink())
         self.assertTrue((self.install_dir / ".exam-results" / "results.jsonl").exists())
 
+    def test_a_plain_uninstall_points_at_the_purge_command(self):
+        """지우는 방법을 알려주되, 기록이 남아 그 명령이 그대로 통해야 한다."""
+        self._install_with_records()
+        r = self.run_installer("--uninstall")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("install.sh --uninstall --purge", r.stdout)
+        self.assertTrue(self.state_file.is_file())
+
     def test_uninstall_leaves_a_foreign_file_alone(self):
         self._install_with_records()
         (self.bin_dir / "exam").unlink()
@@ -595,3 +619,660 @@ class LinkedCommandTest(InstallerTestCase):
                            env=env, cwd=str(self.tmp), capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn("args=--dbms postgresql", r.stdout)
+
+
+class SelfLocatingTest(InstallerTestCase):
+    """설치 위치는 **기록**이 기억한다 — 링크가 아니다.
+
+    `INSTALL_DIR`는 매 실행마다 `XDG_DATA_HOME`으로 계산될 뿐이라, 커스텀
+    경로로 설치한 뒤 그 값을 빠뜨리면 스크립트가 지난 설치본을 못 찾는다.
+    실측된 결과는 조용한 두 번째 설치본과 그리로 옮겨간 링크였고, 원래
+    설치본과 학습 기록은 고아가 됐다.
+
+    근거를 링크로 삼으면 안 된다. 링크는 in-place 설치에서도 걸리는데 그
+    대상은 기여자의 작업 클론이라, 나중의 managed 실행이 그 클론을 설치본으로
+    오인해 HEAD를 태그로 떨어뜨린다(실측). `install_managed`만 남기는 기록이
+    유일하게 안전한 근거다. `InPlaceIsNeverAdoptedTest`가 그 경계를 지킨다.
+
+    픽스처는 태그 **뒤에** 커밋을 하나 둔다. 그래야 클론의 HEAD가 최신 태그와
+    달라 실제 설치가 타는 `checkout --detach` 분기를 지나간다 — 태그가 tip에
+    있으면 조기 반환 분기만 검사하게 되고, 진짜 설치 경로의 기록이 통째로
+    테스트 밖에 남는다.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.custom = self.tmp / "tools"
+        self.custom_install = self.custom / "dba-guide"
+        self.tag("v1.0.0")
+        self.commit("after the release")
+        r = self.run_installer(xdg=self.custom)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(self.custom_install.is_dir())
+
+    def test_rerunning_without_the_variable_reuses_the_existing_install(self):
+        r = self.run_installer(xdg=None)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse(self.install_dir.exists(),
+                         "기본 경로에 두 번째 설치본이 생겼다")
+        self.assertIn(str(self.custom_install), r.stdout)
+
+    def test_the_links_keep_pointing_at_the_original_install(self):
+        self.run_installer(xdg=None)
+        for name, _ in self.LAUNCHERS:
+            with self.subTest(launcher=name):
+                self.assertEqual(os.readlink(self.bin_dir / name),
+                                 str(self.custom_install / name))
+
+    def test_it_says_which_install_it_adopted(self):
+        """조용히 고르면 안 된다 — 계산된 기본 경로와 다르다는 사실을 알린다."""
+        r = self.run_installer(xdg=None)
+        self.assertIn("기존 설치본", r.stdout)
+
+    def test_uninstall_without_the_variable_reports_the_real_directory(self):
+        r = self.run_installer("--uninstall", xdg=None)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn(str(self.custom_install), r.stdout)
+        self.assertTrue(self.custom_install.is_dir())
+
+    def test_purge_without_the_variable_deletes_the_real_directory(self):
+        """가장 나쁜 경우 — 엉뚱한 트리를 지우고 진짜는 남기는 것."""
+        r = self.run_installer_on_a_tty("--uninstall", "--purge",
+                                        answer="y\n", xdg=None)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse(self.custom_install.exists())
+
+    def test_a_plain_uninstall_keeps_the_record_for_a_later_purge(self):
+        """링크를 지워도 위치 기록은 남아야 한다.
+
+        `--uninstall`은 런처 링크를 지운다. 위치를 링크에서만 알아냈다면 그
+        순간 단서가 사라져, 나중의 `--uninstall --purge`가 기본 경로를 보고
+        진짜 설치본과 학습 기록을 남긴 채 끝난다.
+        """
+        r = self.run_installer("--uninstall", xdg=None)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(self.state_file.is_file(), "기록이 지워졌다")
+        self.assertEqual(self.state_file.read_text().strip(),
+                         str(self.custom_install))
+
+    def test_purge_after_a_plain_uninstall_still_finds_the_real_tree(self):
+        self.run_installer("--uninstall", xdg=None)
+        self.assertTrue(self.custom_install.is_dir(), "아직 남아 있어야 한다")
+        r = self.run_installer_on_a_tty("--uninstall", "--purge",
+                                        answer="y\n", xdg=None)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse(self.custom_install.exists())
+        self.assertFalse(self.state_file.exists(), "지운 뒤에도 기록이 남았다")
+
+    def test_the_record_names_the_managed_install(self):
+        self.assertTrue(self.state_file.is_file())
+        self.assertEqual(self.state_file.read_text().strip(),
+                         str(self.custom_install))
+
+    def test_no_record_means_the_computed_path_is_used(self):
+        """기록이 없으면 예전대로 계산된 경로를 쓴다."""
+        self.state_file.unlink()
+        r = self.run_installer()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(self.install_dir.is_dir())
+
+    def test_deleting_the_links_relinks_the_recorded_install(self):
+        """링크만 날아간 경우는 수리해야 한다 — 두 번째 설치본을 만들지 않는다."""
+        for name, _ in self.LAUNCHERS:
+            (self.bin_dir / name).unlink()
+        r = self.run_installer(xdg=None)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse(self.install_dir.exists())
+        self.assertEqual(os.readlink(self.bin_dir / "guide"),
+                         str(self.custom_install / "guide"))
+
+
+class InPlaceIsNeverAdoptedTest(InstallerTestCase):
+    """기여자의 작업 클론을 설치본으로 오인하면 안 된다.
+
+    in-place 설치는 사용자의 클론에 링크만 건다. 그 뒤 managed 의도로
+    실행했을 때 그 클론을 설치본으로 채택하면, `fetch`·`checkout --detach`가
+    남의 저장소를 대상으로 돌아 **작업 브랜치가 릴리스 태그로 detached 되고
+    작업 파일이 워킹 트리에서 사라진다** — `install_inplace`가 지키기로 한
+    "HEAD를 옮기지 않는다"를 정면으로 깬다. `--purge`는 그 클론을 통째로
+    지운다. 그래서 위치 기록은 **우리가 만든 설치본에만** 남긴다.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.tag("v1.0.0")
+        self.work = self.tmp / "work"
+        subprocess.run(["git", "clone", "--quiet", self.origin.as_uri(), str(self.work)],
+                       check=True, capture_output=True, text=True)
+        shutil.copy2(INSTALL_SH, self.work / "install.sh")
+        git(self.work, "config", "user.email", "t@example.com")
+        git(self.work, "config", "user.name", "t")
+        git(self.work, "switch", "--quiet", "-c", "my-feature")
+        (self.work / "MY-WORK.md").write_text("작업 중\n", encoding="utf-8")
+        git(self.work, "add", "-A")
+        git(self.work, "commit", "--quiet", "-m", "my feature work")
+        # in-place 설치 — 링크가 작업 클론을 가리키게 된다.
+        r = subprocess.run(["bash", str(self.work / "install.sh")],
+                           env=self.env(), cwd=str(self.work),
+                           input="", capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(os.readlink(self.bin_dir / "guide"), str(self.work / "guide"))
+
+    def _head(self):
+        return git(self.work, "rev-parse", "--abbrev-ref", "HEAD").strip()
+
+    def test_in_place_leaves_no_record(self):
+        self.assertFalse(self.state_file.exists(),
+                         "in-place 설치가 위치 기록을 남겼다")
+
+    def test_a_later_managed_run_does_not_touch_the_clone(self):
+        before = git(self.work, "rev-parse", "HEAD").strip()
+        r = self.run_installer()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self._head(), "my-feature", "작업 브랜치가 detached 됐다")
+        self.assertEqual(git(self.work, "rev-parse", "HEAD").strip(), before)
+        self.assertTrue((self.work / "MY-WORK.md").is_file(), "작업 파일이 사라졌다")
+
+    def test_a_later_purge_does_not_delete_the_clone(self):
+        r = self.run_installer_on_a_tty("--uninstall", "--purge", answer="y\n")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(self.work.is_dir(), "사용자의 클론이 지워졌다")
+        self.assertTrue((self.work / "MY-WORK.md").is_file())
+
+
+class RecordIsNotBlindlyTrustedTest(InstallerTestCase):
+    """기록은 새로 생긴 **신뢰 입력**이다 — 낡거나 엉뚱하면 물러서야 한다."""
+
+    def setUp(self):
+        super().setUp()
+        self.tag("v1.0.0")
+        self.commit("after the release")
+        self.state_file.parent.mkdir(parents=True, exist_ok=True)
+
+    def _record(self, text):
+        self.state_file.write_text(text, encoding="utf-8")
+
+    def _install_lands_at_default(self):
+        r = self.run_installer(xdg=None)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(self.install_dir.is_dir())
+
+    def test_a_record_naming_a_deleted_path_is_ignored(self):
+        self._record(str(self.tmp / "gone" / "dba-guide"))
+        self._install_lands_at_default()
+
+    def test_a_record_naming_a_foreign_repository_is_ignored(self):
+        stranger = self.tmp / "stranger"
+        stranger.mkdir()
+        git(stranger, "init", "--quiet")
+        self._record(str(stranger))
+        self._install_lands_at_default()
+
+    def test_a_record_naming_a_plain_file_is_ignored(self):
+        f = self.tmp / "not-a-dir"
+        f.write_text("x\n")
+        self._record(str(f))
+        self._install_lands_at_default()
+
+    def test_a_zero_byte_record_is_ignored(self):
+        """`[ -n "$recorded" ]` 가드를 실제로 밟는 유일한 입력이다."""
+        self._record("")
+        self._install_lands_at_default()
+
+    def test_a_whitespace_record_is_ignored(self):
+        """공백은 비어 있지 않다 — 여기서 걸러내는 것은 is_our_install 이다."""
+        self._record("   \n")
+        self._install_lands_at_default()
+
+
+class ExplicitPathWinsTest(InstallerTestCase):
+    """목적지를 지정했으면 그대로 따른다.
+
+    기록이 명시적 지정을 이기면 이동할 방법이 없어진다 — 평범한
+    `--uninstall`은 기록을 남기므로 재설치가 옛 경로로 끌려가고, 남는
+    탈출구는 `--purge`, 즉 **백업 없는 학습 기록을 지우는 것**뿐이다.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.tag("v1.0.0")
+        self.commit("after the release")
+        self.first = self.tmp / "tools"
+        self.second = self.tmp / "elsewhere"
+        r = self.run_installer(xdg=self.first)
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_a_new_explicit_path_relocates_the_install(self):
+        r = self.run_installer(xdg=self.second)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue((self.second / "dba-guide").is_dir(), "지정한 곳에 설치되지 않았다")
+        self.assertEqual(os.readlink(self.bin_dir / "guide"),
+                         str(self.second / "dba-guide" / "guide"))
+        self.assertEqual(self.state_file.read_text().strip(),
+                         str(self.second / "dba-guide"))
+
+    def test_relocating_does_not_require_deleting_the_records(self):
+        """옛 설치본은 그대로 둔다 — 학습 기록은 사용자가 옮기거나 지운다."""
+        self.run_installer(xdg=self.second)
+        self.assertTrue((self.first / "dba-guide").is_dir())
+
+    def test_omitting_the_variable_still_follows_the_record(self):
+        r = self.run_installer(xdg=None)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse(self.install_dir.exists())
+
+
+class RecordingIsBookkeepingTest(InstallerTestCase):
+    """기록은 부기다 — 실패해도 설치를 죽이면 안 되고, 설치보다 늦으면 안 된다."""
+
+    def setUp(self):
+        super().setUp()
+        self.tag("v1.0.0")
+        self.commit("after the release")
+
+    def test_an_unwritable_record_does_not_fail_the_install(self):
+        # 기록 디렉터리 자리에 일반 파일을 둔다 — mkdir -p 가 실패한다.
+        state_root = self.home / ".local" / "state"
+        state_root.mkdir(parents=True)
+        (state_root / "dba-guide").write_text("in the way\n")
+        r = self.run_installer()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("설치 완료", r.stdout)
+
+    def test_a_link_conflict_still_leaves_the_install_recorded(self):
+        """링크 단계에서 죽어도 트리는 이미 우리 것이다 — 기록이 없으면
+        다음 실행이 두 번째 설치본을 만든다."""
+        self.bin_dir.mkdir(parents=True)
+        (self.bin_dir / "exam").write_text("남의 것\n")
+        r = self.run_installer(xdg=self.tmp / "tools")
+        self.assertEqual(r.returncode, 1)
+        self.assertTrue((self.tmp / "tools" / "dba-guide").is_dir())
+        self.assertTrue(self.state_file.is_file(), "트리는 만들고 기록은 안 했다")
+
+
+class WarnsAboutAnotherInstallTest(InstallerTestCase):
+    """기록이 없는데 링크가 다른 곳을 가리키는 상태 — 지난 라운드가 추가하고
+    한 번도 실행되지 않았던 경로다.
+
+    모든 호출 경로가 `XDG_DATA_HOME` 미설정을 요구하는데 테스트 헬퍼의
+    기본값은 그 변수를 **항상 설정**했다. 기본값이 안전한 쪽으로 치우쳐
+    있으면 위험한 분기는 영원히 테스트 밖에 남는다.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.tag("v1.0.0")
+        self.commit("after the release")
+        self.work = self.tmp / "work"
+        subprocess.run(["git", "clone", "--quiet", self.origin.as_uri(), str(self.work)],
+                       check=True, capture_output=True, text=True)
+        shutil.copy2(INSTALL_SH, self.work / "install.sh")
+        git(self.work, "config", "user.email", "t@example.com")
+        git(self.work, "config", "user.name", "t")
+        git(self.work, "switch", "--quiet", "-c", "my-feature")
+        (self.work / "MY-WORK.md").write_text("작업 중\n", encoding="utf-8")
+        git(self.work, "add", "-A")
+        git(self.work, "commit", "--quiet", "-m", "my feature work")
+        r = subprocess.run(["bash", str(self.work / "install.sh")],
+                           env=self.env(), cwd=str(self.work),
+                           input="", capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_it_notices_the_other_install(self):
+        r = self.run_installer(xdg=None)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn(str(self.work), r.stdout)
+
+    def test_it_never_advises_pointing_the_installer_at_a_working_clone(self):
+        """치명적이었던 자리 — 그 조언을 따르면 남의 브랜치가 태그로 떨어진다."""
+        r = self.run_installer(xdg=None)
+        notice = r.stdout[:r.stdout.find("저장소를 내려받습니다")] or r.stdout
+        self.assertNotIn("XDG_DATA_HOME", notice)
+
+    def test_the_clone_survives_that_run(self):
+        before = git(self.work, "rev-parse", "HEAD").strip()
+        self.run_installer(xdg=None)
+        self.assertEqual(git(self.work, "rev-parse", "--abbrev-ref", "HEAD").strip(),
+                         "my-feature")
+        self.assertEqual(git(self.work, "rev-parse", "HEAD").strip(), before)
+        self.assertTrue((self.work / "MY-WORK.md").is_file())
+
+    def test_uninstall_does_not_print_the_install_notice(self):
+        """제거 중에 '이 실행은 …에 설치합니다'는 거짓말이다."""
+        r = self.run_installer("--uninstall", xdg=None)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("설치합니다", r.stdout)
+
+
+class AmbientXdgTest(InstallerTestCase):
+    """`+x`와 `:-`가 어긋나면 안 된다.
+
+    `INSTALL_DIR`은 `:-`로 계산되므로 빈 값은 기본 경로를 뜻한다. 그런데
+    채택을 `+x`로 건너뛰면 빈 값이 '명시'가 되어, 기록이 있는데도 무시하고
+    기본 경로에 두 번째 설치본을 만든 뒤 **기록까지 덮어쓴다**.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.tag("v1.0.0")
+        self.commit("after the release")
+        self.custom = self.tmp / "tools"
+        r = self.run_installer(xdg=self.custom)
+        self.assertEqual(r.returncode, 0, r.stderr)
+
+    def test_an_empty_variable_is_not_an_explicit_destination(self):
+        r = self.run_installer(xdg="")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse(self.install_dir.exists(), "두 번째 설치본이 생겼다")
+        self.assertEqual(self.state_file.read_text().strip(),
+                         str(self.custom / "dba-guide"))
+
+    def test_an_explicit_destination_that_disagrees_says_so(self):
+        """조용히 무시하면 사용자는 기록이 있다는 사실조차 모른다."""
+        r = self.run_installer(xdg=self.tmp / "elsewhere")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn(str(self.custom / "dba-guide"), r.stdout)
+
+
+class NoRecordNeverLocksAnyoneOutTest(InstallerTestCase):
+    """기록이 없다고 해서 설치본을 남의 것으로 몰면 안 된다.
+
+    한 라운드에서 "HEAD가 detached면 우리가 만든 것"이라는 가드를 뒀다가,
+    스크립트가 **자기가 만든 설치본을 거부**했다. 원인은 `install_managed`의
+    조기 반환 분기다 — 릴리스 직후에는 최신 태그가 `main`의 tip이라 갓 클론한
+    HEAD가 이미 그 태그이고, `checkout --detach`가 아예 실행되지 않아 설치본이
+    **브랜치 위에** 남는다. 기록이 없던 v1.3.0 이전 사용자는 영구히 갇혔다.
+
+    소유권은 git 상태에서 추론할 수 없다. 기록이 없으면 그냥 기록이 없는
+    것이고, 그때의 올바른 동작은 계산된 경로를 쓰는 기존 동작이다.
+    """
+
+    def _install_then_forget_the_record(self):
+        r = self.run_installer()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.state_file.unlink()
+
+    def test_an_install_left_on_a_branch_still_updates(self):
+        """태그가 tip이면 설치본은 브랜치 위에 남는다 — 정상 상태다."""
+        self.tag("v1.0.0")
+        self._install_then_forget_the_record()
+        self.assertTrue(git(self.install_dir, "symbolic-ref", "-q", "HEAD").strip(),
+                        "이 픽스처는 브랜치 위 설치본을 만들어야 한다")
+        r = self.run_installer()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("설치 완료", r.stdout)
+
+    def test_a_detached_install_still_updates(self):
+        self.tag("v1.0.0")
+        self.commit("after the release")
+        self._install_then_forget_the_record()
+        r = self.run_installer()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("설치 완료", r.stdout)
+
+    def test_a_rerun_after_a_failed_first_attempt_recovers(self):
+        """태그를 못 찾아 죽으면 클론만 남는다 — 다음 실행이 이어받아야 한다."""
+        r = self.run_installer()
+        self.assertEqual(r.returncode, 1)
+        self.assertTrue(self.install_dir.is_dir(), "클론은 남아 있다")
+        self.tag("v1.0.0")
+        self.commit("after the release")
+        r = self.run_installer()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.head_tag(), "v1.0.0")
+
+
+class PurgingOneInstallSparesTheOtherRecordTest(InstallerTestCase):
+    """두 벌이 있을 때, 한쪽을 지우면서 다른 쪽의 기록까지 지우면 안 된다."""
+
+    def setUp(self):
+        super().setUp()
+        self.tag("v1.0.0")
+        self.commit("after the release")
+        self.old = self.tmp / "tools"
+        self.assertEqual(self.run_installer(xdg=self.old).returncode, 0)
+        self.assertEqual(self.run_installer(xdg=self.home / ".local" / "share").returncode, 0)
+        self.assertEqual(self.state_file.read_text().strip(), str(self.install_dir))
+
+    def test_purging_the_old_one_keeps_the_record_of_the_live_one(self):
+        r = self.run_installer_on_a_tty("--uninstall", "--purge",
+                                        answer="y\n", xdg=self.old)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse((self.old / "dba-guide").exists(), "옛 설치본이 남았다")
+        self.assertTrue(self.install_dir.is_dir(), "살아 있는 설치본이 지워졌다")
+        self.assertTrue(self.state_file.is_file(), "다른 쪽 기록까지 지웠다")
+        self.assertEqual(self.state_file.read_text().strip(), str(self.install_dir))
+
+
+class OnlyWhatWeClonedIsRecordedTest(InstallerTestCase):
+    """이번 실행이 만들지 않은 트리는 기록하지 않는다.
+
+    기록은 소유권 주장이다. 이미 있던 트리를 기록하면 한 번의 실수가
+    **영구 조준점**이 된다 — 자기 클론을 한 번 겨눈 사람은 이후 변수 없이도
+    매번 그 클론이 다시 detach 되고, README가 맨손으로 쳐도 된다고 안내하는
+    `--uninstall --purge`가 그 클론을 지운다. v1.3.0에서는 한 번으로 끝났다.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.tag("v1.0.0")
+        self.commit("after the release")
+        self.mine = self.tmp / "mine"
+        subprocess.run(["git", "clone", "--quiet", self.origin.as_uri(),
+                        str(self.mine / "dba-guide")],
+                       check=True, capture_output=True, text=True)
+        git(self.mine / "dba-guide", "config", "user.email", "t@example.com")
+        git(self.mine / "dba-guide", "config", "user.name", "t")
+        git(self.mine / "dba-guide", "switch", "--quiet", "-c", "my-feature")
+
+    def test_pointing_at_an_existing_clone_does_not_claim_it(self):
+        """받아들이기로 한 잔여 위험(fetch·detach)은 그대로다.
+        기록되지 않는다는 것이 그 위험을 **일회성으로** 묶는다."""
+        r = self.run_installer(xdg=self.mine)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse(self.state_file.exists(), "남의 트리를 기록했다")
+
+    def test_the_next_bare_run_does_not_go_back_there(self):
+        self.run_installer(xdg=self.mine)
+        r = self.run_installer(xdg=None)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(self.install_dir.is_dir(), "기본 경로에 설치되지 않았다")
+        self.assertEqual(self.state_file.read_text().strip(), str(self.install_dir))
+
+    def test_a_bare_purge_afterwards_cannot_reach_that_clone(self):
+        self.run_installer(xdg=self.mine)
+        r = self.run_installer_on_a_tty("--uninstall", "--purge",
+                                        answer="y\n", xdg=None)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue((self.mine / "dba-guide").is_dir(), "남의 클론이 지워졌다")
+
+    def test_an_existing_unrecorded_install_is_not_claimed_either(self):
+        """우리가 만든 설치본이라도, 이번 실행이 만든 게 아니면 기록하지 않는다.
+        구분할 방법이 없기 때문이다 — 그 구분을 시도한 것이 지난 세 라운드의
+        결함이었다."""
+        self.assertEqual(self.run_installer().returncode, 0)
+        self.state_file.unlink()
+        self.commit("another release")
+        self.tag("v1.1.0")
+        r = self.run_installer()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.head_tag(), "v1.1.0", "업데이트는 정상 동작해야 한다")
+        self.assertFalse(self.state_file.exists())
+
+    def test_a_relative_destination_produces_a_working_install(self):
+        """상대 경로는 기록만이 아니라 **링크**까지 망가뜨린다.
+
+        기록만 절대경로로 바꾸면 `INSTALL_DIR`은 상대인 채 남아, `ln -sfn`이
+        `~/.local/bin` 기준으로 풀리는 상대 링크를 만든다 — 런처 셋이 전부
+        죽고, 다음 실행은 그 링크를 남의 것으로 보아 이름 충돌로 멈춘다.
+        종료코드와 기록만 보는 단언은 이 상태를 초록으로 통과시킨다.
+        """
+        r = subprocess.run(["bash", str(self.script)],
+                           env={**self.env(xdg=None), "XDG_DATA_HOME": "rel"},
+                           cwd=str(self.tmp), input="", capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        recorded = self.state_file.read_text().strip()
+        self.assertTrue(recorded.startswith("/"), f"상대 경로가 기록됐다: {recorded}")
+        self.assertTrue(os.readlink(self.bin_dir / "guide").startswith("/"),
+                        "링크가 상대 경로다")
+        env = dict(os.environ); env["HOME"] = str(self.home)
+        run = subprocess.run([str(self.bin_dir / "guide")], env=env,
+                             cwd=str(self.home), capture_output=True, text=True)
+        self.assertEqual(run.returncode, 0, run.stderr)
+
+    def test_it_says_when_it_deliberately_did_not_record(self):
+        """기억하지 않았다는 사실을 알려야 한다.
+
+        말하지 않으면 사용자는 기억됐다고 믿고, 나중에 변수 없이 친
+        `--uninstall`이 링크만 걷어가 설치본을 고아로 만든다.
+        """
+        r = self.run_installer(xdg=self.mine)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("기억하지 않습니다", r.stdout)
+        self.assertIn("XDG_DATA_HOME", r.stdout)
+
+
+
+
+class PurgeDoesNotLieAboutSymlinksTest(InstallerTestCase):
+    """설치 경로가 심볼릭 링크면 `rm -rf`는 링크만 지운다 — 트리는 남는데
+    "삭제했습니다"가 뜨고 살아 있는 트리의 기록이 사라진다."""
+
+    def test_it_refuses_instead_of_deleting_only_the_link(self):
+        self.tag("v1.0.0")
+        self.commit("after the release")
+        real = self.tmp / "real-tree"
+        self.assertEqual(self.run_installer(xdg=self.tmp / "real-parent").returncode, 0)
+        (self.tmp / "real-parent" / "dba-guide").rename(real)
+        self.install_dir.parent.mkdir(parents=True, exist_ok=True)
+        self.install_dir.symlink_to(real)
+        r = self.run_installer_on_a_tty("--uninstall", "--purge",
+                                        answer="y\n", xdg="default")
+        self.assertEqual(r.returncode, 1)
+        self.assertTrue(real.is_dir(), "트리가 사라졌다")
+        self.assertNotIn("삭제했습니다", r.stdout)
+
+
+class ACloneWeMadeIsRecordedEvenIfTheRunDiesTest(InstallerTestCase):
+    """클론까지 끝냈으면 그 트리는 우리 것이다.
+
+    기록이 클론보다 뒤에 있으면, 그 사이에서 죽은 실행은 **우리가 만든
+    트리를 영원히 기록 없이** 남긴다. 이후 모든 실행은 그것을 "이미 있던
+    트리"로 보아 끝내 기록하지 않는다.
+    """
+
+    def test_a_run_that_dies_after_cloning_still_leaves_a_record(self):
+        r = self.run_installer(xdg=self.tmp / "spot")   # 태그가 없어 죽는다
+        self.assertEqual(r.returncode, 1)
+        self.assertTrue((self.tmp / "spot" / "dba-guide").is_dir(), "클론은 남는다")
+        self.assertTrue(self.state_file.is_file(), "우리가 만든 트리가 기록되지 않았다")
+        self.assertEqual(self.state_file.read_text().strip(),
+                         str(self.tmp / "spot" / "dba-guide"))
+
+
+class TheNoticeSaysTheLinksMoveTest(InstallerTestCase):
+    """링크가 옮겨간다는 사실은 사용자가 반드시 알아야 한다 — 옛 설치본이
+    기록되지 않은 사람에게는 그 링크가 마지막 연결고리였다."""
+
+    def test_it_says_the_links_will_point_here(self):
+        self.tag("v1.0.0")
+        self.commit("after the release")
+        work = self.tmp / "work"
+        subprocess.run(["git", "clone", "--quiet", self.origin.as_uri(), str(work)],
+                       check=True, capture_output=True, text=True)
+        shutil.copy2(INSTALL_SH, work / "install.sh")
+        r = subprocess.run(["bash", str(work / "install.sh")], env=self.env(),
+                           cwd=str(work), input="", capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        r = self.run_installer(xdg=None)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("런처 링크를 그쪽으로 옮깁니다", r.stdout)
+
+
+class TheNotRememberedNoticeFiresWhenItMattersTest(InstallerTestCase):
+    """"기록이 하나라도 있으면" 이 아니라 "이 트리가 기록돼 있지 않으면" 이다.
+
+    기록은 첫 설치에서 생겨 `--purge` 전까지 남는다. 그러니 "기록 파일이
+    없을 때만" 알리면, 한 번이라도 설치를 마친 사람 — 즉 거의 모든 재방문자 —
+    에게는 영영 침묵한다. 정작 그 사람이 이미 있던 다른 트리를 지정했을 때가
+    알려야 할 자리다.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.tag("v1.0.0")
+        self.commit("after the release")
+        self.assertEqual(self.run_installer().returncode, 0)   # 기록 생성
+        self.mine = self.tmp / "dev"
+        subprocess.run(["git", "clone", "--quiet", self.origin.as_uri(),
+                        str(self.mine / "dba-guide")],
+                       check=True, capture_output=True, text=True)
+
+    def test_it_fires_even_though_a_record_already_exists(self):
+        r = self.run_installer(xdg=self.mine)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("기억하지 않습니다", r.stdout)
+
+    def test_it_blames_this_run_not_the_script(self):
+        """스크립트가 만들었는지 아닌지는 알 수 없다 — 아는 것은 이번 실행뿐이다."""
+        r = self.run_installer(xdg=self.mine)
+        self.assertIn("이번 실행이 만든 트리가 아니", r.stdout)
+        self.assertNotIn("이 스크립트가 만든 트리가 아니", r.stdout)
+
+    def test_it_stays_quiet_when_the_variable_names_the_default(self):
+        """기본 경로면 변수를 줄 이유가 없다 — 조언이 무의미하고 매번 뜬다."""
+        self.state_file.unlink()
+        r = self.run_installer(xdg=self.home / ".local" / "share")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("기억하지 않습니다", r.stdout)
+
+    def test_it_stays_quiet_when_the_record_names_this_tree(self):
+        r = self.run_installer(xdg=self.home / ".local" / "share")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotIn("기억하지 않습니다", r.stdout)
+
+
+class TheLinkNoticeDoesNotPredictADeadRunTest(InstallerTestCase):
+    """링크가 옮겨간다는 예고는, 실제로 옮기는 지점 앞에서만 해야 한다."""
+
+    def test_a_run_that_dies_does_not_claim_the_links_moved(self):
+        self.tag("v1.0.0")
+        self.commit("after the release")
+        work = self.tmp / "work"
+        subprocess.run(["git", "clone", "--quiet", self.origin.as_uri(), str(work)],
+                       check=True, capture_output=True, text=True)
+        shutil.copy2(INSTALL_SH, work / "install.sh")
+        r = subprocess.run(["bash", str(work / "install.sh")], env=self.env(),
+                           cwd=str(work), input="", capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        # 설치 경로를 디렉터리가 아닌 것으로 막아 이번 실행을 죽인다.
+        # in-place 설치였으므로 이 경로는 아직 존재하지 않는다.
+        self.install_dir.parent.mkdir(parents=True, exist_ok=True)
+        self.install_dir.write_text("in the way\n")
+        r = self.run_installer(xdg=None)
+        self.assertEqual(r.returncode, 1)
+        self.assertNotIn("옮깁니다", r.stdout)
+
+
+class AHandEditedRelativeRecordStillProducesWorkingLinksTest(InstallerTestCase):
+    """기록은 신뢰 입력이다 — 상대 경로가 들어와도 링크는 절대여야 한다.
+
+    정의 시점의 절대경로 보장만으로는 부족하다. 채택이 `INSTALL_DIR`을
+    기록 값으로 갈아끼우므로, 그 자리에도 같은 보장이 있어야 한다.
+    """
+
+    def test_links_are_absolute_after_adopting_a_relative_record(self):
+        self.tag("v1.0.0")
+        self.commit("after the release")
+        self.assertEqual(self.run_installer(xdg=self.tmp / "spot").returncode, 0)
+        for name, _ in self.LAUNCHERS:
+            (self.bin_dir / name).unlink()
+        self.state_file.write_text("spot/dba-guide\n", encoding="utf-8")
+        r = self.run_installer(xdg=None)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(os.readlink(self.bin_dir / "guide").startswith("/"),
+                        "상대 기록이 상대 링크를 만들었다")
+        env = dict(os.environ); env["HOME"] = str(self.home)
+        run = subprocess.run([str(self.bin_dir / "guide")], env=env,
+                             cwd=str(self.home), capture_output=True, text=True)
+        self.assertEqual(run.returncode, 0, run.stderr)
