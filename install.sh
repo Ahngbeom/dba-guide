@@ -14,6 +14,10 @@ set -euo pipefail
 
 REPO_URL="${DBA_GUIDE_REPO_URL:-https://github.com/Ahngbeom/dba-guide.git}"
 INSTALL_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/dba-guide"
+# 상대 경로면 링크가 `~/.local/bin` 기준으로 풀려 런처 셋이 전부 죽는다.
+# 기록만 절대경로로 고치면 링크·보고·`is_our_link`가 서로 다른 표기를 본다.
+# 심볼릭 링크는 풀지 않는다 — 사용자가 지정한 표기를 지킨다.
+case "$INSTALL_DIR" in /*) ;; *) INSTALL_DIR="$PWD/$INSTALL_DIR" ;; esac
 BIN_DIR="$HOME/.local/bin"
 LAUNCHERS="guide exam shoot"
 # 우리가 만든 설치본의 위치 기록. 링크가 아니라 이 파일이 근거다 — 링크는
@@ -39,8 +43,10 @@ usage() {
 
 환경 변수:
   XDG_DATA_HOME       설치 경로의 부모 (기본: ~/.local/share)
-                      주면 그 값이 이깁니다. 주지 않으면 지난 설치 위치를
-                      기억해 그대로 씁니다.
+                      주면 그 값이 이깁니다. 주지 않으면 **직접 내려받았던**
+                      위치를 기억해 그대로 씁니다. 이미 있던 디렉터리를
+                      지정하면 기록하지 않으니, 그때는 업데이트·제거에도
+                      함께 주세요.
   XDG_STATE_HOME      설치 위치 기록의 부모 (기본: ~/.local/state)
   DBA_GUIDE_REPO_URL  클론 원본 (기본: GitHub)
 EOF
@@ -173,6 +179,10 @@ install_managed() {
     mkdir -p "$(dirname "$INSTALL_DIR")"
     git clone --quiet "$REPO_URL" "$INSTALL_DIR"
     fresh="yes"
+    # 기록은 여기서 한다. 뒤로 미루면 그 사이에서 죽은 실행이 **우리가 만든**
+    # 트리를 영원히 기록 없이 남기고, 이후 실행은 그것을 "이미 있던 트리"로
+    # 보아 끝내 기록하지 않는다.
+    record_install "$INSTALL_DIR"
   elif ! is_our_install "$INSTALL_DIR"; then
     die "$INSTALL_DIR 이 이 학습서의 설치본이 아닙니다." \
         "  git 저장소가 아니거나, 다른 저장소가 그 자리에 있습니다." \
@@ -180,6 +190,18 @@ install_managed() {
         "  직접 확인하고 치운 뒤 다시 실행하세요."
   else
     git -C "$INSTALL_DIR" fetch --quiet --tags origin
+  fi
+
+  # 이미 있던 트리는 기록하지 않는다(`record_install`은 클론 직후에만 부른다).
+  # 그 사실을 말하지 않으면 사용자는 기억됐다고 믿고, 나중에 변수 없이 친
+  # `--uninstall`이 링크만 걷어가 설치본을 고아로 만든다. 기본 경로라면
+  # 변수를 줄 이유가 없으므로 알릴 것도 없다.
+  if [ "$fresh" = "no" ] && [ -n "${XDG_DATA_HOME:-}" ] && [ ! -f "$STATE_FILE" ]; then
+    info "참고: 이 위치는 기억하지 않습니다 — $INSTALL_DIR" \
+         "  이 스크립트가 만든 트리가 아니라서입니다(이미 있던 것을 우리 것이라" \
+         "  주장하면 나중에 엉뚱한 곳을 지울 수 있습니다)." \
+         "  업데이트·제거 때도 XDG_DATA_HOME 을 함께 주세요." \
+         ""
   fi
 
   tag="$(latest_release_tag "$INSTALL_DIR")"
@@ -195,7 +217,6 @@ install_managed() {
     if [ "$fresh" = "no" ]; then
       info "이미 최신입니다 — $tag"
     fi
-    record_install "$INSTALL_DIR" "$fresh"
     link_launchers "$INSTALL_DIR"
     report "$INSTALL_DIR" "$tag"
     return 0
@@ -211,7 +232,6 @@ install_managed() {
   fi
 
   git -C "$INSTALL_DIR" checkout --quiet --detach "$tag"
-  record_install "$INSTALL_DIR" "$fresh"
   link_launchers "$INSTALL_DIR"
   report "$INSTALL_DIR" "$tag"
 }
@@ -378,7 +398,7 @@ warn_if_another_install_is_linked() {
     is_our_install "$other" || continue
     ! same_path "$other" "$INSTALL_DIR" || return 0
     info "참고: 링크가 다른 곳을 가리키고 있습니다 — $other" \
-         "  이 실행의 설치 대상은 $INSTALL_DIR 입니다." \
+         "  이 실행은 $INSTALL_DIR 에 설치하고 런처 링크를 그쪽으로 옮깁니다." \
          "  $other 는 건드리지 않습니다. 두 벌을 원치 않으면 직접 정리하세요." \
          ""
     return 0
@@ -444,15 +464,8 @@ record_install() {
   # 맨손으로 친 `--uninstall --purge`가 그것을 지운다. 우리가 만들지 않은
   # 트리는 우리 것인지 알 방법이 없다(그 구분을 시도한 것이 이 브랜치의
   # 지난 결함들이다). 그래서 주장하지 않는다.
-  [ "$2" = "yes" ] || return 0
-  # 상대 경로를 그대로 적으면 다음 실행의 cwd에 따라 엉뚱한 트리를 가리킨다.
-  # 절대 경로로만 바꾸고 심볼릭 링크는 풀지 않는다 — `pwd -P`로 정규화하면
-  # 사용자가 지정한 표기가 바뀌어(예: macOS의 /var → /private/var) 링크와
-  # 안내 문구가 낯선 경로를 가리키게 된다. 동등성 비교는 `same_path`의 몫이다.
-  rec_path="$1"
-  case "$rec_path" in /*) ;; *) rec_path="$PWD/$rec_path" ;; esac
   if ! ( mkdir -p "$(dirname "$STATE_FILE")" \
-         && printf '%s\n' "$rec_path" > "$STATE_FILE" ) 2>/dev/null; then
+         && printf '%s\n' "$1" > "$STATE_FILE" ) 2>/dev/null; then
     info "경고: 설치 위치를 기록하지 못했습니다 — $STATE_FILE" \
          "      다음 실행에서 이 위치를 기억하지 못합니다." \
          "      그때는 XDG_DATA_HOME 으로 직접 지정하세요." \

@@ -1099,14 +1099,39 @@ class OnlyWhatWeClonedIsRecordedTest(InstallerTestCase):
         self.assertEqual(self.head_tag(), "v1.1.0", "업데이트는 정상 동작해야 한다")
         self.assertFalse(self.state_file.exists())
 
-    def test_a_relative_destination_is_recorded_absolute(self):
-        """상대 경로를 그대로 적으면 다음 실행의 cwd에 따라 엉뚱한 트리를 가리킨다."""
+    def test_a_relative_destination_produces_a_working_install(self):
+        """상대 경로는 기록만이 아니라 **링크**까지 망가뜨린다.
+
+        기록만 절대경로로 바꾸면 `INSTALL_DIR`은 상대인 채 남아, `ln -sfn`이
+        `~/.local/bin` 기준으로 풀리는 상대 링크를 만든다 — 런처 셋이 전부
+        죽고, 다음 실행은 그 링크를 남의 것으로 보아 이름 충돌로 멈춘다.
+        종료코드와 기록만 보는 단언은 이 상태를 초록으로 통과시킨다.
+        """
         r = subprocess.run(["bash", str(self.script)],
                            env={**self.env(xdg=None), "XDG_DATA_HOME": "rel"},
                            cwd=str(self.tmp), input="", capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stderr)
         recorded = self.state_file.read_text().strip()
         self.assertTrue(recorded.startswith("/"), f"상대 경로가 기록됐다: {recorded}")
+        self.assertTrue(os.readlink(self.bin_dir / "guide").startswith("/"),
+                        "링크가 상대 경로다")
+        env = dict(os.environ); env["HOME"] = str(self.home)
+        run = subprocess.run([str(self.bin_dir / "guide")], env=env,
+                             cwd=str(self.home), capture_output=True, text=True)
+        self.assertEqual(run.returncode, 0, run.stderr)
+
+    def test_it_says_when_it_deliberately_did_not_record(self):
+        """기억하지 않았다는 사실을 알려야 한다.
+
+        말하지 않으면 사용자는 기억됐다고 믿고, 나중에 변수 없이 친
+        `--uninstall`이 링크만 걷어가 설치본을 고아로 만든다.
+        """
+        r = self.run_installer(xdg=self.mine)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("기억하지 않습니다", r.stdout)
+        self.assertIn("XDG_DATA_HOME", r.stdout)
+
+
 
 
 class PurgeDoesNotLieAboutSymlinksTest(InstallerTestCase):
@@ -1126,3 +1151,39 @@ class PurgeDoesNotLieAboutSymlinksTest(InstallerTestCase):
         self.assertEqual(r.returncode, 1)
         self.assertTrue(real.is_dir(), "트리가 사라졌다")
         self.assertNotIn("삭제했습니다", r.stdout)
+
+
+class ACloneWeMadeIsRecordedEvenIfTheRunDiesTest(InstallerTestCase):
+    """클론까지 끝냈으면 그 트리는 우리 것이다.
+
+    기록이 클론보다 뒤에 있으면, 그 사이에서 죽은 실행은 **우리가 만든
+    트리를 영원히 기록 없이** 남긴다. 이후 모든 실행은 그것을 "이미 있던
+    트리"로 보아 끝내 기록하지 않는다.
+    """
+
+    def test_a_run_that_dies_after_cloning_still_leaves_a_record(self):
+        r = self.run_installer(xdg=self.tmp / "spot")   # 태그가 없어 죽는다
+        self.assertEqual(r.returncode, 1)
+        self.assertTrue((self.tmp / "spot" / "dba-guide").is_dir(), "클론은 남는다")
+        self.assertTrue(self.state_file.is_file(), "우리가 만든 트리가 기록되지 않았다")
+        self.assertEqual(self.state_file.read_text().strip(),
+                         str(self.tmp / "spot" / "dba-guide"))
+
+
+class TheNoticeSaysTheLinksMoveTest(InstallerTestCase):
+    """링크가 옮겨간다는 사실은 사용자가 반드시 알아야 한다 — 옛 설치본이
+    기록되지 않은 사람에게는 그 링크가 마지막 연결고리였다."""
+
+    def test_it_says_the_links_will_point_here(self):
+        self.tag("v1.0.0")
+        self.commit("after the release")
+        work = self.tmp / "work"
+        subprocess.run(["git", "clone", "--quiet", self.origin.as_uri(), str(work)],
+                       check=True, capture_output=True, text=True)
+        shutil.copy2(INSTALL_SH, work / "install.sh")
+        r = subprocess.run(["bash", str(work / "install.sh")], env=self.env(),
+                           cwd=str(work), input="", capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        r = self.run_installer(xdg=None)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("런처 링크를 그쪽으로 옮깁니다", r.stdout)
