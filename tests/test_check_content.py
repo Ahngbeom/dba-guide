@@ -45,6 +45,32 @@ CHAPTER = """\
 """
 
 
+# 절 하나가 통째로 한 벤더 마커 안에 들어간 챕터. `main`에서 읽으면 네 절이
+# 다 보이므로 정상으로 보이고, 다른 두 벤더의 뷰에서만 절이 사라진다 —
+# 이슈 #90이 실제로 그 모양이었다.
+VENDOR_CHAPTER = """\
+# 1장
+
+## 핵심 개념 설명
+
+내용.
+
+## 주요 명령어/문법
+
+내용.
+
+<!-- dbms:postgresql -->
+## 실습 예제 — PostgreSQL PITR
+
+내용.
+<!-- /dbms:postgresql -->
+
+## 체크리스트
+
+- [ ] 할 수 있다
+"""
+
+
 class FixtureTestCase(unittest.TestCase):
     """티어 하나에 챕터 하나를 갖춘 최소 저장소."""
 
@@ -238,6 +264,86 @@ class StructureTest(FixtureTestCase):
             + "- [치트시트](01-beginner/07-commands-cheatsheet.md)\n",
             encoding="utf-8")
         self.assertClean()
+
+
+class VendorStructureTest(FixtureTestCase):
+    """단일 벤더 뷰에서만 드러나는 구조 결함 (#90)."""
+
+    def test_unfiltered_view_looks_fine(self):
+        """`main`에서만 보면 정상이다 — 이것이 이 결함이 숨는 방식이다."""
+        self.chapter.write_text(VENDOR_CHAPTER, encoding="utf-8")
+        self.assertEqual(check_content.check_structure(self.root), [])
+
+    def test_the_section_survives_in_its_own_vendor_view(self):
+        self.chapter.write_text(VENDOR_CHAPTER, encoding="utf-8")
+        self.assertEqual(
+            check_content.check_structure(self.root, "postgresql"), [])
+
+    def test_the_section_vanishes_from_the_other_vendor_views(self):
+        self.chapter.write_text(VENDOR_CHAPTER, encoding="utf-8")
+        for dbms in ("mysql", "oracle"):
+            with self.subTest(dbms=dbms):
+                found = check_content.check_structure(self.root, dbms)
+                self.assertEqual(len(found), 1, found)
+                self.assertIn("실습 예제", found[0])
+                self.assertIn("01-intro.md", found[0])
+
+    def test_a_chapter_without_markers_reads_the_same_in_every_view(self):
+        """마커가 없는 파일은 어느 뷰에서도 바이트 단위로 같다."""
+        for dbms in (None, "postgresql", "mysql", "oracle"):
+            with self.subTest(dbms=dbms):
+                self.assertEqual(
+                    check_content.check_structure(self.root, dbms), [])
+
+    def test_an_unbalanced_marker_is_reported_not_raised(self):
+        """`filter_lines`의 ValueError가 트레이스백으로 새어 나가면 안 된다.
+
+        검사기는 어디가 틀렸는지 한 줄씩 찍어 주는 도구다. 마커 하나가
+        안 닫혔다고 전체 검사가 중단되면 나머지 위반을 못 본다.
+        """
+        self.chapter.write_text(
+            VENDOR_CHAPTER.replace("<!-- /dbms:postgresql -->\n", ""),
+            encoding="utf-8")
+        found = check_content.check_structure(self.root, "mysql")
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("01-intro.md", found[0])
+
+    def test_markers_inside_a_code_fence_are_not_directives(self):
+        """마커 문법을 설명하는 본문이 자기 자신에게 걸리지 않아야 한다."""
+        self.chapter.write_text(
+            CHAPTER + "\n```\n<!-- dbms:oracle -->\n```\n", encoding="utf-8")
+        self.assertEqual(
+            check_content.check_structure(self.root, "mysql"), [])
+
+
+class VendorCliTest(FixtureTestCase):
+    """`--dbms`는 릴리스 전에 사람이 직접 돌리는 통로다."""
+
+    def run_main(self, *extra):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = check_content.main(["--root", str(self.root), *extra])
+        return rc, buf.getvalue()
+
+    def test_the_flag_reports_only_the_filtered_structure_check(self):
+        self.chapter.write_text(VENDOR_CHAPTER, encoding="utf-8")
+        rc, out = self.run_main("--dbms", "mysql")
+        self.assertEqual(rc, 1)
+        self.assertIn("structure:mysql", out)
+        self.assertIn("실습 예제", out)
+        self.assertNotIn("[links]", out)
+
+    def test_the_flag_passes_for_the_matching_vendor(self):
+        self.chapter.write_text(VENDOR_CHAPTER, encoding="utf-8")
+        rc, out = self.run_main("--dbms", "postgresql")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("structure:postgresql", out)
+
+    def test_without_the_flag_all_four_checks_still_run(self):
+        rc, out = self.run_main()
+        self.assertEqual(rc, 0, out)
+        for name in ("[links]", "[orphans]", "[structure]", "[banks]"):
+            self.assertIn(name, out)
 
 
 class BankTest(FixtureTestCase):
