@@ -443,6 +443,19 @@ class ShippedContentTest(unittest.TestCase):
         self._skip_on_a_vendor_branch()
         self.assertEqual(check_content.check_structure(REPO_ROOT), [])
 
+    def test_each_vendor_view_keeps_the_four_section_shape(self):
+        """단일 벤더 브랜치를 잘라 봐야만 드러나는 결함을 여기서 잡는다.
+
+        `main`에서 도는 것이 요점이다 — CI 트리거가 `push: branches: [main]`
+        이라 벤더 브랜치에서는 이 스위트가 아예 돌지 않는다. 이슈 #90이
+        그 사각지대에서 v1.4.0까지 살아남았다.
+        """
+        self._skip_on_a_vendor_branch()
+        for dbms in ("postgresql", "mysql", "oracle"):
+            with self.subTest(dbms=dbms):
+                self.assertEqual(
+                    check_content.check_structure(REPO_ROOT, dbms), [])
+
     def test_every_chapter_has_a_question_bank(self):
         self.assertEqual(check_content.check_banks(REPO_ROOT), [])
 
