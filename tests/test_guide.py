@@ -407,6 +407,15 @@ class LauncherTest(unittest.TestCase):
             body = (REPO_ROOT / name).read_text(encoding="utf-8")
             self.assertIn("./guide", body, f"{name} 에 ./guide 안내가 없다")
 
+    def test_the_docs_explain_the_quit_key(self):
+        """안내 없는 단축키는 없는 것과 같다 (이슈 #95).
+
+        `README.md`의 "한 번에 시작하기" 절이 `./guide` 흐름을 산문으로 설명하는
+        유일한 자리다.
+        """
+        body = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+        self.assertIn("`Q`", body, "README에 전역 종료 키 안내가 없다")
+
 
 class ReadingModeWiringTest(unittest.TestCase):
     """세 번째 모드를 고르면 읽기 러너가 실제로 불려야 한다."""
