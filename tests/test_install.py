@@ -1042,3 +1042,87 @@ class PurgingOneInstallSparesTheOtherRecordTest(InstallerTestCase):
         self.assertTrue(self.install_dir.is_dir(), "살아 있는 설치본이 지워졌다")
         self.assertTrue(self.state_file.is_file(), "다른 쪽 기록까지 지웠다")
         self.assertEqual(self.state_file.read_text().strip(), str(self.install_dir))
+
+
+class OnlyWhatWeClonedIsRecordedTest(InstallerTestCase):
+    """이번 실행이 만들지 않은 트리는 기록하지 않는다.
+
+    기록은 소유권 주장이다. 이미 있던 트리를 기록하면 한 번의 실수가
+    **영구 조준점**이 된다 — 자기 클론을 한 번 겨눈 사람은 이후 변수 없이도
+    매번 그 클론이 다시 detach 되고, README가 맨손으로 쳐도 된다고 안내하는
+    `--uninstall --purge`가 그 클론을 지운다. v1.3.0에서는 한 번으로 끝났다.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.tag("v1.0.0")
+        self.commit("after the release")
+        self.mine = self.tmp / "mine"
+        subprocess.run(["git", "clone", "--quiet", self.origin.as_uri(),
+                        str(self.mine / "dba-guide")],
+                       check=True, capture_output=True, text=True)
+        git(self.mine / "dba-guide", "config", "user.email", "t@example.com")
+        git(self.mine / "dba-guide", "config", "user.name", "t")
+        git(self.mine / "dba-guide", "switch", "--quiet", "-c", "my-feature")
+
+    def test_pointing_at_an_existing_clone_does_not_claim_it(self):
+        """받아들이기로 한 잔여 위험(fetch·detach)은 그대로다.
+        기록되지 않는다는 것이 그 위험을 **일회성으로** 묶는다."""
+        r = self.run_installer(xdg=self.mine)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse(self.state_file.exists(), "남의 트리를 기록했다")
+
+    def test_the_next_bare_run_does_not_go_back_there(self):
+        self.run_installer(xdg=self.mine)
+        r = self.run_installer(xdg=None)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue(self.install_dir.is_dir(), "기본 경로에 설치되지 않았다")
+        self.assertEqual(self.state_file.read_text().strip(), str(self.install_dir))
+
+    def test_a_bare_purge_afterwards_cannot_reach_that_clone(self):
+        self.run_installer(xdg=self.mine)
+        r = self.run_installer_on_a_tty("--uninstall", "--purge",
+                                        answer="y\n", xdg=None)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertTrue((self.mine / "dba-guide").is_dir(), "남의 클론이 지워졌다")
+
+    def test_an_existing_unrecorded_install_is_not_claimed_either(self):
+        """우리가 만든 설치본이라도, 이번 실행이 만든 게 아니면 기록하지 않는다.
+        구분할 방법이 없기 때문이다 — 그 구분을 시도한 것이 지난 세 라운드의
+        결함이었다."""
+        self.assertEqual(self.run_installer().returncode, 0)
+        self.state_file.unlink()
+        self.commit("another release")
+        self.tag("v1.1.0")
+        r = self.run_installer()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.head_tag(), "v1.1.0", "업데이트는 정상 동작해야 한다")
+        self.assertFalse(self.state_file.exists())
+
+    def test_a_relative_destination_is_recorded_absolute(self):
+        """상대 경로를 그대로 적으면 다음 실행의 cwd에 따라 엉뚱한 트리를 가리킨다."""
+        r = subprocess.run(["bash", str(self.script)],
+                           env={**self.env(xdg=None), "XDG_DATA_HOME": "rel"},
+                           cwd=str(self.tmp), input="", capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        recorded = self.state_file.read_text().strip()
+        self.assertTrue(recorded.startswith("/"), f"상대 경로가 기록됐다: {recorded}")
+
+
+class PurgeDoesNotLieAboutSymlinksTest(InstallerTestCase):
+    """설치 경로가 심볼릭 링크면 `rm -rf`는 링크만 지운다 — 트리는 남는데
+    "삭제했습니다"가 뜨고 살아 있는 트리의 기록이 사라진다."""
+
+    def test_it_refuses_instead_of_deleting_only_the_link(self):
+        self.tag("v1.0.0")
+        self.commit("after the release")
+        real = self.tmp / "real-tree"
+        self.assertEqual(self.run_installer(xdg=self.tmp / "real-parent").returncode, 0)
+        (self.tmp / "real-parent" / "dba-guide").rename(real)
+        self.install_dir.parent.mkdir(parents=True, exist_ok=True)
+        self.install_dir.symlink_to(real)
+        r = self.run_installer_on_a_tty("--uninstall", "--purge",
+                                        answer="y\n", xdg="default")
+        self.assertEqual(r.returncode, 1)
+        self.assertTrue(real.is_dir(), "트리가 사라졌다")
+        self.assertNotIn("삭제했습니다", r.stdout)

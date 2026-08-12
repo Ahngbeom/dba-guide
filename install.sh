@@ -195,7 +195,7 @@ install_managed() {
     if [ "$fresh" = "no" ]; then
       info "이미 최신입니다 — $tag"
     fi
-    record_install "$INSTALL_DIR"
+    record_install "$INSTALL_DIR" "$fresh"
     link_launchers "$INSTALL_DIR"
     report "$INSTALL_DIR" "$tag"
     return 0
@@ -211,7 +211,7 @@ install_managed() {
   fi
 
   git -C "$INSTALL_DIR" checkout --quiet --detach "$tag"
-  record_install "$INSTALL_DIR"
+  record_install "$INSTALL_DIR" "$fresh"
   link_launchers "$INSTALL_DIR"
   report "$INSTALL_DIR" "$tag"
 }
@@ -296,6 +296,12 @@ uninstall() {
         "  내용을 직접 확인하고 지우세요: rm -rf \"$INSTALL_DIR\""
   fi
 
+  if [ -L "$INSTALL_DIR" ]; then
+    die "$INSTALL_DIR 이 심볼릭 링크입니다 — 지우면 링크만 사라지고" \
+        "  실제 트리와 학습 기록은 그대로 남습니다." \
+        "  실제 위치를 확인해 직접 지우세요: $(readlink "$INSTALL_DIR")"
+  fi
+
   n_exam=0
   if [ -f "$INSTALL_DIR/.exam-results/results.jsonl" ]; then
     n_exam="$(wc -l < "$INSTALL_DIR/.exam-results/results.jsonl" | tr -d ' ')"
@@ -372,7 +378,7 @@ warn_if_another_install_is_linked() {
     is_our_install "$other" || continue
     ! same_path "$other" "$INSTALL_DIR" || return 0
     info "참고: 링크가 다른 곳을 가리키고 있습니다 — $other" \
-         "  이 실행은 $INSTALL_DIR 에 설치하고 링크를 이쪽으로 옮깁니다." \
+         "  이 실행의 설치 대상은 $INSTALL_DIR 입니다." \
          "  $other 는 건드리지 않습니다. 두 벌을 원치 않으면 직접 정리하세요." \
          ""
     return 0
@@ -432,8 +438,21 @@ adopt_recorded_install() {
 # 1로 끝난다. 서브셸로 감싸 리다이렉트 실패의 영어 셸 오류까지 삼킨다 —
 # `printf … > f 2>/dev/null`은 리다이렉트가 먼저 평가돼 오류가 새어 나간다.
 record_install() {
+  # **이번 실행이 만든 트리만 기록한다.** 기록은 소유권 주장이고, 이미 있던
+  # 트리에 그 주장을 붙이면 한 번의 실수가 영구 조준점이 된다 — 자기 클론을
+  # 한 번 겨눈 사람은 이후 변수 없이도 매번 그 클론이 다시 detach 되고,
+  # 맨손으로 친 `--uninstall --purge`가 그것을 지운다. 우리가 만들지 않은
+  # 트리는 우리 것인지 알 방법이 없다(그 구분을 시도한 것이 이 브랜치의
+  # 지난 결함들이다). 그래서 주장하지 않는다.
+  [ "$2" = "yes" ] || return 0
+  # 상대 경로를 그대로 적으면 다음 실행의 cwd에 따라 엉뚱한 트리를 가리킨다.
+  # 절대 경로로만 바꾸고 심볼릭 링크는 풀지 않는다 — `pwd -P`로 정규화하면
+  # 사용자가 지정한 표기가 바뀌어(예: macOS의 /var → /private/var) 링크와
+  # 안내 문구가 낯선 경로를 가리키게 된다. 동등성 비교는 `same_path`의 몫이다.
+  rec_path="$1"
+  case "$rec_path" in /*) ;; *) rec_path="$PWD/$rec_path" ;; esac
   if ! ( mkdir -p "$(dirname "$STATE_FILE")" \
-         && printf '%s\n' "$1" > "$STATE_FILE" ) 2>/dev/null; then
+         && printf '%s\n' "$rec_path" > "$STATE_FILE" ) 2>/dev/null; then
     info "경고: 설치 위치를 기록하지 못했습니다 — $STATE_FILE" \
          "      다음 실행에서 이 위치를 기억하지 못합니다." \
          "      그때는 XDG_DATA_HOME 으로 직접 지정하세요." \
