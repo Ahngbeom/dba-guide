@@ -443,10 +443,14 @@ def pick(stdscr, curses, title, labels, footer=None,
         raw = key_char(key) or ""
         if allow_quit and raw == "Q":       # 소문자로 접기 **전에** 검사한다
             raise QuitApp
-        # 동작 키도 대소문자를 보존해 본다. `raw and` 가드는 **필수**다 —
-        # 파이썬에서 빈 문자열은 어떤 문자열에도 들어 있다(`"" in "x"` 도
-        # 참이다). `key_char` 는 특수키·미매핑 키에 대해 `""` 를 주므로,
-        # 가드가 없으면 방향키 한 번에 동작이 발동한다.
+        # 동작 키도 대소문자를 보존해 본다. `raw and` 가드는 방어적으로 남겨
+        # 둔다 — `key_char` 는 불리언 값·복수 문자 문자열·범위 밖 정수에
+        # `None` 을 돌려줄 수 있고, 그 자리에서 `or ""` 가 `None` 을 빈
+        # 문자열로 바꾼다. 파이썬에서는 빈 문자열이 어떤 문자열에도 들어
+        # 있으므로(`"" in "x"` 도 참이다), 가드가 없으면 그 `None` 이 우연히
+        # `actions` 에 걸린다. 방향키는 여기 해당하지 않는다 — 예를 들어
+        # `key_char(259)`(`KEY_UP`)는 `None` 이 아니라 `chr(259)` 인 `"ă"` 를
+        # 돌려주는 평범한 한 글자다.
         if raw and raw in actions:
             return _result(sel, raw)
         ch = raw.lower()

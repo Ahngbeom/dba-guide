@@ -11,6 +11,7 @@
 """
 import contextlib
 import io
+import json
 import shutil
 import sys
 import tempfile
@@ -56,7 +57,8 @@ class FixtureTestCase(unittest.TestCase):
         self.chapter = self.root / "01-beginner" / "01-intro.md"
         self.chapter.write_text(CHAPTER, encoding="utf-8")
         (self.root / "exams" / "01-beginner" / "01-intro.json").write_text(
-            "{}", encoding="utf-8")
+            json.dumps({"chapter": "01-beginner/01-intro.md"}),
+            encoding="utf-8")
         (self.root / "appendix" / "glossary.md").write_text(
             "# 용어집\n", encoding="utf-8")
         self.readme = self.root / "README.md"
@@ -250,6 +252,36 @@ class BankTest(FixtureTestCase):
         (self.root / "exams" / "01-beginner" / "01-intro.json").rename(
             self.root / "exams" / "02-intermediate" / "01-intro.json")
         self.assertEqual(len(self.problems("banks")), 1)
+
+    def test_bank_chapter_field_matching_the_chapter_path_is_clean(self):
+        """픽스처의 은행은 이미 맞는 `chapter`를 적어 둔다 — 잡음이 없어야 한다."""
+        self.assertEqual(self.problems("banks"), [])
+
+    def test_bank_chapter_field_mismatch_is_reported(self):
+        """챕터를 옮기면서 은행의 `chapter`를 안 고치면, 읽기 목록에는 그
+        기록이 안 보이는데 `exam` 목록에는 보이는 식으로 같은 정보가 화면
+        마다 다르게 보인다 — `reading.chapter_labels`가 이 필드를 전제로
+        `exam.best_result_for`에 챕터 경로를 그대로 넘기기 때문이다.
+        """
+        (self.root / "exams" / "01-beginner" / "01-intro.json").write_text(
+            json.dumps({"chapter": "01-beginner/other.md"}), encoding="utf-8")
+        found = self.problems("banks")
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("01-intro.json", found[0])
+        self.assertIn("01-beginner/01-intro.md", found[0])
+
+    def test_bank_missing_chapter_field_is_reported(self):
+        (self.root / "exams" / "01-beginner" / "01-intro.json").write_text(
+            "{}", encoding="utf-8")
+        found = self.problems("banks")
+        self.assertEqual(len(found), 1, found)
+
+    def test_unreadable_bank_json_is_reported_not_crashed(self):
+        (self.root / "exams" / "01-beginner" / "01-intro.json").write_text(
+            "{내용이 아니다", encoding="utf-8")
+        found = self.problems("banks")
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("01-intro.json", found[0])
 
 
 class ExitCodeTest(FixtureTestCase):

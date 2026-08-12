@@ -10,13 +10,15 @@
   links      상대 링크가 실재하는 파일을 가리키는가
   orphans    티어·부록의 모든 문서가 README에서 링크되는가
   structure  챕터가 정해진 네 절을 그 순서로 갖는가
-  banks      챕터에 대응하는 문제은행이 있는가
+  banks      챕터에 대응하는 문제은행이 있고, 그 은행의 `chapter` 필드가
+             챕터 경로와 일치하는가
 
 사용:
     python3 scripts/check_content.py          # 위반이 있으면 종료 코드 1
     python3 scripts/check_content.py --root DIR
 """
 import argparse
+import json
 import re
 import sys
 from pathlib import Path
@@ -155,14 +157,37 @@ def check_structure(root):
 
 
 def check_banks(root):
-    """챕터에 대응하는 문제은행이 있는가."""
+    """챕터에 대응하는 문제은행이 있고, 그 은행의 `chapter` 필드가 맞는가.
+
+    `reading.py`의 `chapter_labels`는 챕터의 저장소 상대경로를
+    `exam.best_result_for`에 그대로 넘긴다 — 은행 JSON의 `chapter` 필드가
+    그 경로와 같다는 전제 위에서다(`docs/superpowers/specs/
+    2026-08-12-reading-exam-handoff-design.md` 2절, 실측 23/23). 이 필드가
+    챕터 경로와 어긋나면 읽기 목록에는 시험 기록이 안 보이는데 `exam` 목록
+    에는 보이는 식으로, 같은 정보가 화면마다 다르게 보이게 된다.
+    `exam.validate_bank`는 `chapter` 필드 자체를 보지 않고, 이 검사도 지금껏
+    은행 *파일*이 있는지만 봤다 — 챕터를 옮기면서 은행의 `chapter`를 안
+    고치는 실수는 둘 다 잡지 못한다.
+    """
     problems = []
     for p in chapters(root):
+        rel = p.relative_to(root)
         bank = root / "exams" / p.parent.name / (p.stem + ".json")
         if not bank.exists():
             problems.append(
-                f"{p.relative_to(root)}: 문제은행이 없다 → "
-                f"{bank.relative_to(root)}")
+                f"{rel}: 문제은행이 없다 → {bank.relative_to(root)}")
+            continue
+        bank_rel = bank.relative_to(root)
+        try:
+            data = json.loads(bank.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as e:
+            problems.append(f"{bank_rel}: 읽을 수 없다 → {e}")
+            continue
+        expect = f"{p.parent.name}/{p.stem}.md"
+        got = data.get("chapter") if isinstance(data, dict) else None
+        if got != expect:
+            problems.append(
+                f"{bank_rel}: chapter 필드가 '{expect}'가 아니라 {got!r}이다")
     return problems
 
 

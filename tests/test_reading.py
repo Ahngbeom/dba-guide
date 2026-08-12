@@ -220,18 +220,32 @@ class ReadingMainTest(unittest.TestCase):
 
         `action`은 챕터 화면에서 누를 동작 키(`"x"` 또는 `None`). 가짜 `choose`는
         진짜와 같은 계약을 지킨다 — `actions`를 받았을 때만 `Picked`를 돌려준다.
+
+        가짜 `choose`가 받는 `labels`를 매 호출마다 `self.labels_seen`에
+        쌓고, `exam.read_results`가 실제로 불린 횟수를 `self.read_results_calls`에
+        센다. 기존 세 값 반환(`read, exams, paused`)은 그대로 두어 호출부를
+        바꾸지 않는다 — 이 둘은 `test_chapter_labels_reach_the_screen`과
+        `test_records_are_re_read_for_every_chapter_list_render`만 읽는다.
         """
         seq = iter(list(picks) + [None] * 6)
         read, exams, paused = [], [], []
+        self.labels_seen = []
+        self.read_results_calls = 0
         real = {n: getattr(reading, n)
                 for n in ("choose", "read_chapter", "run_exam",
                           "pause_after_output")}
+        real_read_results = reading.exam.read_results
 
         def fake_choose(title, labels, actions=""):
+            self.labels_seen.append(labels)
             idx = next(seq)
             if not actions or idx is None:
                 return idx
             return reading.Picked(idx, action)
+
+        def fake_read_results():
+            self.read_results_calls += 1
+            return real_read_results()
 
         reading.choose = fake_choose
         reading.read_chapter = (
@@ -239,12 +253,14 @@ class ReadingMainTest(unittest.TestCase):
         reading.run_exam = (
             lambda rel, bank, dbms: exams.append((rel, bank, dbms)))
         reading.pause_after_output = lambda: paused.append(1)
+        reading.exam.read_results = fake_read_results
         try:
             with contextlib.redirect_stdout(io.StringIO()):
                 yield read, exams, paused
         finally:
             for n, fn in real.items():
                 setattr(reading, n, fn)
+            reading.exam.read_results = real_read_results
 
     def test_dbms_then_tier_then_chapter_reaches_the_reader(self):
         # 0=전체, 0=01-beginner, 0=그 티어의 첫 챕터
@@ -304,6 +320,46 @@ class ReadingMainTest(unittest.TestCase):
         with self._flow([1, 1, 1, 1], action="x") as (_, exams, _p):
             reading.main([])
         self.assertEqual(len(exams), 2, "한 번 보고 목록을 떠났다")
+
+    def _chapter_screen_labels(self, tier):
+        """`self.labels_seen` 중 챕터 목록 화면에 실제로 그려진 것들.
+
+        DBMS 화면(행 수 = `len(DBMS_CHOICES)`)·티어 화면(행 수 =
+        `len(TIERS)`)과 챕터 화면을 구분하는 데 인덱스를 하드코딩하면 흐름이
+        한 걸음만 바뀌어도 깨진다 — 그 티어의 챕터 개수와 행 수가 같은
+        호출만 골라 흐름 변경에 흔들리지 않게 한다.
+        """
+        n = len(reading.discover_chapters(tier))
+        return [labels for labels in self.labels_seen if len(labels) == n]
+
+    def test_chapter_labels_reach_the_screen(self):
+        """`main`이 `chapter_labels(chapters, exam.read_results())`가 아니라
+        예컨대 `[Path(c).name for c in chapters]`를 넘기면, 이 작업(part 2)의
+        화면상 절반 — `[시험 없음]`/`[지난 최고 …]` 라벨 — 이 조용히 사라진다.
+        `ChapterLabelTest`는 그 순수 함수만 증명하고, 호출부가 실제로 그
+        함수를 쓰는지는 아무도 보지 않았다.
+        """
+        # 0=전체, 0=01-beginner, 화면만 그리고 종료(패딩된 None)한다.
+        with self._flow([0, 0]) as (_read, _exams, _paused):
+            reading.main([])
+        renders = self._chapter_screen_labels("01-beginner")
+        self.assertGreaterEqual(len(renders), 1, self.labels_seen)
+        self.assertTrue(
+            any("[시험 없음]" in label for label in renders[0]), renders[0])
+
+    def test_records_are_re_read_for_every_chapter_list_render(self):
+        """기록은 그릴 때마다 새로 읽는다 — 방금 본 시험의 결과가 목록으로
+        돌아오자마자 보여야 한다(설계 문서 2절). `exam.read_results()`를
+        `while True` 밖으로 끌어내면 이 문구는 거짓말이 된다.
+        """
+        # 1=PostgreSQL, 1=02-intermediate, 1=은행 있는 챕터에서 시험을 본 뒤
+        # 목록으로 돌아와(패딩된 None으로) 종료한다 — 챕터 화면이 두 번 그려진다.
+        with self._flow([1, 1, 1], action="x") as (_read, exams, _paused):
+            reading.main([])
+        self.assertEqual(len(exams), 1)
+        chapter_renders = len(self._chapter_screen_labels("02-intermediate"))
+        self.assertGreaterEqual(chapter_renders, 2, self.labels_seen)
+        self.assertEqual(self.read_results_calls, chapter_renders)
 
 
 class ChapterPauseTest(unittest.TestCase):
@@ -429,7 +485,14 @@ class ReadingQuitKeyTest(unittest.TestCase):
         self.assertIn("Q 종료", seen["footer"], seen)
 
     def _footer(self, **kw):
-        """`choose`가 `pick`에 실제로 넘긴 footer를 가로챈다."""
+        """`choose`가 `pick`에 실제로 넘긴 footer를 가로챈다.
+
+        `pick`에 실제로 넘어간 나머지 인자도 `self._last_kwargs`에 남긴다 —
+        `test_the_actions_argument_reaches_pick`이 그걸로 `actions`가 정말
+        전달됐는지 확인한다. `footer` 문구만 보면 이 배선 누락을 잡지 못한다
+        (footer 문자열은 `choose` 안에서 만들어지므로 `actions=actions`를
+        지워도 그대로다 — `pick`에 도착했는지가 별개의 사실이다).
+        """
         seen = {}
         fake_curses = types.SimpleNamespace(
             curs_set=lambda _n: None,
@@ -437,6 +500,7 @@ class ReadingQuitKeyTest(unittest.TestCase):
 
         def fake_pick(_stdscr, _curses, _title, _labels, footer=None, **_kw):
             seen["footer"] = footer
+            seen["kwargs"] = _kw
             return 0
 
         real_pick = reading.pick
@@ -455,6 +519,7 @@ class ReadingQuitKeyTest(unittest.TestCase):
             else:
                 sys.modules["curses"] = real_curses
             sys.stdin.isatty, sys.stdout.isatty = real_in, real_out
+        self._last_kwargs = seen["kwargs"]
         return seen["footer"]
 
     def test_the_chapter_footer_offers_the_exam_action(self):
@@ -469,6 +534,21 @@ class ReadingQuitKeyTest(unittest.TestCase):
         footer = self._footer()
         self.assertIn("Enter 선택", footer)
         self.assertNotIn("시험", footer)
+
+    def test_the_actions_argument_reaches_pick(self):
+        """`choose`가 `actions`를 `pick`에 **전달**하는지는 footer 문구만으로는
+        확인되지 않는다 — footer 문자열은 `choose` 안에서 조립되므로
+        `pick(..., actions=actions)`의 `actions=actions`를 지워도 그대로다.
+        그런데 그 배선이 빠지면 `pick`은 `int`를 돌려주고, `reading.main`은
+        `sel.index`를 읽다 tty를 쓰는 모든 사용자에게서 `AttributeError`로
+        죽는다. `actions="x"`를 넘겼을 때 `pick`이 실제로 그 값을 받았는지,
+        넘기지 않았을 때는 아무것도 받지 않았는지를 직접 확인한다.
+        """
+        self._footer(actions="x")
+        self.assertEqual(self._last_kwargs.get("actions"), "x")
+
+        self._footer()
+        self.assertFalse(self._last_kwargs.get("actions"))
 
     def test_the_chapter_footer_fits_an_eighty_column_terminal(self):
         """`tui.bar`가 잘라내면 안내가 조용히 사라진다.
