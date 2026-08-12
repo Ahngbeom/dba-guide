@@ -373,6 +373,81 @@ class PickTest(unittest.TestCase):
         self.assertIsNone(tui.pick(_PickScreen([]), _PickCurses(), "제목", []))
 
 
+class PauseAfterOutputTest(unittest.TestCase):
+    """멈춤 프롬프트가 막다른 골목이면 안 된다 (이슈 #95).
+
+    이건 curses가 아니라 평문 `input()`이다. 그래서 Esc도 `q`도 그냥 글자로
+    먹혔고, 사용자 눈에는 "Esc를 눌러도 아무 일이 없는 화면"이었다. 나가는 길을
+    하나 만들되 `input()` 기반은 유지한다 — raw 단일키 읽기(`termios`)로 바꾸면
+    비-tty 가드와 `tui.input` 교체 가능성이 함께 무너진다.
+    """
+
+    @contextlib.contextmanager
+    def _tty(self, is_tty=True, answer=""):
+        """`input`을 가로채고 tty 여부를 고정한다.
+
+        `answer`가 예외 **클래스**면 `input`이 그걸 올린다.
+        """
+        real_in, real_out = sys.stdin.isatty, sys.stdout.isatty
+        sys.stdin.isatty = lambda: is_tty
+        sys.stdout.isatty = lambda: is_tty
+        asked = []
+
+        def fake_input(prompt=""):
+            asked.append(prompt)
+            if isinstance(answer, type) and issubclass(answer, BaseException):
+                raise answer
+            return answer
+
+        tui.input = fake_input
+        try:
+            yield asked
+        finally:
+            del tui.input
+            sys.stdin.isatty, sys.stdout.isatty = real_in, real_out
+
+    def test_enter_just_continues(self):
+        with self._tty(answer="") as asked:
+            tui.pause_after_output()
+        self.assertEqual(len(asked), 1)
+
+    def test_the_prompt_advertises_the_quit_key(self):
+        """안내가 없으면 있어도 없는 기능이다."""
+        with self._tty(answer="") as asked:
+            tui.pause_after_output()
+        self.assertIn("q=종료", asked[0])
+
+    def test_q_quits_the_app(self):
+        """대소문자와 주변 공백을 모두 받는다.
+
+        이 프롬프트에는 '뒤로'라는 선택지가 없어 `q`/`Q`를 가를 이유가 없고,
+        화면에 `q=종료`라고 소문자로 적어 두므로 대문자를 요구하면 오히려 안
+        먹히는 것처럼 보인다.
+        """
+        for answer in ("q", "Q", " q ", "Q\n"):
+            with self.subTest(answer=answer):
+                with self._tty(answer=answer):
+                    with self.assertRaises(tui.QuitApp):
+                        tui.pause_after_output()
+
+    def test_anything_else_just_continues(self):
+        with self._tty(answer="아무거나"):
+            tui.pause_after_output()     # 예외 없이 돌아와야 한다
+
+    def test_it_still_swallows_eof_and_interrupt(self):
+        """호출부가 애써 격리해 둔 것이 여기서 새면 무의미해진다."""
+        for exc in (EOFError, KeyboardInterrupt):
+            with self.subTest(exc=exc):
+                with self._tty(answer=exc):
+                    tui.pause_after_output()
+
+    def test_it_does_not_prompt_when_not_a_tty(self):
+        """파이프에서 `input()`을 부르면 다음 입력 줄을 삼켜 실행이 깨진다."""
+        with self._tty(is_tty=False) as asked:
+            tui.pause_after_output()
+        self.assertEqual(asked, [])
+
+
 class PageTextCharacterizationTest(unittest.TestCase):
     """옮기기 전 현재 동작을 고정한다.
 
