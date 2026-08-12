@@ -944,40 +944,6 @@ class WarnsAboutAnotherInstallTest(InstallerTestCase):
         self.assertNotIn("설치합니다", r.stdout)
 
 
-class AWorkingCloneAtTheInstallPathIsRefusedTest(InstallerTestCase):
-    """계산된 경로에 남의 작업 클론이 있으면 손대지 않는다.
-
-    `is_our_install`은 저장소 루트 + `scripts/guide.py`만 보므로 **기여자의
-    클론도 통과한다**. 그 트리에 `fetch`·`checkout --detach`를 걸면 작업
-    브랜치가 릴리스 태그로 떨어진다. 우리가 만든 설치본은 언제나 detached
-    이거나 기록이 지목하는 경로다.
-    """
-
-    def setUp(self):
-        super().setUp()
-        self.tag("v1.0.0")
-        self.commit("after the release")
-        self.install_dir.parent.mkdir(parents=True, exist_ok=True)
-        subprocess.run(["git", "clone", "--quiet", self.origin.as_uri(), str(self.install_dir)],
-                       check=True, capture_output=True, text=True)
-        git(self.install_dir, "config", "user.email", "t@example.com")
-        git(self.install_dir, "config", "user.name", "t")
-        git(self.install_dir, "switch", "--quiet", "-c", "my-feature")
-        (self.install_dir / "MY-WORK.md").write_text("작업 중\n", encoding="utf-8")
-        git(self.install_dir, "add", "-A")
-        git(self.install_dir, "commit", "--quiet", "-m", "my feature work")
-
-    def test_it_stops_instead_of_detaching_someone_elses_branch(self):
-        before = git(self.install_dir, "rev-parse", "HEAD").strip()
-        r = self.run_installer()
-        self.assertEqual(r.returncode, 1)
-        self.assertIn(str(self.install_dir), r.stderr)
-        self.assertEqual(git(self.install_dir, "rev-parse", "--abbrev-ref", "HEAD").strip(),
-                         "my-feature")
-        self.assertEqual(git(self.install_dir, "rev-parse", "HEAD").strip(), before)
-        self.assertTrue((self.install_dir / "MY-WORK.md").is_file())
-
-
 class AmbientXdgTest(InstallerTestCase):
     """`+x`와 `:-`가 어긋나면 안 된다.
 
@@ -1006,3 +972,73 @@ class AmbientXdgTest(InstallerTestCase):
         r = self.run_installer(xdg=self.tmp / "elsewhere")
         self.assertEqual(r.returncode, 0, r.stderr)
         self.assertIn(str(self.custom / "dba-guide"), r.stdout)
+
+
+class NoRecordNeverLocksAnyoneOutTest(InstallerTestCase):
+    """기록이 없다고 해서 설치본을 남의 것으로 몰면 안 된다.
+
+    한 라운드에서 "HEAD가 detached면 우리가 만든 것"이라는 가드를 뒀다가,
+    스크립트가 **자기가 만든 설치본을 거부**했다. 원인은 `install_managed`의
+    조기 반환 분기다 — 릴리스 직후에는 최신 태그가 `main`의 tip이라 갓 클론한
+    HEAD가 이미 그 태그이고, `checkout --detach`가 아예 실행되지 않아 설치본이
+    **브랜치 위에** 남는다. 기록이 없던 v1.3.0 이전 사용자는 영구히 갇혔다.
+
+    소유권은 git 상태에서 추론할 수 없다. 기록이 없으면 그냥 기록이 없는
+    것이고, 그때의 올바른 동작은 계산된 경로를 쓰는 기존 동작이다.
+    """
+
+    def _install_then_forget_the_record(self):
+        r = self.run_installer()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.state_file.unlink()
+
+    def test_an_install_left_on_a_branch_still_updates(self):
+        """태그가 tip이면 설치본은 브랜치 위에 남는다 — 정상 상태다."""
+        self.tag("v1.0.0")
+        self._install_then_forget_the_record()
+        self.assertTrue(git(self.install_dir, "symbolic-ref", "-q", "HEAD").strip(),
+                        "이 픽스처는 브랜치 위 설치본을 만들어야 한다")
+        r = self.run_installer()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("설치 완료", r.stdout)
+
+    def test_a_detached_install_still_updates(self):
+        self.tag("v1.0.0")
+        self.commit("after the release")
+        self._install_then_forget_the_record()
+        r = self.run_installer()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("설치 완료", r.stdout)
+
+    def test_a_rerun_after_a_failed_first_attempt_recovers(self):
+        """태그를 못 찾아 죽으면 클론만 남는다 — 다음 실행이 이어받아야 한다."""
+        r = self.run_installer()
+        self.assertEqual(r.returncode, 1)
+        self.assertTrue(self.install_dir.is_dir(), "클론은 남아 있다")
+        self.tag("v1.0.0")
+        self.commit("after the release")
+        r = self.run_installer()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(self.head_tag(), "v1.0.0")
+
+
+class PurgingOneInstallSparesTheOtherRecordTest(InstallerTestCase):
+    """두 벌이 있을 때, 한쪽을 지우면서 다른 쪽의 기록까지 지우면 안 된다."""
+
+    def setUp(self):
+        super().setUp()
+        self.tag("v1.0.0")
+        self.commit("after the release")
+        self.old = self.tmp / "tools"
+        self.assertEqual(self.run_installer(xdg=self.old).returncode, 0)
+        self.assertEqual(self.run_installer(xdg=self.home / ".local" / "share").returncode, 0)
+        self.assertEqual(self.state_file.read_text().strip(), str(self.install_dir))
+
+    def test_purging_the_old_one_keeps_the_record_of_the_live_one(self):
+        r = self.run_installer_on_a_tty("--uninstall", "--purge",
+                                        answer="y\n", xdg=self.old)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertFalse((self.old / "dba-guide").exists(), "옛 설치본이 남았다")
+        self.assertTrue(self.install_dir.is_dir(), "살아 있는 설치본이 지워졌다")
+        self.assertTrue(self.state_file.is_file(), "다른 쪽 기록까지 지웠다")
+        self.assertEqual(self.state_file.read_text().strip(), str(self.install_dir))

@@ -178,11 +178,6 @@ install_managed() {
         "  git 저장소가 아니거나, 다른 저장소가 그 자리에 있습니다." \
         "  이 스크립트는 자기가 만들지 않은 디렉터리를 지우거나 옮기지 않습니다." \
         "  직접 확인하고 치운 뒤 다시 실행하세요."
-  elif ! is_our_managed_install "$INSTALL_DIR"; then
-    die "$INSTALL_DIR 은 이 스크립트가 만든 설치본이 아닙니다." \
-        "  브랜치가 체크아웃돼 있어 누군가의 작업 클론으로 보입니다." \
-        "  남의 저장소를 fetch 하거나 HEAD를 옮기지 않습니다." \
-        "  다른 곳에 설치하려면 XDG_DATA_HOME 으로 목적지를 지정하세요."
   else
     git -C "$INSTALL_DIR" fetch --quiet --tags origin
   fi
@@ -328,7 +323,21 @@ uninstall() {
     return 0
   fi
   case "$answer" in
-    y|Y|yes|YES) rm -rf "$INSTALL_DIR"; rm -f "$STATE_FILE"; info "삭제했습니다." ;;
+    y|Y|yes|YES)
+      # 지운 트리를 가리키던 기록만 지운다. 설치본이 둘일 때 남의 기록까지
+      # 지우면, 살아 있는 쪽이 위치를 잃어 다음 실행이 또 한 벌을 만든다.
+      # 판정은 **삭제 전에** 한다 — 사라진 디렉터리는 `pwd -P`로 정규화할 수
+      # 없어, 뒤에 비교하면 표기만 다른 같은 경로를 놓친다.
+      record_points_here="no"
+      if [ -f "$STATE_FILE" ] \
+         && same_path "$(cat "$STATE_FILE" 2>/dev/null || true)" "$INSTALL_DIR"; then
+        record_points_here="yes"
+      fi
+      rm -rf "$INSTALL_DIR"
+      if [ "$record_points_here" = "yes" ]; then
+        rm -f "$STATE_FILE"
+      fi
+      info "삭제했습니다." ;;
     *) info "취소했습니다." ;;
   esac
 }
@@ -338,24 +347,11 @@ uninstall() {
 same_path() {
   sp_a="$1"
   sp_b="$2"
+  # 풀 수 없는 두 값을 "같다"고 답하면 안 된다 — 빈 문자열 둘이 대표적이다.
+  [ -n "$sp_a" ] && [ -n "$sp_b" ] || return 1
   if [ -d "$sp_a" ]; then sp_a="$(cd "$sp_a" && pwd -P)"; fi
   if [ -d "$sp_b" ]; then sp_b="$(cd "$sp_b" && pwd -P)"; fi
   [ "$sp_a" = "$sp_b" ]
-}
-
-# **우리가 만든** 설치본인가 — `is_our_install`보다 엄격하다.
-#
-# `is_our_install`은 저장소 루트 + `scripts/guide.py`만 보므로 기여자의 작업
-# 클론도 통과한다. 그 트리에 `fetch`·`checkout --detach`를 걸면 남의 작업
-# 브랜치가 릴리스 태그로 떨어지고 워킹 트리가 갈린다(실측). 우리가 만든
-# 설치본은 둘 중 하나로 증명된다 — 기록이 그 경로를 지목하거나, HEAD가
-# detached이거나. 우리는 언제나 `checkout --detach <tag>`로만 만들기 때문이다.
-is_our_managed_install() {
-  if [ -f "$STATE_FILE" ] \
-     && same_path "$(cat "$STATE_FILE" 2>/dev/null || true)" "$1"; then
-    return 0
-  fi
-  ! git -C "$1" symbolic-ref -q HEAD >/dev/null 2>&1
 }
 
 # 기록이 없는데 런처 링크가 **다른 곳**의 유효한 설치본을 가리키는 경우.
@@ -375,17 +371,10 @@ warn_if_another_install_is_linked() {
     other="$(dirname "$(readlink "$link")")"
     is_our_install "$other" || continue
     ! same_path "$other" "$INSTALL_DIR" || return 0
-    if is_our_managed_install "$other"; then
-      info "참고: 다른 위치에 설치본이 있습니다 — $other" \
-           "  이 실행은 $INSTALL_DIR 에 설치합니다." \
-           "  그쪽을 계속 쓰려면 그 위치의 부모를 XDG_DATA_HOME 으로 주고 다시 실행하세요." \
-           ""
-    else
-      info "참고: $other 에 이 학습서의 클론이 있고 링크가 그쪽을 가리킵니다." \
-           "  브랜치가 체크아웃돼 있어 작업 클론으로 보이므로 건드리지 않습니다." \
-           "  이 실행은 $INSTALL_DIR 에 설치합니다." \
-           ""
-    fi
+    info "참고: 링크가 다른 곳을 가리키고 있습니다 — $other" \
+         "  이 실행은 $INSTALL_DIR 에 설치하고 링크를 이쪽으로 옮깁니다." \
+         "  $other 는 건드리지 않습니다. 두 벌을 원치 않으면 직접 정리하세요." \
+         ""
     return 0
   done
 }
