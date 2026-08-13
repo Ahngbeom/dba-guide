@@ -6,16 +6,21 @@
 같은 것은 본문의 의미를 읽어야 하므로 여기서 다루지 않는다 — 그 항목들은
 점검 목록에 사람 몫으로 남아 있다.
 
-검사 넷:
+검사 다섯:
   links      상대 링크가 실재하는 파일을 가리키는가
   orphans    티어·부록의 모든 문서가 README에서 링크되는가
-  structure  챕터가 정해진 네 절을 그 순서로 갖는가
+  structure  챕터가 정해진 네 절을 그 순서로 갖는가 (챕터만 본다)
+  markers    모든 마크다운 파일에서 `<!-- dbms:X -->` 마커가 벤더별로
+             균형을 이루는가 — `generate-branch.sh`가 `find … -name
+             '*.md'`로 트리 전체를 필터하므로, 챕터로 범위를 좁히는
+             structure와 달리 이 검사는 챕터가 아닌 파일도 본다
   banks      챕터에 대응하는 문제은행이 있고, 그 은행의 `chapter` 필드가
              챕터 경로와 일치하는가
 
 사용:
     python3 scripts/check_content.py          # 위반이 있으면 종료 코드 1
     python3 scripts/check_content.py --root DIR
+    python3 scripts/check_content.py --dbms mysql   # 단일 벤더 뷰의 structure만
 """
 import argparse
 import json
@@ -23,6 +28,8 @@ import re
 import sys
 from pathlib import Path
 from urllib.parse import unquote, urlparse
+
+import filter_dbms
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -135,14 +142,29 @@ def check_orphans(root):
     return problems
 
 
-def check_structure(root):
-    """챕터가 네 절을 정해진 순서로 갖는가."""
+def check_structure(root, dbms=None):
+    """챕터가 네 절을 정해진 순서로 갖는가.
+
+    `dbms`를 주면 그 벤더로 필터한 뒤 검사한다 — 단일 벤더 브랜치에서
+    실제로 보이는 모습이다. 절 하나가 통째로 다른 벤더의 마커 안에 있으면
+    그 브랜치에서만 사라지므로, `main`에서만 보면 드러나지 않는다(#90).
+
+    필터는 `filter_dbms.filter_lines`를 그대로 쓴다 —
+    `scripts/generate-branch.sh`가 벤더 브랜치를 만들 때, `reading.py`가
+    화면에 뿌릴 때 부르는 바로 그 함수다. 여기서 따로 구현하면 "검사는
+    통과했는데 브랜치는 깨진" 상태가 생길 수 있다.
+    """
     problems = []
     for p in chapters(root):
+        lines = p.read_text(encoding="utf-8").splitlines()
+        if dbms is not None:
+            try:
+                lines = filter_dbms.filter_lines(lines, dbms)
+            except ValueError as e:
+                problems.append(f"{p.relative_to(root)}: {e}")
+                continue
         heads = [m.group(1) for m in
-                 (HEADING_RE.match(line)
-                  for line in p.read_text(encoding="utf-8").splitlines())
-                 if m]
+                 (HEADING_RE.match(line) for line in lines) if m]
         at = -1
         for names in SECTION_ORDER:
             for i, head in enumerate(heads):
@@ -153,6 +175,35 @@ def check_structure(root):
                 problems.append(
                     f"{p.relative_to(root)}: `## {names[0]}` 절이 없거나 "
                     f"순서가 어긋난다")
+    return problems
+
+
+def check_markers(root):
+    """모든 마크다운 파일에서 `<!-- dbms:X -->` 마커가 균형을 이루는가.
+
+    `structure`는 `chapters(root)`로 범위를 좁히지만, `generate-branch.sh`는
+    `find "${worktree_dir}" -name '*.md'`로 트리의 **모든** 마크다운을
+    필터한다 — `00-overview.md`, 치트시트, `appendix/`, `docs/`, README도
+    포함해서다. 그래서 마커 균형은 `chapters(root)`가 아니라
+    `markdown_files(root)`를 대상으로 봐야 한다. 챕터 밖의 불균형 마커는
+    이 검사가 없으면 아무 데서도 잡히지 않다가, 릴리스 때 벤더 브랜치를
+    재생성하는 `generate-branch.sh`가 `set -euo pipefail` 아래에서 중간에
+    멈추는 자리에서야 처음 드러난다.
+
+    `filter_dbms.filter_lines`를 벤더 셋 모두에 대해 돌려 보고, 어느 하나
+    라도 `ValueError`를 내면 문제로 신고한다. 한 파일이 여러 벤더에서
+    동시에 예외를 내더라도(닫히지 않은 마커는 대상 벤더와 무관하게 항상
+    실패한다) 파일마다 한 번만 신고한다.
+    """
+    problems = []
+    for p in markdown_files(root):
+        lines = p.read_text(encoding="utf-8").splitlines()
+        for dbms in ("postgresql", "mysql", "oracle"):
+            try:
+                filter_dbms.filter_lines(lines, dbms)
+            except ValueError as e:
+                problems.append(f"{p.relative_to(root)}: {e}")
+                break
     return problems
 
 
@@ -195,6 +246,7 @@ CHECKS = (
     ("links", check_links),
     ("orphans", check_orphans),
     ("structure", check_structure),
+    ("markers", check_markers),
     ("banks", check_banks),
 )
 
@@ -208,10 +260,18 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--root", default=str(REPO_ROOT),
                     help="검사할 저장소 경로 (기본: 이 스크립트의 저장소)")
+    ap.add_argument("--dbms", choices=("postgresql", "mysql", "oracle"),
+                    help="단일 벤더 뷰로 필터한 뒤 structure만 검사한다")
     args = ap.parse_args(argv)
 
+    if args.dbms:
+        checks = [(f"structure:{args.dbms}",
+                   check_structure(Path(args.root), args.dbms))]
+    else:
+        checks = check_all(args.root)
+
     total = 0
-    for name, problems in check_all(args.root):
+    for name, problems in checks:
         if problems:
             total += len(problems)
             print(f"\n[{name}] {len(problems)}건")

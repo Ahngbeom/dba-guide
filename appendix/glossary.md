@@ -21,6 +21,7 @@
 - **PITR (Point-in-Time Recovery)** — 특정 시점 상태로 데이터베이스를 복구하는 기법. → `02-intermediate/04-backup-recovery-strategies.md`
 - **Read Replica (읽기 복제본)** — 읽기 전용 쿼리를 분산 처리하기 위한 복제 노드. → `03-advanced/04-scaling-and-sharding.md`
 - **Reconcile Loop (재조정 루프)** — Kubernetes Operator의 컨트롤러가 현재 상태를 계속 관찰하며 선언된 목표 상태와의 차이를 지속적으로 줄여나가는 제어 루프. → `03-advanced/08-kubernetes-db-operators.md`
+- **RESETLOGS** — Oracle에서 불완전 복구를 마치고 데이터베이스를 열 때 로그 순번을 1부터 다시 매기며 새 인카네이션(incarnation)을 만드는 옵션(`ALTER DATABASE OPEN RESETLOGS`). RESETLOGS 이후 시점(현재 인카네이션)으로 복구할 때는 10g 이후 RMAN이 인카네이션 경계를 넘어 자동으로 복구하므로 이전 백업을 그대로 쓸 수 있지만, RESETLOGS 이전 시점(이전 인카네이션)으로 되돌아가려면 이전 백업으로도 (`RESET DATABASE TO INCARNATION`을 거쳐) 복구할 수 있는 대신 절차가 복잡해지므로, 개방 직후 전체 백업을 새로 받는다. → `02-intermediate/04-backup-recovery-strategies.md`
 - **RPO (Recovery Point Objective)** — 장애 시 허용 가능한 최대 데이터 손실 시점(얼마나 과거 데이터까지 복구 가능해야 하는지). → `03-advanced/03-disaster-recovery.md`
 - **RTO (Recovery Time Objective)** — 장애 발생 후 서비스가 복구되기까지 허용 가능한 최대 시간. → `03-advanced/03-disaster-recovery.md`
 - **Sharding (샤딩)** — 하나의 논리적 데이터셋을 여러 물리적 DB 인스턴스로 수평 분할하는 기법. → `03-advanced/04-scaling-and-sharding.md`
@@ -36,6 +37,7 @@
 - **교착 상태(Deadlock)** — 두 개 이상의 트랜잭션이 서로가 점유한 락을 기다리며 무한 대기하는 상태. → `02-intermediate/01-transaction-and-locking.md`
 - **논리 백업 / 물리 백업** — 논리 백업은 SQL 문 형태로 데이터를 추출(예: pg_dump), 물리 백업은 데이터 파일 자체를 복사하는 방식(예: RMAN). → `01-beginner/05-backup-basics.md`, `02-intermediate/04-backup-recovery-strategies.md`
 - **보안 그룹(Security Group)** — 관리형 DB 인스턴스 앞단에서 출발지 IP·포트별 접근을 허용하는 상태 저장(stateful) 방화벽. GCP의 방화벽 규칙(Firewall Rule)에 대응한다. → `02-intermediate/07-cloud-db-infra-and-connection.md`
+- **불완전 복구(Incomplete Recovery)** — 사용 가능한 로그를 끝까지 적용하지 않고 특정 시점에서 멈추는 복구. PITR이 이에 해당하며, 그 시점 이후의 변경은 의도적으로 버린다. → `02-intermediate/04-backup-recovery-strategies.md`
 - **서브넷 그룹(Subnet Group)** — RDS 인스턴스를 생성할 때 지정하는, 여러 가용 영역(AZ)의 서브넷 묶음. Multi-AZ 배치의 전제 조건이다. → `02-intermediate/07-cloud-db-infra-and-connection.md`
 - **온라인 DDL(무중단 스키마 변경)** — 서비스 중단 없이 테이블 구조를 변경하는 기법. → `02-intermediate/06-schema-change-management.md`
 - **옵티마이저(Optimizer)** — SQL을 어떤 실행 경로로 처리할지 결정하는 DB 엔진의 구성 요소. → `03-advanced/01-advanced-performance-tuning.md`

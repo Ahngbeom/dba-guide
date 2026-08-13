@@ -21,6 +21,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts"))
 
 import check_content  # noqa: E402
+import filter_dbms  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -38,6 +39,32 @@ CHAPTER = """\
 ## 실습 예제
 
 내용.
+
+## 체크리스트
+
+- [ ] 할 수 있다
+"""
+
+
+# 절 하나가 통째로 한 벤더 마커 안에 들어간 챕터. `main`에서 읽으면 네 절이
+# 다 보이므로 정상으로 보이고, 다른 두 벤더의 뷰에서만 절이 사라진다 —
+# 이슈 #90이 실제로 그 모양이었다.
+VENDOR_CHAPTER = """\
+# 1장
+
+## 핵심 개념 설명
+
+내용.
+
+## 주요 명령어/문법
+
+내용.
+
+<!-- dbms:postgresql -->
+## 실습 예제 — PostgreSQL PITR
+
+내용.
+<!-- /dbms:postgresql -->
 
 ## 체크리스트
 
@@ -240,6 +267,151 @@ class StructureTest(FixtureTestCase):
         self.assertClean()
 
 
+class VendorStructureTest(FixtureTestCase):
+    """단일 벤더 뷰에서만 드러나는 구조 결함 (#90)."""
+
+    def test_unfiltered_view_looks_fine(self):
+        """`main`에서만 보면 정상이다 — 이것이 이 결함이 숨는 방식이다."""
+        self.chapter.write_text(VENDOR_CHAPTER, encoding="utf-8")
+        self.assertEqual(check_content.check_structure(self.root), [])
+
+    def test_the_section_survives_in_its_own_vendor_view(self):
+        self.chapter.write_text(VENDOR_CHAPTER, encoding="utf-8")
+        self.assertEqual(
+            check_content.check_structure(self.root, "postgresql"), [])
+
+    def test_the_section_vanishes_from_the_other_vendor_views(self):
+        self.chapter.write_text(VENDOR_CHAPTER, encoding="utf-8")
+        for dbms in ("mysql", "oracle"):
+            with self.subTest(dbms=dbms):
+                found = check_content.check_structure(self.root, dbms)
+                self.assertEqual(len(found), 1, found)
+                self.assertIn("실습 예제", found[0])
+                self.assertIn("01-intro.md", found[0])
+
+    def test_a_chapter_without_markers_reads_the_same_in_every_view(self):
+        """마커가 없는 파일은 어느 뷰에서도 바이트 단위로 같다."""
+        lines = self.chapter.read_text(encoding="utf-8").splitlines()
+        for dbms in (None, "postgresql", "mysql", "oracle"):
+            with self.subTest(dbms=dbms):
+                self.assertEqual(
+                    check_content.check_structure(self.root, dbms), [])
+        for dbms in ("postgresql", "mysql", "oracle"):
+            with self.subTest(dbms=dbms):
+                self.assertEqual(
+                    filter_dbms.filter_lines(lines, dbms), lines)
+
+    def test_an_unbalanced_marker_is_reported_not_raised(self):
+        """`filter_lines`의 ValueError가 트레이스백으로 새어 나가면 안 된다.
+
+        검사기는 어디가 틀렸는지 한 줄씩 찍어 주는 도구다. 마커 하나가
+        안 닫혔다고 전체 검사가 중단되면 나머지 위반을 못 본다.
+        """
+        self.chapter.write_text(
+            VENDOR_CHAPTER.replace("<!-- /dbms:postgresql -->\n", ""),
+            encoding="utf-8")
+        found = check_content.check_structure(self.root, "mysql")
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("01-intro.md", found[0])
+        # 신고된 것이 마커 오류인지 확인한다 — 마커가 안 닫히면 그 뒤
+        # 절이 통째로 사라지므로, 신고되지 않은 절 이름을 딴 "없거나 순서가
+        # 어긋난다" 메시지가 진짜 원인(마커)을 가리는 채로도 테스트를
+        # 통과시킬 수 있다.
+        self.assertIn("Unclosed dbms marker", found[0])
+
+    def test_markers_inside_a_code_fence_are_not_directives(self):
+        """마커 문법을 설명하는 본문이 자기 자신에게 걸리지 않아야 한다."""
+        self.chapter.write_text(
+            CHAPTER + "\n```\n<!-- dbms:oracle -->\n```\n", encoding="utf-8")
+        self.assertEqual(
+            check_content.check_structure(self.root, "mysql"), [])
+
+
+class MarkerTest(FixtureTestCase):
+    """`markers` — 챕터가 아닌 마크다운 파일에서도 마커 균형을 검사하는가.
+
+    `generate-branch.sh`는 `find "${worktree_dir}" -name '*.md'`로 트리의
+    모든 마크다운을 필터한다. `structure`는 `chapters(root)`만 보므로
+    `appendix/`·`docs/`·README 같은 비챕터 파일의 마커 불균형은 오늘 아무
+    것도 잡지 못한다 — 이 클래스의 첫 테스트가 그 공백의 회귀 테스트다.
+    """
+
+    def test_unbalanced_marker_outside_a_chapter_is_reported(self):
+        """이 테스트는 `check_markers` 구현 전에는 실패해야 한다(RED).
+
+        `structure`는 챕터만 보므로 이 파일(비챕터)의 불균형을 못 잡는다.
+        """
+        (self.root / "appendix" / "glossary.md").write_text(
+            "# 용어집\n\n<!-- dbms:mysql -->\n내용\n", encoding="utf-8")
+        found = self.problems("markers")
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("glossary.md", found[0])
+
+    def test_mismatched_close_is_reported(self):
+        (self.root / "appendix" / "glossary.md").write_text(
+            "# 용어집\n\n<!-- dbms:mysql -->\n내용\n<!-- /dbms:oracle -->\n",
+            encoding="utf-8")
+        found = self.problems("markers")
+        self.assertEqual(len(found), 1, found)
+        self.assertIn("glossary.md", found[0])
+
+    def test_balanced_markers_are_not_reported(self):
+        (self.root / "appendix" / "glossary.md").write_text(
+            "# 용어집\n\n<!-- dbms:mysql -->\n내용\n<!-- /dbms:mysql -->\n",
+            encoding="utf-8")
+        self.assertEqual(self.problems("markers"), [])
+
+    def test_markers_inside_a_code_fence_do_not_count(self):
+        """펜스 안의 마커는 문법을 설명하는 예시일 뿐 실제 지시문이 아니다.
+
+        계획 문서들이 이 동작(`filter_lines`가 문서화한)에 기대어 마커
+        문법 자체를 펜스 안에서 예시로 든다.
+        """
+        (self.root / "appendix" / "glossary.md").write_text(
+            "# 용어집\n\n```\n<!-- dbms:mysql -->\n```\n", encoding="utf-8")
+        self.assertEqual(self.problems("markers"), [])
+
+    def test_a_file_is_reported_once_even_if_every_vendor_raises(self):
+        """열리기만 하고 안 닫힌 마커는 세 벤더 모두에서 예외가 난다.
+
+        `check_markers`는 파일 하나당 한 번만 신고해야 한다.
+        """
+        (self.root / "appendix" / "glossary.md").write_text(
+            "# 용어집\n\n<!-- dbms:mysql -->\n내용\n", encoding="utf-8")
+        found = self.problems("markers")
+        self.assertEqual(len(found), 1, found)
+
+
+class VendorCliTest(FixtureTestCase):
+    """`--dbms`는 릴리스 전에 사람이 직접 돌리는 통로다."""
+
+    def run_main(self, *extra):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            rc = check_content.main(["--root", str(self.root), *extra])
+        return rc, buf.getvalue()
+
+    def test_the_flag_reports_only_the_filtered_structure_check(self):
+        self.chapter.write_text(VENDOR_CHAPTER, encoding="utf-8")
+        rc, out = self.run_main("--dbms", "mysql")
+        self.assertEqual(rc, 1)
+        self.assertIn("structure:mysql", out)
+        self.assertIn("실습 예제", out)
+        self.assertNotIn("[links]", out)
+
+    def test_the_flag_passes_for_the_matching_vendor(self):
+        self.chapter.write_text(VENDOR_CHAPTER, encoding="utf-8")
+        rc, out = self.run_main("--dbms", "postgresql")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("structure:postgresql", out)
+
+    def test_without_the_flag_all_four_checks_still_run(self):
+        rc, out = self.run_main()
+        self.assertEqual(rc, 0, out)
+        for name in ("[links]", "[orphans]", "[structure]", "[banks]"):
+            self.assertIn(name, out)
+
+
 class BankTest(FixtureTestCase):
     def test_chapter_without_a_bank_is_reported(self):
         (self.root / "exams" / "01-beginner" / "01-intro.json").unlink()
@@ -336,6 +508,29 @@ class ShippedContentTest(unittest.TestCase):
     def test_chapters_follow_the_four_section_shape(self):
         self._skip_on_a_vendor_branch()
         self.assertEqual(check_content.check_structure(REPO_ROOT), [])
+
+    def test_each_vendor_view_keeps_the_four_section_shape(self):
+        """단일 벤더 브랜치를 잘라 봐야만 드러나는 결함을 여기서 잡는다.
+
+        `main`에서 도는 것이 요점이다 — CI 트리거가 `push: branches: [main]`
+        이라 벤더 브랜치에서는 이 스위트가 아예 돌지 않는다. 이슈 #90이
+        그 사각지대에서 v1.4.0까지 살아남았다.
+        """
+        self._skip_on_a_vendor_branch()
+        for dbms in ("postgresql", "mysql", "oracle"):
+            with self.subTest(dbms=dbms):
+                self.assertEqual(
+                    check_content.check_structure(REPO_ROOT, dbms), [])
+
+    def test_every_markdown_files_dbms_markers_balance(self):
+        """구조 검사와 달리 벤더 브랜치에서도 건너뛰지 않는다.
+
+        벤더 브랜치는 이미 필터된 뷰라 마커가 하나도 안 남는다 — 그래서
+        이 검사는 그 브랜치에서 자명하게 통과할 뿐 잘못된 통과를 만들지
+        않는다. `_skip_on_a_vendor_branch`는 구조 검사 전용이라 여기서
+        부르지 않는다.
+        """
+        self.assertEqual(check_content.check_markers(REPO_ROOT), [])
 
     def test_every_chapter_has_a_question_bank(self):
         self.assertEqual(check_content.check_banks(REPO_ROOT), [])
