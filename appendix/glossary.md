@@ -21,7 +21,7 @@
 - **PITR (Point-in-Time Recovery)** — 특정 시점 상태로 데이터베이스를 복구하는 기법. → `02-intermediate/04-backup-recovery-strategies.md`
 - **Read Replica (읽기 복제본)** — 읽기 전용 쿼리를 분산 처리하기 위한 복제 노드. → `03-advanced/04-scaling-and-sharding.md`
 - **Reconcile Loop (재조정 루프)** — Kubernetes Operator의 컨트롤러가 현재 상태를 계속 관찰하며 선언된 목표 상태와의 차이를 지속적으로 줄여나가는 제어 루프. → `03-advanced/08-kubernetes-db-operators.md`
-- **RESETLOGS** — Oracle에서 불완전 복구를 마치고 데이터베이스를 열 때 로그 순번을 1부터 다시 매기며 새 인카네이션(incarnation)을 만드는 옵션(`ALTER DATABASE OPEN RESETLOGS`). 10g 이후 RMAN은 인카네이션을 인식하므로 이전 백업으로도 (`RESET DATABASE TO INCARNATION`을 거쳐) 복구할 수 있지만 절차가 복잡해지므로, 개방 직후 전체 백업을 새로 받는다. → `02-intermediate/04-backup-recovery-strategies.md`
+- **RESETLOGS** — Oracle에서 불완전 복구를 마치고 데이터베이스를 열 때 로그 순번을 1부터 다시 매기며 새 인카네이션(incarnation)을 만드는 옵션(`ALTER DATABASE OPEN RESETLOGS`). RESETLOGS 이후 시점(현재 인카네이션)으로 복구할 때는 10g 이후 RMAN이 인카네이션 경계를 넘어 자동으로 복구하므로 이전 백업을 그대로 쓸 수 있지만, RESETLOGS 이전 시점(이전 인카네이션)으로 되돌아가려면 이전 백업으로도 (`RESET DATABASE TO INCARNATION`을 거쳐) 복구할 수 있는 대신 절차가 복잡해지므로, 개방 직후 전체 백업을 새로 받는다. → `02-intermediate/04-backup-recovery-strategies.md`
 - **RPO (Recovery Point Objective)** — 장애 시 허용 가능한 최대 데이터 손실 시점(얼마나 과거 데이터까지 복구 가능해야 하는지). → `03-advanced/03-disaster-recovery.md`
 - **RTO (Recovery Time Objective)** — 장애 발생 후 서비스가 복구되기까지 허용 가능한 최대 시간. → `03-advanced/03-disaster-recovery.md`
 - **Sharding (샤딩)** — 하나의 논리적 데이터셋을 여러 물리적 DB 인스턴스로 수평 분할하는 기법. → `03-advanced/04-scaling-and-sharding.md`
