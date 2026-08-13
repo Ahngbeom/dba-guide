@@ -34,123 +34,28 @@
 이 장은 명령어보다 **프로세스·템플릿**이 핵심이다. 다만 대응 중 자주 쓰는 진단 명령을 정리한다(모두 읽기 전용, 안전).
 
 ### 실시간 장애 진단 (읽기 전용)
-<!-- dbms:postgresql -->
-```sql
--- PostgreSQL: 현재 활성 쿼리·블로킹 확인
-SELECT pid, state, wait_event_type, now()-query_start AS runtime, query
-FROM pg_stat_activity WHERE state <> 'idle' ORDER BY runtime DESC;
--- 블로킹 관계
-SELECT blocked.pid AS blocked, blocking.pid AS blocking
-FROM pg_locks bl JOIN pg_locks blg ON bl.transactionid = blg.transactionid ...;
--- 복제 지연
-SELECT pg_wal_lsn_diff(pg_current_wal_lsn(), replay_lsn) FROM pg_stat_replication;
-```
-<!-- /dbms:postgresql -->
 
-<!-- dbms:mysql -->
-```sql
--- MySQL: 실행 중/블로킹
-SELECT * FROM performance_schema.processlist WHERE command <> 'Sleep';
-SELECT * FROM sys.innodb_lock_waits;      -- 락 대기 관계
-SHOW REPLICA STATUS\G                     -- Seconds_Behind_Source
-```
-<!-- /dbms:mysql -->
 
-<!-- dbms:oracle -->
 ```sql
 -- Oracle: 활성 세션·대기 이벤트
 SELECT sid, event, seconds_in_wait, sql_id FROM v$session WHERE status='ACTIVE';
 SELECT * FROM v$session_blockers;         -- 블로킹 세션
 ```
-<!-- /dbms:oracle -->
 
 ### 긴급 완화 조치 (신중히, 승인하에)
 폭주하는 특정 세션만 종료한다(전체 재시작보다 피해가 작다).
 
-<!-- dbms:postgresql -->
-```sql
--- PostgreSQL: 특정 세션 종료
-SELECT pg_terminate_backend(<pid>);
-```
-<!-- /dbms:postgresql -->
 
-<!-- dbms:mysql -->
-```sql
--- MySQL: 특정 세션 종료
-KILL <processlist_id>;
-```
-<!-- /dbms:mysql -->
 
-<!-- dbms:oracle -->
 ```sql
 -- Oracle: 특정 세션 종료
 ALTER SYSTEM KILL SESSION '<sid>,<serial#>';
 ```
-<!-- /dbms:oracle -->
 
 ---
 
 ## 3. 실습 예제
 
-<!-- dbms:postgresql -->
-### 시나리오: "프로덕션 DB CPU 100%, 애플리케이션 전면 5xx" (PostgreSQL 기준)
-
-**탐지(0~2분)**: 증상 알림(에러율 급증 + p99 지연 폭증)이 온콜을 페이징. 온콜은 즉시 인시던트를 선언하고 대응 채널을 연다.
-
-**대응(2~15분)**:
-1. IC 지정, 역할 분담(IC / DBA=Ops / Comms). 상태 페이지에 "조사 중" 게시.
-2. Ops(DBA)가 `pg_stat_activity`로 진단 → 통계 미갱신으로 잘못된 실행 계획을 탄 한 쿼리가 대량 세션을 점유·CPU 폭주 확인(01장 연계).
-3. **완화 우선**: 근본 원인 분석보다 먼저 사용자 피해를 멈춘다. 폭주 쿼리 세션을 선별 종료(`pg_terminate_backend`) + 해당 기능의 트래픽을 일시 차단/레이트리밋. 커넥션 풀에서 유입 제한.
-
-**복구(15~40분)**:
-4. 근본 조치: `ANALYZE`로 통계 갱신 → 실행 계획 정상화 확인. 차단했던 트래픽 단계적 복원.
-5. 정상화 검증: 에러율·지연 정상, 데이터 정합성 스팟 체크. IC가 "해결" 선언(성급하지 않게, 10분 관찰 후).
-6. Comms가 상태 페이지·고객 공지 갱신.
-
-**회고(다음 영업일)**: 아래 템플릿으로 포스트모템 작성, 리뷰 미팅 진행.
-
-### 포스트모템 템플릿
-
-```markdown
-# 포스트모템: 2026-07-15 프로덕션 DB CPU 포화로 인한 서비스 중단
-
-## 요약
-- 영향: 2026-07-15 03:12~03:51 (39분), 전체 API 5xx 약 82%, 영향 사용자 ~14만
-- 심각도: SEV-1
-- 근본 원인: 대량 적재 후 통계 미갱신 → 옵티마이저 오판 → 풀스캔 폭주로 CPU 포화
-
-## 타임라인 (모두 KST)
-- 03:10 배치 대량 적재 완료
-- 03:12 에러율 알림 발생, 온콜 페이징
-- 03:15 인시던트 선언, IC 지정
-- 03:22 폭주 쿼리 식별, 세션 종료로 완화 시작
-- 03:35 ANALYZE 실행, 실행계획 정상화
-- 03:51 전면 정상화 확인, 인시던트 종료
-
-## 근본 원인 분석 (5 Whys)
-1. 왜 CPU가 포화됐나? → 한 쿼리가 풀스캔으로 반복 실행
-2. 왜 풀스캔했나? → 옵티마이저가 통계 오판
-3. 왜 통계가 틀렸나? → 대량 적재 후 ANALYZE 미실행
-4. 왜 미실행됐나? → 배치 파이프라인에 통계 갱신 단계 부재
-5. 왜 부재였나? → 적재량 급증 전에는 자동 통계로 충분했음(임계 초과 인지 못 함)
-
-## 잘된 점 (What went well)
-- 증상 기반 알림이 2분 내 정확히 페이징
-- 완화 우선 원칙으로 15분 내 사용자 피해 감소 시작
-
-## 아쉬운 점 (What went wrong)
-- 통계 갱신이 배치 파이프라인에 없었음
-- 폭주 쿼리에 대한 문 임계값(자동 kill) 부재
-
-## 재발 방지 액션 아이템
-- [ ] 배치 적재 직후 ANALYZE 단계 추가 — 담당: 데이터팀 / 기한: 07-22
-- [ ] 장기 실행 쿼리 자동 종료(statement_timeout, 슬로우쿼리 kill) 도입 — 담당: DBA / 기한: 07-25
-- [ ] 통계 신선도 모니터링 알림 추가 — 담당: DBA / 기한: 07-29
-
-## 비난 없음(Blameless) 노트
-개인의 실수가 아니라, 대량 적재 시 통계 갱신을 강제하지 못한 파이프라인 설계의 문제로 본다.
-```
-<!-- /dbms:postgresql -->
 
 > **트레이드오프 메모**: 완벽한 근본 원인 규명과 빠른 완화는 종종 충돌한다. 원칙은 **"먼저 피 흘림을 멈추고(mitigate), 원인은 나중에 파헤친다(investigate)"**. 단, 완화가 데이터 손상 위험을 키운다면(예: 무분별한 재시작) 신중해야 한다. 또한 포스트모템 액션아이템은 **담당자·기한이 없으면 실행되지 않는다** — "개선하겠다"가 아니라 추적 가능한 티켓으로 만들어야 회고가 의미를 갖는다.
 
