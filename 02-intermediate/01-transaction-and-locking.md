@@ -27,13 +27,7 @@
 
 MVCC의 대가로 **오래된 행 버전(dead tuple)** 이 쌓이므로 주기적으로 정리·관리해야 한다.
 
-<!-- dbms:postgresql -->
-PostgreSQL은 `VACUUM`으로 이를 정리·관리한다.
-<!-- /dbms:postgresql -->
 
-<!-- dbms:oracle -->
-Oracle은 UNDO 세그먼트로 이를 정리·관리한다.
-<!-- /dbms:oracle -->
 
 오래 열려 있는 트랜잭션은 정리를 방해하므로 주의해야 한다.
 
@@ -48,22 +42,7 @@ Oracle은 UNDO 세그먼트로 이를 정리·관리한다.
 
 ### 격리 수준 확인 및 설정
 
-<!-- dbms:postgresql -->
-**PostgreSQL**
-```sql
-SHOW transaction_isolation;
 
-BEGIN;
-SET TRANSACTION ISOLATION LEVEL REPEATABLE READ;
--- ... 작업 ...
-COMMIT;
-
--- 세션 기본값 변경
-SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL READ COMMITTED;
-```
-<!-- /dbms:postgresql -->
-
-<!-- dbms:mysql -->
 **MySQL**
 ```sql
 SELECT @@transaction_isolation;
@@ -76,16 +55,7 @@ COMMIT;
 -- 세션/전역 기본값
 SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ;
 ```
-<!-- /dbms:mysql -->
 
-<!-- dbms:oracle -->
-**Oracle** (Read Committed와 Serializable만 지원)
-```sql
-SET TRANSACTION ISOLATION LEVEL SERIALIZABLE;
--- 또는 읽기 일관성 보장용 읽기 전용 트랜잭션
-SET TRANSACTION READ ONLY;
-```
-<!-- /dbms:oracle -->
 
 ### 명시적 잠금
 
@@ -94,20 +64,12 @@ SET TRANSACTION READ ONLY;
 SELECT * FROM accounts WHERE id = 100 FOR UPDATE;
 ```
 
-<!-- dbms:postgresql -->
-```sql
--- PostgreSQL: 공유 락으로 읽기 (표준 구문)
-SELECT * FROM accounts WHERE id = 100 FOR SHARE;
-```
-<!-- /dbms:postgresql -->
 
-<!-- dbms:mysql -->
 ```sql
 -- MySQL: 공유 락으로 읽기
 SELECT * FROM accounts WHERE id = 100 LOCK IN SHARE MODE; -- MySQL 구버전
 SELECT * FROM accounts WHERE id = 100 FOR SHARE;        -- MySQL 8.0+
 ```
-<!-- /dbms:mysql -->
 
 ```sql
 -- 락 대기 대신 즉시 실패 / 건너뛰기 (PostgreSQL / MySQL 8.0+ / Oracle 공통)
@@ -151,32 +113,12 @@ DBMS는 데드락을 자동 감지해 한쪽 트랜잭션을 강제 롤백한다
 
 **진단 방법**
 
-<!-- dbms:postgresql -->
-```sql
--- PostgreSQL: 현재 락 대기 관계 조회
-SELECT blocked.pid AS blocked_pid, blocking.pid AS blocking_pid,
-       blocked.query AS blocked_query
-FROM pg_stat_activity blocked
-JOIN pg_locks bl ON bl.pid = blocked.pid AND NOT bl.granted
-JOIN pg_locks gl ON gl.locktype = bl.locktype AND gl.relation = bl.relation AND gl.granted
-JOIN pg_stat_activity blocking ON blocking.pid = gl.pid;
-```
-<!-- /dbms:postgresql -->
 
-<!-- dbms:mysql -->
 ```sql
 -- MySQL: 가장 최근 데드락 상세 로그
 SHOW ENGINE INNODB STATUS;   -- LATEST DETECTED DEADLOCK 섹션 확인
 ```
-<!-- /dbms:mysql -->
 
-<!-- dbms:oracle -->
-```sql
--- Oracle: 대기 중인 락과 blocker 세션
-SELECT * FROM v$lock WHERE block = 1;
-SELECT sid, event, blocking_session FROM v$session WHERE blocking_session IS NOT NULL;
-```
-<!-- /dbms:oracle -->
 
 **데드락 예방 원칙**: 여러 트랜잭션이 여러 자원을 잠글 때 **항상 같은 순서로** 접근하도록 애플리케이션 로직을 통일한다. 트랜잭션은 짧게 유지하고, 사용자 입력을 기다리는 동안 트랜잭션을 열어두지 않는다.
 

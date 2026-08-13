@@ -29,20 +29,7 @@ PITR의 핵심 전제는 **변경 로그의 연속 아카이빙**이다. Postgre
 
 ### 논리 백업/복원
 
-<!-- dbms:postgresql -->
-**PostgreSQL**
-```bash
-# 백업(커스텀 포맷 권장 — 병렬/선택 복원 가능)
-pg_dump -Fc -d mydb -f mydb.dump
-pg_dumpall -f all.sql            # 전체 클러스터(롤/전역 객체 포함)
 
-# 복원
-pg_restore -d mydb --clean --if-exists mydb.dump
-pg_restore -d mydb -j 4 mydb.dump   # 4-way 병렬 복원
-```
-<!-- /dbms:postgresql -->
-
-<!-- dbms:mysql -->
 **MySQL**
 ```bash
 mysqldump --single-transaction --routines --triggers mydb > mydb.sql
@@ -51,45 +38,17 @@ mysql mydb < mydb.sql
 # 논리 백업 고속 대안(8.0+)
 mysqlpump / mysqlsh util.dumpInstance()
 ```
-<!-- /dbms:mysql -->
 
-<!-- dbms:oracle -->
-**Oracle (Data Pump)**
-```bash
-expdp system/pw schemas=hr directory=DP_DIR dumpfile=hr.dmp logfile=hr.log
-impdp system/pw schemas=hr directory=DP_DIR dumpfile=hr.dmp
-```
-<!-- /dbms:oracle -->
 
 ### 물리 백업
 
-<!-- dbms:postgresql -->
-**PostgreSQL**
-```bash
-# 기준 백업
-pg_basebackup -D /backup/base -Fp -Xs -P
-# 지속 아카이빙 설정 (postgresql.conf)
-#   wal_level = replica
-#   archive_mode = on
-#   archive_command = 'test ! -f /arch/%f && cp %p /arch/%f'
-```
-<!-- /dbms:postgresql -->
 
-<!-- dbms:mysql -->
 **MySQL (Percona XtraBackup)**
 ```bash
 xtrabackup --backup --target-dir=/backup/full
 xtrabackup --prepare --target-dir=/backup/full
 ```
-<!-- /dbms:mysql -->
 
-<!-- dbms:oracle -->
-**Oracle (RMAN)**
-```sql
-RMAN> BACKUP DATABASE PLUS ARCHIVELOG;
-RMAN> BACKUP INCREMENTAL LEVEL 1 DATABASE;  -- 증분
-```
-<!-- /dbms:oracle -->
 
 ## 실습 예제 — 특정 시점 복구(PITR)
 
@@ -97,39 +56,7 @@ RMAN> BACKUP INCREMENTAL LEVEL 1 DATABASE;  -- 증분
 
 DBMS가 달라도 원리는 같다 — **목표 시각 이전의 백업을 복원한 뒤, 그 시점부터 목표 시각까지의 로그만 재적용한다.** 다른 것은 로그의 이름, 재적용을 멈추는 방법, 그리고 복구를 끝내고 서비스를 여는 절차다.
 
-<!-- dbms:postgresql -->
-### PostgreSQL — base backup + WAL 재생
 
-```bash
-# 사전 준비(평상시): 아카이빙이 켜져 있고 base backup이 있는 상태
-pg_basebackup -D /backup/base_20260715 -Fp -Xs -P
-
-# --- 사고 발생 후 복구 절차 ---
-# 1) DB 정지
-pg_ctl stop -D $PGDATA
-
-# 2) 손상된 데이터 디렉터리를 치우고 base backup 복원
-mv $PGDATA ${PGDATA}.broken
-cp -a /backup/base_20260715 $PGDATA
-
-# 3) 복구 목표 시점 지정 (postgresql.conf 또는 별도 파일)
-cat >> $PGDATA/postgresql.conf <<'EOF'
-restore_command = 'cp /arch/%f %p'
-recovery_target_time = '2026-07-15 14:29:00+09'
-recovery_target_action = 'promote'
-EOF
-touch $PGDATA/recovery.signal   # PG 12+ : 복구 모드 진입 신호
-
-# 4) 기동 → WAL을 목표 시점까지 재생하고 promote
-pg_ctl start -D $PGDATA
-
-# 5) 데이터 확인 후 정상 서비스로 전환
-```
-
-`recovery_target_action = 'promote'`이므로 목표 시점에 닿으면 자동으로 읽기·쓰기가 가능한 상태가 된다. 재생 결과를 먼저 눈으로 확인하고 싶으면 `pause`로 두고, 확인 후 `SELECT pg_wal_replay_resume();`으로 마무리한다.
-<!-- /dbms:postgresql -->
-
-<!-- dbms:mysql -->
 ### MySQL — 전체 백업 복원 + binlog 재적용
 
 ```bash
@@ -157,32 +84,7 @@ mysqlbinlog --start-position=194 \
 ```
 
 여러 binlog 파일은 **한 번의 `mysqlbinlog` 호출에 함께 넘긴다.** 파일마다 따로 돌려 파이프하면 파일 경계를 걸친 트랜잭션이 끊긴다. GTID가 켜진 인스턴스에 재적용할 때 이미 실행된 트랜잭션이라는 오류가 나면 `--skip-gtids`를 준다.
-<!-- /dbms:mysql -->
 
-<!-- dbms:oracle -->
-### Oracle — RMAN 불완전 복구
-
-```sql
--- 사전 준비(평상시): ARCHIVELOG 모드 + BACKUP DATABASE PLUS ARCHIVELOG
-
--- --- 사고 발생 후 복구 절차 ---
--- 1) 데이터 파일을 열지 않은 MOUNT 상태로 기동
-RMAN> SHUTDOWN IMMEDIATE;
-RMAN> STARTUP MOUNT;
-
--- 2) 목표 시각 이전의 백업을 복원하고, 아카이브 로그를 그 시각까지만 적용
-RMAN> RUN {
-  SET UNTIL TIME "TO_DATE('2026-07-15 14:29:00','YYYY-MM-DD HH24:MI:SS')";
-  RESTORE DATABASE;
-  RECOVER DATABASE;
-}
-
--- 3) 로그 순번을 초기화하며 개방
-RMAN> ALTER DATABASE OPEN RESETLOGS;
-```
-
-`OPEN RESETLOGS`는 로그 순번을 1부터 다시 매기고 새 인카네이션(incarnation)을 만든다. RESETLOGS **이후** 시점(현재 인카네이션)으로 복구할 때는 10g 이후 RMAN이 인카네이션 경계를 넘어 자동으로 복구하므로 이전 백업을 그대로 쓸 수 있다. 반면 RESETLOGS **이전** 시점(이전 인카네이션)으로 되돌아가야 한다면 이전 백업으로도 (`RESET DATABASE TO INCARNATION`을 거쳐) 복구할 수 있지만 절차가 눈에 띄게 복잡해지고 실수 여지가 커진다 — **개방 직후 전체 백업을 새로 받는 것까지가 절차다.**
-<!-- /dbms:oracle -->
 
 어느 절차든 검증하는 것은 "백업이 있다"가 아니라 **"백업으로 목표 시각까지 실제로 되돌려 봤다"** 이다. 아카이브 한 조각이 비어 있으면 재적용은 정확히 그 지점에서 멈추는데, 사고 당일에 알게 되면 이미 늦다. 아래 정책이 분기 1회 복구 훈련을 요구하는 이유가 이것이다.
 
@@ -202,14 +104,6 @@ RMAN> ALTER DATABASE OPEN RESETLOGS;
 - [ ] 각 DBMS에서 논리 백업(`pg_dump`/`mysqldump`/`expdp`)을 수행하고 복원할 수 있다.
 - [ ] 물리 백업 도구(`pg_basebackup`/XtraBackup/RMAN)의 용도를 안다.
 - [ ] PITR의 원리(기준 백업 + 연속 로그 아카이빙)를 설명할 수 있다.
-<!-- dbms:postgresql -->
-- [ ] PostgreSQL에서 `recovery_target_time`으로 특정 시점까지 PITR 복구 절차를 수행할 수 있다.
-<!-- /dbms:postgresql -->
-<!-- dbms:mysql -->
 - [ ] MySQL에서 전체 백업을 복원한 뒤 binlog를 목표 시각까지 재적용할 수 있다.
-<!-- /dbms:mysql -->
-<!-- dbms:oracle -->
-- [ ] Oracle에서 RMAN 불완전 복구를 수행하고, `OPEN RESETLOGS` 이후 전체 백업을 새로 받는 이유를 설명할 수 있다.
-<!-- /dbms:oracle -->
 - [ ] 3-2-1 원칙에 따른 백업 주기·보관·원격 저장 정책을 설계할 수 있다.
 - [ ] 백업 암호화와 정기 복구 훈련의 필요성을 이해한다.
