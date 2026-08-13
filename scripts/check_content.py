@@ -6,10 +6,14 @@
 같은 것은 본문의 의미를 읽어야 하므로 여기서 다루지 않는다 — 그 항목들은
 점검 목록에 사람 몫으로 남아 있다.
 
-검사 넷:
+검사 다섯:
   links      상대 링크가 실재하는 파일을 가리키는가
   orphans    티어·부록의 모든 문서가 README에서 링크되는가
-  structure  챕터가 정해진 네 절을 그 순서로 갖는가
+  structure  챕터가 정해진 네 절을 그 순서로 갖는가 (챕터만 본다)
+  markers    모든 마크다운 파일에서 `<!-- dbms:X -->` 마커가 벤더별로
+             균형을 이루는가 — `generate-branch.sh`가 `find … -name
+             '*.md'`로 트리 전체를 필터하므로, 챕터로 범위를 좁히는
+             structure와 달리 이 검사는 챕터가 아닌 파일도 본다
   banks      챕터에 대응하는 문제은행이 있고, 그 은행의 `chapter` 필드가
              챕터 경로와 일치하는가
 
@@ -174,6 +178,35 @@ def check_structure(root, dbms=None):
     return problems
 
 
+def check_markers(root):
+    """모든 마크다운 파일에서 `<!-- dbms:X -->` 마커가 균형을 이루는가.
+
+    `structure`는 `chapters(root)`로 범위를 좁히지만, `generate-branch.sh`는
+    `find "${worktree_dir}" -name '*.md'`로 트리의 **모든** 마크다운을
+    필터한다 — `00-overview.md`, 치트시트, `appendix/`, `docs/`, README도
+    포함해서다. 그래서 마커 균형은 `chapters(root)`가 아니라
+    `markdown_files(root)`를 대상으로 봐야 한다. 챕터 밖의 불균형 마커는
+    이 검사가 없으면 아무 데서도 잡히지 않다가, 릴리스 때 벤더 브랜치를
+    재생성하는 `generate-branch.sh`가 `set -euo pipefail` 아래에서 중간에
+    멈추는 자리에서야 처음 드러난다.
+
+    `filter_dbms.filter_lines`를 벤더 셋 모두에 대해 돌려 보고, 어느 하나
+    라도 `ValueError`를 내면 문제로 신고한다. 한 파일이 여러 벤더에서
+    동시에 예외를 내더라도(닫히지 않은 마커는 대상 벤더와 무관하게 항상
+    실패한다) 파일마다 한 번만 신고한다.
+    """
+    problems = []
+    for p in markdown_files(root):
+        lines = p.read_text(encoding="utf-8").splitlines()
+        for dbms in ("postgresql", "mysql", "oracle"):
+            try:
+                filter_dbms.filter_lines(lines, dbms)
+            except ValueError as e:
+                problems.append(f"{p.relative_to(root)}: {e}")
+                break
+    return problems
+
+
 def check_banks(root):
     """챕터에 대응하는 문제은행이 있고, 그 은행의 `chapter` 필드가 맞는가.
 
@@ -213,6 +246,7 @@ CHECKS = (
     ("links", check_links),
     ("orphans", check_orphans),
     ("structure", check_structure),
+    ("markers", check_markers),
     ("banks", check_banks),
 )
 
