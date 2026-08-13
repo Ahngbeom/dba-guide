@@ -20,7 +20,6 @@
 
 ### 계정 생성 / 삭제 / 비밀번호 변경
 
-<!-- dbms:postgresql -->
 **PostgreSQL** — PostgreSQL에서는 사용자와 역할이 사실상 같은 개념(ROLE)이며, `LOGIN` 속성이 있으면 접속 가능한 사용자입니다.
 
 ```sql
@@ -35,45 +34,8 @@ ALTER ROLE app_user WITH PASSWORD 'newsecret456';
 -- 계정 삭제
 DROP ROLE app_user;
 ```
-<!-- /dbms:postgresql -->
 
-<!-- dbms:mysql -->
-**MySQL** — 계정은 `'사용자'@'접속허용호스트'` 형태로 지정합니다.
 
-```sql
--- 계정 생성 (localhost에서만 접속 허용)
-CREATE USER 'app_user'@'localhost' IDENTIFIED BY 'secret123';
-
--- 모든 호스트에서 접속 허용하려면 '%'
-CREATE USER 'app_user'@'%' IDENTIFIED BY 'secret123';
-
--- 비밀번호 변경
-ALTER USER 'app_user'@'localhost' IDENTIFIED BY 'newsecret456';
-
--- 계정 삭제
-DROP USER 'app_user'@'localhost';
-```
-<!-- /dbms:mysql -->
-
-<!-- dbms:oracle -->
-**Oracle**
-
-```sql
--- 계정 생성
-CREATE USER app_user IDENTIFIED BY secret123;
-
--- 접속(로그인) 권한을 별도로 줘야 실제 접속 가능
-GRANT CREATE SESSION TO app_user;
-
--- 비밀번호 변경
-ALTER USER app_user IDENTIFIED BY newsecret456;
-
--- 계정 삭제 (소유 객체까지 함께 삭제하려면 CASCADE)
-DROP USER app_user CASCADE;
-```
-
-> **Oracle 주의**: 계정을 만들어도 `CREATE SESSION` 권한이 없으면 접속조차 안 됩니다. 이 점이 다른 DBMS와 크게 다릅니다.
-<!-- /dbms:oracle -->
 
 ### 권한 부여(GRANT) / 회수(REVOKE)
 
@@ -92,62 +54,28 @@ REVOKE INSERT ON employees FROM app_user;
 
 DBMS별 "모든 권한" 및 스키마 단위 부여 차이:
 
-<!-- dbms:postgresql -->
 ```sql
 -- PostgreSQL: 특정 스키마의 모든 테이블에 조회 권한
 GRANT SELECT ON ALL TABLES IN SCHEMA public TO app_user;
 ```
-<!-- /dbms:postgresql -->
 
-<!-- dbms:mysql -->
-```sql
--- MySQL: 특정 데이터베이스의 모든 테이블에 모든 권한
-GRANT ALL PRIVILEGES ON mydb.* TO 'app_user'@'localhost';
-FLUSH PRIVILEGES;    -- MySQL은 권한 변경 후 반영 명령을 쓰기도 함
-```
-<!-- /dbms:mysql -->
 
-<!-- dbms:oracle -->
-```sql
--- Oracle: 테이블 대상 모든 권한
-GRANT ALL ON employees TO app_user;
-```
-<!-- /dbms:oracle -->
 
 ### 역할(Role) 활용
 
-<!-- dbms:postgresql -->
 ```sql
 -- PostgreSQL: 읽기전용 역할을 만들어 사용자에게 부여
 CREATE ROLE readonly;
 GRANT SELECT ON ALL TABLES IN SCHEMA public TO readonly;
 GRANT readonly TO app_user;      -- 사용자에게 역할 통째로 부여
 ```
-<!-- /dbms:postgresql -->
 
-<!-- dbms:mysql -->
-```sql
--- MySQL 8.0+: 역할 생성 및 부여
-CREATE ROLE 'readonly';
-GRANT SELECT ON mydb.* TO 'readonly';
-GRANT 'readonly' TO 'app_user'@'localhost';
-```
-<!-- /dbms:mysql -->
 
-<!-- dbms:oracle -->
-```sql
--- Oracle: 역할 생성 및 부여
-CREATE ROLE readonly;
-GRANT SELECT ON employees TO readonly;
-GRANT readonly TO app_user;
-```
-<!-- /dbms:oracle -->
 
 ---
 
 ## 3. 실습 예제
 
-<!-- dbms:postgresql -->
 **시나리오: 통계 조회용 읽기전용 계정을 만들어 보자. 이 계정은 조회만 가능하고, 데이터 변경은 막혀 있어야 한다. (PostgreSQL 기준)**
 
 ```sql
@@ -174,68 +102,8 @@ REVOKE SELECT ON employees FROM report_user;
 ```
 
 4번에서 조회는 되고 입력은 막히는 것이 바로 최소 권한 원칙의 실제 모습입니다. DBA는 이렇게 각 계정에 필요한 권한만 골라 부여합니다.
-<!-- /dbms:postgresql -->
 
-<!-- dbms:mysql -->
-**시나리오: 통계 조회용 읽기전용 계정을 만들어 보자. 이 계정은 조회만 가능하고, 데이터 변경은 막혀 있어야 한다. (MySQL 기준)**
 
-```sql
--- 1) 조회 대상 테이블이 있다고 가정 (mydb 데이터베이스를 사용 중이라고 가정)
-CREATE TABLE employees (id INT PRIMARY KEY, name VARCHAR(50), salary INT);
-INSERT INTO employees VALUES (1, '홍길동', 5000), (2, '김영희', 6000);
-
--- 2) 읽기전용 계정 생성 (localhost에서만 접속 허용)
-CREATE USER 'report_user'@'localhost' IDENTIFIED BY 'report_pw';
-
--- 3) 최소 권한 원칙: SELECT만 부여 (INSERT/UPDATE/DELETE는 주지 않음)
-GRANT SELECT ON mydb.employees TO 'report_user'@'localhost';
-
--- 4) 이제 report_user로 접속해서 테스트 (mysql -u report_user -p)
---    조회는 성공:
-SELECT * FROM employees;                  -- OK
-
---    변경은 실패 (권한 없음 오류):
-INSERT INTO employees VALUES (3, '이철수', 4500);
---   ERROR 1142 (42000): INSERT command denied to user 'report_user'@'localhost' for table 'employees'
-
--- 5) 나중에 조회 권한마저 회수하려면
-REVOKE SELECT ON mydb.employees FROM 'report_user'@'localhost';
-```
-
-4번에서 조회는 되고 입력은 막히는 것이 바로 최소 권한 원칙의 실제 모습입니다. DBA는 이렇게 각 계정에 필요한 권한만 골라 부여합니다.
-<!-- /dbms:mysql -->
-
-<!-- dbms:oracle -->
-**시나리오: 통계 조회용 읽기전용 계정을 만들어 보자. 이 계정은 조회만 가능하고, 데이터 변경은 막혀 있어야 한다. (Oracle 기준)**
-
-```sql
--- 1) 조회 대상 테이블이 있다고 가정 (현재 접속한 계정, 예: app_user 소유로 생성됨)
-CREATE TABLE employees (id NUMBER PRIMARY KEY, name VARCHAR2(50), salary NUMBER);
-INSERT INTO employees VALUES (1, '홍길동', 5000);
-INSERT INTO employees VALUES (2, '김영희', 6000);
-COMMIT;
-
--- 2) 읽기전용 계정 생성. Oracle은 계정을 만들어도 접속 권한이 별도로 필요하다
-CREATE USER report_user IDENTIFIED BY report_pw;
-GRANT CREATE SESSION TO report_user;
-
--- 3) 최소 권한 원칙: SELECT만 부여 (INSERT/UPDATE/DELETE는 주지 않음)
-GRANT SELECT ON employees TO report_user;
-
--- 4) 이제 report_user로 접속해서 테스트 (sqlplus report_user/report_pw@orcl)
---    Oracle은 스키마가 곧 사용자 계정이라 공용 스키마가 없으므로, 소유자를 붙여 조회한다:
-SELECT * FROM app_user.employees;                 -- OK
-
---    변경은 실패 (권한 없음 오류):
-INSERT INTO app_user.employees VALUES (3, '이철수', 4500);
---   ERROR: ORA-01031: insufficient privileges
-
--- 5) 나중에 조회 권한마저 회수하려면 (테이블 소유 계정에서 실행)
-REVOKE SELECT ON employees FROM report_user;
-```
-
-4번에서 조회는 되고 입력은 막히는 것이 바로 최소 권한 원칙의 실제 모습입니다. 다만 Oracle은 스키마가 곧 사용자 계정이므로, 다른 계정이 만든 테이블을 조회하려면 `소유자.테이블명`처럼 스키마를 명시해야 한다는 점이 PostgreSQL/MySQL과 다릅니다.
-<!-- /dbms:oracle -->
 
 ---
 
@@ -245,12 +113,6 @@ REVOKE SELECT ON employees FROM report_user;
 - [ ] 최소 권한 원칙이 무엇이고 왜 중요한지 안다.
 - [ ] PostgreSQL/MySQL/Oracle에서 계정을 생성·삭제할 수 있다.
 - [ ] 계정의 비밀번호를 변경할 수 있다.
-<!-- dbms:oracle -->
-- [ ] Oracle에서 접속하려면 CREATE SESSION 권한이 필요하다는 점을 안다.
-<!-- /dbms:oracle -->
-<!-- dbms:mysql -->
-- [ ] MySQL 계정은 `'사용자'@'호스트'` 형태로 식별되며, 접속 허용 호스트에 따라 같은 이름도 별개 계정으로 취급된다는 점을 안다.
-<!-- /dbms:mysql -->
 - [ ] GRANT로 특정 테이블에 특정 권한(SELECT 등)만 부여할 수 있다.
 - [ ] REVOKE로 부여한 권한을 회수할 수 있다.
 - [ ] 역할을 만들어 여러 권한을 묶고, 사용자에게 한 번에 부여할 수 있다.
